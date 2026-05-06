@@ -1864,7 +1864,13 @@ async def serve_media_preview(media_id: int, request: Request, access: str | Non
         headers = {"Cache-Control": "public, max-age=86400", "ETag": etag, "X-Content-SHA256": digest}
         if _etag_matches(request, etag):
             return Response(status_code=304, headers=headers)
-        preview_bytes, preview_mime = _render_image_preview(file_row["content"], file_row["mime_type"], digest, size=size)
+        preview_bytes, preview_mime = await asyncio.to_thread(
+            _render_image_preview,
+            file_row["content"],
+            file_row["mime_type"],
+            digest,
+            size=size,
+        )
         return Response(content=preview_bytes, media_type=preview_mime, headers=headers)
 
     legacy = _legacy_upload_path(item.get("storage_path"))
@@ -1879,7 +1885,8 @@ async def serve_media_preview(media_id: int, request: Request, access: str | Non
     headers = {"Cache-Control": "public, max-age=86400", "ETag": etag, "X-Content-SHA256": digest}
     if _etag_matches(request, etag):
         return Response(status_code=304, headers=headers)
-    preview_bytes, preview_mime = _render_image_preview(
+    preview_bytes, preview_mime = await asyncio.to_thread(
+        _render_image_preview,
         content,
         item.get("mime_type") or mimetypes.guess_type(str(legacy))[0] or "image/jpeg",
         digest,
