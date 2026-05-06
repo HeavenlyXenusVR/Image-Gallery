@@ -103,6 +103,7 @@ body[data-density="compact"] .gallery-grid { grid-template-columns: repeat(auto-
 body[data-density="compact"] .media-info { padding: 10px; gap: 8px; }
 body[data-density="wide"] .gallery-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
 body[data-reduce-motion="1"] * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+body.panel-low-power * { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 body[data-blur-videos="1"] .media-preview video { filter: blur(6px); }
 
 * { box-sizing: border-box; }
@@ -3041,6 +3042,82 @@ body[data-ui-size="compact"] .page-hero-actions {
 
 #settings-dialog .profile-row > * {
   min-width: 0;
+}
+
+/* Low-end device path: keep the same layout, drop GPU-heavy polish. */
+body.panel-low-power {
+  background: var(--bg) !important;
+}
+
+body.panel-low-power::before,
+body.panel-low-power::after {
+  opacity: 0 !important;
+  background: none !important;
+  background-image: none !important;
+  filter: none !important;
+  transform: none !important;
+}
+
+body.panel-low-power .topbar,
+body.panel-low-power .sidebar,
+body.panel-low-power .content,
+body.panel-low-power .page-panel,
+body.panel-low-power .modal-shell,
+body.panel-low-power .empty-state,
+body.panel-low-power .account-card,
+body.panel-low-power .sidebar-block,
+body.panel-low-power .stats-grid > div,
+body.panel-low-power .notice,
+body.panel-low-power .profile-section-card,
+body.panel-low-power .profile-insight-card,
+body.panel-low-power .studio-item,
+body.panel-low-power .saved-view-card,
+body.panel-low-power .collection-card,
+body.panel-low-power .user-card,
+body.panel-low-power .media-card,
+body.panel-low-power .toast-region,
+body.panel-low-power .compare-tray,
+body.panel-low-power .modal::backdrop,
+body.panel-low-power .modal-backdrop,
+body.panel-low-power .lightbox-backdrop {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22) !important;
+}
+
+body.panel-low-power .gallery-grid {
+  gap: 12px !important;
+  contain: layout paint;
+}
+
+body.panel-low-power .media-card,
+body.panel-low-power .collection-card,
+body.panel-low-power .user-card,
+body.panel-low-power .studio-item,
+body.panel-low-power .saved-view-card {
+  transform: none !important;
+  contain: layout paint style;
+}
+
+body.panel-low-power .media-card:hover,
+body.panel-low-power .collection-card:hover,
+body.panel-low-power .user-card:hover,
+body.panel-low-power .studio-item:hover,
+body.panel-low-power .saved-view-card:hover,
+body.panel-low-power .media-card:hover .media-preview img,
+body.panel-low-power .media-card:hover .media-preview video {
+  transform: none !important;
+}
+
+body.panel-low-power .media-preview img,
+body.panel-low-power .media-preview video {
+  transform: none !important;
+  filter: none;
+  will-change: auto;
+}
+
+body.panel-low-power .adult-blur {
+  filter: blur(6px);
 }
 
 #settings-dialog .profile-row > button {

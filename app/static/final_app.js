@@ -9,8 +9,10 @@ const GALLERY_VIEW_KEY = "image_gallery_view";
 const SAVED_VIEWS_KEY = "image_gallery_saved_views";
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
 const GALLERY_PAGE_SIZE = 15;
+const LOW_POWER_GALLERY_PAGE_SIZE = 12;
 const COMPARE_SELECTION_LIMIT = 4;
 const LIVE_CHECK_INTERVAL_MS = 15000;
+const LOW_POWER_LIVE_CHECK_INTERVAL_MS = 45000;
 const SITE_BACKGROUND_REFRESH_MS = 5 * 60 * 1000;
 const SEARCH_DEBOUNCE_MS = 250;
 const DEFAULT_USER_SETTINGS = {
@@ -86,6 +88,9 @@ let friendPanelState = { incoming: [], outgoing: [], friends: [] };
 let studioPageState = { items: [], totals: { views: 0, downloads: 0, likes: 0 } };
 let siteBackgroundTimer = 0;
 let revealObserver = null;
+let detectedLowPowerDevice = null;
+let galleryLoadController = null;
+let galleryRequestId = 0;
 
 const $ = (id) => document.getElementById(id);
 
@@ -94,8 +99,44 @@ function safeEl(id) {
 }
 
 function galleryPageSize() {
-  const raw = Number(userSettings().items_per_page || GALLERY_PAGE_SIZE);
-  return Math.max(15, Math.min(raw || GALLERY_PAGE_SIZE, 60));
+  const explicit = currentUser?.user_settings?.items_per_page;
+  const fallback = isLowPowerMode() ? LOW_POWER_GALLERY_PAGE_SIZE : GALLERY_PAGE_SIZE;
+  const raw = Number(explicit || fallback);
+  const max = isLowPowerMode() ? 24 : 60;
+  return Math.max(isLowPowerMode() ? 9 : 15, Math.min(raw || fallback, max));
+}
+
+function isLowPowerDevice() {
+  if (detectedLowPowerDevice !== null) return detectedLowPowerDevice;
+  const nav = typeof navigator !== "undefined" ? navigator : {};
+  const conn = nav.connection || nav.mozConnection || nav.webkitConnection;
+  const cores = Number(nav.hardwareConcurrency || 0);
+  const memory = Number(nav.deviceMemory || 0);
+  detectedLowPowerDevice = Boolean(
+    prefersReducedMotion()
+    || conn?.saveData
+    || (cores && cores <= 4)
+    || (memory && memory <= 4)
+  );
+  return detectedLowPowerDevice;
+}
+
+function isLowPowerMode() {
+  return Boolean(document.body?.classList.contains("panel-low-power") || document.body?.dataset.reduceMotion === "1" || isLowPowerDevice());
+}
+
+function debounce(fn, delay = 160) {
+  let timer = 0;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = window.setTimeout(() => fn(...args), delay);
+  };
+}
+
+function applyRuntimePerformanceMode() {
+  const lowPower = isLowPowerDevice() || userSettings().reduce_motion;
+  document.body?.classList.toggle("panel-low-power", Boolean(lowPower));
+  document.body?.classList.toggle("panel-full-effects", !lowPower);
 }
 
 function on(id, eventName, handler) {
@@ -160,7 +201,7 @@ function motionTargets(root = document) {
 function enhanceMotion(root = document) {
   const targets = Array.from(motionTargets(root));
   if (!targets.length) return;
-  if (prefersReducedMotion()) {
+  if (prefersReducedMotion() || isLowPowerMode()) {
     targets.forEach((node) => {
       node.classList.remove("reveal-ready");
       node.classList.add("is-visible");
@@ -376,6 +417,7 @@ async function apiFetch(path, options = {}, attempt = 0) {
   try {
     response = await fetch(apiUrl(path), { ...options, headers });
   } catch (err) {
+    if (err?.name === "AbortError") throw err;
     if (REMOTE_MODE && attempt === 0) {
       try {
         await refreshRemoteBackendConfig({ force: true });
@@ -411,6 +453,7 @@ async function apiBlobFetch(path, options = {}, attempt = 0) {
   try {
     response = await fetch(apiUrl(path), { ...options, headers });
   } catch (err) {
+    if (err?.name === "AbortError") throw err;
     if (REMOTE_MODE && attempt === 0) {
       try {
         await refreshRemoteBackendConfig({ force: true });
@@ -755,6 +798,8 @@ function renderPreview(item, size = "card") {
   const blur = isAdult && !revealed && !locked;
   const placeholderText = locked ? "18+ Verify Age" : "Click To Reveal";
   const previewVariant = size === "mini" || size === "card" ? "mini" : "detail";
+  const cardPreview = size === "card";
+  const lowPower = isLowPowerMode();
   const previewBaseUrl = item.media_kind === "image" ? (item.preview_url || item.url) : item.url;
   const previewUrl = normalizedPublicUrl(item.media_kind === "image" ? appendQueryParam(previewBaseUrl, "size", previewVariant) : previewBaseUrl);
   const body = locked
@@ -762,8 +807,8 @@ function renderPreview(item, size = "card") {
     : !previewUrl
       ? `<div class="locked-preview"><strong>Preview unavailable</strong><span>Open the post for details</span></div>`
     : item.media_kind === "video"
-      ? `<video src="${escapeHtml(previewUrl)}" ${userSettings().muted_previews ? "muted" : ""} ${userSettings().autoplay_previews ? "autoplay loop" : ""} playsinline preload="metadata"></video>`
-      : `<img src="${escapeHtml(previewUrl)}" alt="${escapeHtml(item.title)}" loading="${size === "card" ? "lazy" : "eager"}" decoding="async" fetchpriority="${size === "card" ? "low" : "auto"}" />`;
+      ? `<video src="${escapeHtml(previewUrl)}" ${userSettings().muted_previews || lowPower ? "muted" : ""} ${userSettings().autoplay_previews && !lowPower ? "autoplay loop" : ""} playsinline preload="${lowPower ? "none" : "metadata"}"></video>`
+      : `<img src="${escapeHtml(previewUrl)}" alt="${escapeHtml(item.title)}" loading="${cardPreview ? "lazy" : "eager"}" decoding="async" fetchpriority="${cardPreview ? "low" : "auto"}" draggable="false" />`;
   return `
     <span class="${blur ? "adult-blur" : ""}">${body}</span>
     ${isAdult && !revealed ? `<span class="adult-overlay">${placeholderText}</span>` : ""}
@@ -811,6 +856,7 @@ function applyAccountSettings() {
   document.body.dataset.density = prefs.grid_density || "comfortable";
   document.body.dataset.reduceMotion = prefs.reduce_motion ? "1" : "0";
   document.body.dataset.blurVideos = prefs.blur_video_previews ? "1" : "0";
+  applyRuntimePerformanceMode();
   if (currentUser && $("sort-filter").value === "new") $("sort-filter").value = prefs.default_sort || "new";
 }
 
@@ -837,6 +883,11 @@ function scheduleSiteBackgroundRefresh(delay = SITE_BACKGROUND_REFRESH_MS) {
 }
 
 async function refreshSiteBackground({ force = false } = {}) {
+  if (isLowPowerMode()) {
+    document.documentElement.style.setProperty("--site-background-image", "none");
+    document.body.dataset.backgroundReady = "0";
+    return;
+  }
   const cached = readJsonStore(SITE_BACKGROUND_KEY);
   const cachedAge = Date.now() - Number(cached?.appliedAt || 0);
   if (!force && cached?.url && cachedAge < SITE_BACKGROUND_REFRESH_MS) {
@@ -1804,7 +1855,8 @@ function updateGalleryPagination() {
 function renderGallerySkeleton(count = 8) {
   const grid = safeEl("gallery-grid");
   if (!grid) return;
-  grid.innerHTML = Array.from({ length: count }).map((_, index) => `
+  const skeletonCount = isLowPowerMode() ? Math.min(count, 4) : count;
+  grid.innerHTML = Array.from({ length: skeletonCount }).map((_, index) => `
     <article class="media-card skeleton-card" style="--delay:${index * 45}ms">
       <div class="skeleton-preview"></div>
       <div class="media-info">
@@ -1814,11 +1866,14 @@ function renderGallerySkeleton(count = 8) {
       </div>
     </article>
   `).join("");
-  enhanceMotion(grid);
+  if (!isLowPowerMode()) enhanceMotion(grid);
 }
 
 async function loadMedia(page = galleryPage, { scrollToTop = false } = {}) {
   if (["following", "liked"].includes(currentPage)) setCurrentPage("discover");
+  galleryLoadController?.abort();
+  galleryLoadController = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const requestId = ++galleryRequestId;
   galleryMode = "main";
   galleryPage = Math.max(1, Number(page) || 1);
   renderGalleryHeading();
@@ -1847,21 +1902,25 @@ async function loadMedia(page = galleryPage, { scrollToTop = false } = {}) {
   params.set("limit", pageSize + 1);
   params.set("offset", (galleryPage - 1) * pageSize);
   try {
-    const data = await apiFetch(`/api/media?${params}`);
+    const data = await apiFetch(`/api/media?${params}`, galleryLoadController ? { signal: galleryLoadController.signal } : {});
+    if (requestId !== galleryRequestId) return;
     const rows = data.media || [];
     galleryHasNext = rows.length > pageSize;
     mediaItems = rows.slice(0, pageSize);
     renderMediaGrid();
-    if (scrollToTop) safeEl("gallery-grid")?.scrollIntoView({ behavior: userSettings().reduce_motion ? "auto" : "smooth", block: "start" });
+    if (scrollToTop) safeEl("gallery-grid")?.scrollIntoView({ behavior: isLowPowerMode() ? "auto" : "smooth", block: "start" });
   } catch (err) {
+    if (err.name === "AbortError" || requestId !== galleryRequestId) return;
     mediaItems = [];
     galleryHasNext = false;
     $("gallery-grid").innerHTML = "";
     setTextIfPresent("result-count", err.message || "Gallery failed to load");
     setEmptyState("Gallery check needed", "The gallery could not load posts. Use Checks or Refresh to test the live backend.");
   } finally {
-    galleryLoading = false;
-    updateGalleryPagination();
+    if (requestId === galleryRequestId) {
+      galleryLoading = false;
+      updateGalleryPagination();
+    }
   }
 }
 
@@ -2603,6 +2662,9 @@ async function restoreOwnMedia(id) {
 }
 
 async function loadPagedFeed(path, mode, page = 1, { scrollToTop = false } = {}) {
+  galleryLoadController?.abort();
+  galleryLoadController = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const requestId = ++galleryRequestId;
   galleryMode = mode;
   galleryPage = Math.max(1, Number(page) || 1);
   galleryLoading = true;
@@ -2618,22 +2680,26 @@ async function loadPagedFeed(path, mode, page = 1, { scrollToTop = false } = {})
     offset: String((galleryPage - 1) * galleryPageSize()),
   });
   try {
-    const data = await apiFetch(`${path}?${params}`);
+    const data = await apiFetch(`${path}?${params}`, galleryLoadController ? { signal: galleryLoadController.signal } : {});
+    if (requestId !== galleryRequestId) return;
     const rows = data.media || [];
     const pageSize = galleryPageSize();
     galleryHasNext = rows.length > pageSize;
     mediaItems = rows.slice(0, pageSize);
     renderMediaGrid();
-    if (scrollToTop) safeEl("gallery-grid")?.scrollIntoView({ behavior: userSettings().reduce_motion ? "auto" : "smooth", block: "start" });
+    if (scrollToTop) safeEl("gallery-grid")?.scrollIntoView({ behavior: isLowPowerMode() ? "auto" : "smooth", block: "start" });
   } catch (err) {
+    if (err.name === "AbortError" || requestId !== galleryRequestId) return;
     mediaItems = [];
     galleryHasNext = false;
     $("gallery-grid").innerHTML = "";
     setTextIfPresent("result-count", err.message || "Feed failed to load");
     setEmptyState("Feed check needed", "This feed could not load. Use Checks or Refresh to test the live backend.");
   } finally {
-    galleryLoading = false;
-    updateGalleryPagination();
+    if (requestId === galleryRequestId) {
+      galleryLoading = false;
+      updateGalleryPagination();
+    }
   }
 }
 
@@ -3692,8 +3758,20 @@ function startSilentChecks() {
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) runLiveChecks({ silent: true });
   });
-  setInterval(() => runLiveChecks({ silent: true }), LIVE_CHECK_INTERVAL_MS);
-  setInterval(() => { if (token) refreshMe().catch(() => {}); }, 120000);
+  const scheduleLiveCheck = () => {
+    window.setTimeout(async () => {
+      if (!document.hidden) await runLiveChecks({ silent: true }).catch(() => {});
+      scheduleLiveCheck();
+    }, isLowPowerMode() ? LOW_POWER_LIVE_CHECK_INTERVAL_MS : LIVE_CHECK_INTERVAL_MS);
+  };
+  const scheduleSessionRefresh = () => {
+    window.setTimeout(async () => {
+      if (token && !document.hidden) await refreshMe().catch(() => {});
+      scheduleSessionRefresh();
+    }, isLowPowerMode() ? 240000 : 120000);
+  };
+  scheduleLiveCheck();
+  scheduleSessionRefresh();
 }
 
 function checkUploadReadiness() {
@@ -3781,7 +3859,7 @@ function bindEvents() {
   ensureLiveControlButtons();
   bindKeyboardShortcuts();
   window.addEventListener("scroll", updateBackToTopVisibility, { passive: true });
-  on("back-to-top", "click", () => window.scrollTo({ top: 0, behavior: userSettings().reduce_motion ? "auto" : "smooth" }));
+  on("back-to-top", "click", () => window.scrollTo({ top: 0, behavior: isLowPowerMode() ? "auto" : "smooth" }));
   document.addEventListener("error", (event) => {
     const target = event.target;
     if (target?.tagName === "IMG") {
@@ -3864,11 +3942,11 @@ function bindEvents() {
   on("user-search-close", "click", () => $("user-search-dialog").close());
   on("user-search-input", "input", () => {
     clearTimeout(window.__userSearchTimer);
-    window.__userSearchTimer = setTimeout(searchUsers, 180);
+    window.__userSearchTimer = setTimeout(searchUsers, isLowPowerMode() ? 320 : 180);
   });
   on("users-page-query", "input", () => {
     clearTimeout(window.__userSearchTimer);
-    window.__userSearchTimer = setTimeout(searchUsers, 180);
+    window.__userSearchTimer = setTimeout(searchUsers, isLowPowerMode() ? 320 : 180);
   });
   on("friends-open", "click", openFriendsPage);
   on("friends-close", "click", () => $("friends-dialog").close());
@@ -4005,12 +4083,12 @@ function bindEvents() {
   ["uploader-filter", "min-size-filter", "max-size-filter"].forEach((id) => $(id).addEventListener("input", () => {
     clearTimeout(window.__advancedFilterTimer);
     renderActiveFilters();
-    window.__advancedFilterTimer = setTimeout(() => loadMedia(1), SEARCH_DEBOUNCE_MS);
+    window.__advancedFilterTimer = setTimeout(() => loadMedia(1), isLowPowerMode() ? 450 : SEARCH_DEBOUNCE_MS);
   }));
   $("search").addEventListener("input", () => {
     clearTimeout(window.__gallerySearchTimer);
     renderActiveFilters();
-    window.__gallerySearchTimer = setTimeout(() => loadMedia(1), SEARCH_DEBOUNCE_MS);
+    window.__gallerySearchTimer = setTimeout(() => loadMedia(1), isLowPowerMode() ? 450 : SEARCH_DEBOUNCE_MS);
   });
   on("users-page-results", "click", async (event) => {
     const profile = event.target.closest("[data-profile]");
@@ -4209,6 +4287,7 @@ function bindEvents() {
 }
 
 async function boot() {
+  applyRuntimePerformanceMode();
   bindEvents();
   setCurrentPage("discover");
   renderAuth();
@@ -4269,9 +4348,13 @@ boot();
 
     topbarButtons.forEach((button) => button.addEventListener('click', () => setTimeout(markActiveNavigation, 50), { passive: true }));
     markActiveNavigation();
-    setInterval(markActiveNavigation, 1500);
+    if (!isLowPowerMode()) {
+      setInterval(() => {
+        if (!document.hidden) markActiveNavigation();
+      }, 10000);
+    }
 
-    if ('IntersectionObserver' in window && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    if (!isLowPowerMode() && 'IntersectionObserver' in window && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       const seen = new WeakSet();
       const observer = new IntersectionObserver((entries) => {
         entries.forEach((entry) => {
@@ -4287,7 +4370,7 @@ boot();
         observer.observe(el);
       });
       scan();
-      new MutationObserver(scan).observe(document.body, { childList: true, subtree: true });
+      new MutationObserver(debounce(scan, 180)).observe(document.body, { childList: true, subtree: true });
     }
 
     document.addEventListener('keydown', (event) => {
@@ -4310,18 +4393,14 @@ boot();
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
   const WATCH_SELECTOR = [
     '.topbar', '.topbar-actions', '.brand', '.layout', '.sidebar', '.content', '.page-panel',
-    '.content-head', '.page-hero', '.discover-hero-shell', '.gallery-grid', '.media-card', '.media-info',
-    '.media-card-head', '.card-actions', '.action-row', '.modal-actions', '.detail-head-actions',
-    '.profile-actions', '.user-card-actions', '.content-actions', '.page-hero-actions', '.upload-ai-actions',
-    '.saved-view-actions', '.collection-card', '.collection-list', '.studio-item', '.studio-list', '.user-card',
-    '.user-results', '.saved-view-card', '.saved-views-list', '.mini-media-grid', '.detail-grid', '.detail-side',
-    '.detail-tools', '.detail-media', '.modal-shell', '.profile-showcase', '.profile-dashboard', '.profile-column',
-    '.profile-rail', '.profile-section-card', '.profile-insight-card', '.upload-queue-item', '.account-card',
-    '.sidebar-block', '.stats-grid', '.notice', '.empty-state', '.form-grid', '.field'
+    '.gallery-grid', '.media-card', '.media-info', '.media-card-head', '.card-actions',
+    '.action-row', '.modal-actions', '.detail-head-actions', '.profile-actions',
+    '.content-actions', '.collection-card', '.studio-item', '.user-card', '.saved-view-card',
+    '.detail-grid', '.detail-side', '.detail-tools', '.modal-shell', '.profile-showcase',
+    '.profile-section-card', '.profile-insight-card', '.upload-queue-item', '.account-card'
   ].join(',');
 
   let scheduled = false;
-  let observerReady = false;
 
   function computeScale() {
     const width = Math.max(320, window.visualViewport?.width || window.innerWidth || document.documentElement.clientWidth || 320);
@@ -4353,7 +4432,9 @@ boot();
   }
 
   function markOverflow(root) {
-    const scope = root && root.querySelectorAll ? root : document;
+    if (isLowPowerMode()) return;
+    const activePage = document.querySelector('.app-page:not([hidden])');
+    const scope = root && root.querySelectorAll ? root : (activePage || document);
     const nodes = new Set();
     if (scope instanceof HTMLElement && scope.matches(WATCH_SELECTOR)) nodes.add(scope);
     scope.querySelectorAll?.(WATCH_SELECTOR).forEach((node) => nodes.add(node));
@@ -4382,30 +4463,12 @@ boot();
     run(document);
     window.addEventListener('resize', () => schedule(document), { passive: true });
     window.addEventListener('orientationchange', () => schedule(document), { passive: true });
-    document.addEventListener('transitionend', (event) => schedule(event.target), { passive: true });
+    document.addEventListener('transitionend', (event) => {
+      if (!isLowPowerMode()) schedule(event.target);
+    }, { passive: true });
 
-    if ('ResizeObserver' in window && !observerReady) {
-      observerReady = true;
-      const resizeObserver = new ResizeObserver((entries) => {
-        for (const entry of entries) schedule(entry.target);
-      });
-      resizeObserver.observe(document.documentElement);
-      resizeObserver.observe(document.body);
-      document.querySelectorAll(WATCH_SELECTOR).forEach((node) => resizeObserver.observe(node));
-      new MutationObserver((mutations) => {
-        for (const mutation of mutations) {
-          mutation.addedNodes.forEach((node) => {
-            if (node instanceof HTMLElement) {
-              if (node.matches(WATCH_SELECTOR)) resizeObserver.observe(node);
-              node.querySelectorAll?.(WATCH_SELECTOR).forEach((child) => resizeObserver.observe(child));
-            }
-          });
-        }
-        schedule(document);
-      }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'class', 'style', 'open'] });
-    } else {
-      new MutationObserver(() => schedule(document)).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'class', 'style', 'open'] });
-    }
+    const scheduleActivePage = debounce(() => schedule(document.querySelector('.app-page:not([hidden])') || document), 180);
+    new MutationObserver(scheduleActivePage).observe(document.body, { childList: true, subtree: true });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true });
