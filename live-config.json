@@ -1,6 +1,6 @@
 {
-  "gallery_url": "https://pty-deck-organisms-sms.trycloudflare.com",
-  "status": "live",
+  "gallery_url": "",
+  "status": "offline",
   "local_urls": ["http://127.0.0.1:8788", "http://localhost:8788", "http://192.168.12.188:8788"],
-  "updated_at": "2026-05-08T16:23:55-05:00"
+  "updated_at": "2026-05-08T16:31:16-05:00"
 }
