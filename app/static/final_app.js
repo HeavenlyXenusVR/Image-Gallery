@@ -3809,6 +3809,7 @@ function closeTopDialog() {
   if (!dialog) return false;
   if (dialog.id === "detail-dialog") closeDetailDialog();
   else if (dialog.id === "slideshow-dialog") closeSlideshow();
+  else if (dialog.id === "upload-dialog") closeUploadDialog();
   else dialog.close();
   return true;
 }
@@ -4015,6 +4016,13 @@ function bindEvents() {
   $("settings-avatar-file").addEventListener("change", previewSelectedAvatar);
   $("upload-open").addEventListener("click", () => currentUser ? $("upload-dialog").showModal() : $("auth-dialog").showModal());
   if ($("upload-close")) $("upload-close").addEventListener("click", closeUploadDialog);
+  on("upload-dialog", "cancel", (event) => {
+    event.preventDefault();
+    closeUploadDialog();
+  });
+  on("upload-dialog", "click", (event) => {
+    if (event.target === safeEl("upload-dialog")) closeUploadDialog();
+  });
   $("upload-form").addEventListener("submit", submitUpload);
   on("upload-analyze", "click", () => analyzeUploadSelection({ apply: true, silent: false }));
   on("upload-auto-ai", "change", (event) => {

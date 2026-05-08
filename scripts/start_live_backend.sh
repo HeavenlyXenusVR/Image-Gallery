@@ -360,7 +360,9 @@ if ! backend_ready; then
   exit 1
 fi
 
-publish_offline_config
+# Keep the local config truthful while a tunnel is being created, but avoid
+# pushing a temporary offline state to GitHub right before the live URL push.
+write_offline_config
 
 if [[ "${TUNNEL_PROVIDER}" == "cloudflare" || "${TUNNEL_PROVIDER}" == "auto" ]]; then
   echo "Opening Cloudflare quick tunnel..."

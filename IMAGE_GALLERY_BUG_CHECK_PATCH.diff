@@ -1,0 +1,190 @@
+diff --git a/app/static/final_app.js b/app/static/final_app.js
+index d348537..a48cc38 100644
+--- a/app/static/final_app.js
++++ b/app/static/final_app.js
+@@ -3809,6 +3809,7 @@ function closeTopDialog() {
+   if (!dialog) return false;
+   if (dialog.id === "detail-dialog") closeDetailDialog();
+   else if (dialog.id === "slideshow-dialog") closeSlideshow();
++  else if (dialog.id === "upload-dialog") closeUploadDialog();
+   else dialog.close();
+   return true;
+ }
+@@ -4015,6 +4016,13 @@ function bindEvents() {
+   $("settings-avatar-file").addEventListener("change", previewSelectedAvatar);
+   $("upload-open").addEventListener("click", () => currentUser ? $("upload-dialog").showModal() : $("auth-dialog").showModal());
+   if ($("upload-close")) $("upload-close").addEventListener("click", closeUploadDialog);
++  on("upload-dialog", "cancel", (event) => {
++    event.preventDefault();
++    closeUploadDialog();
++  });
++  on("upload-dialog", "click", (event) => {
++    if (event.target === safeEl("upload-dialog")) closeUploadDialog();
++  });
+   $("upload-form").addEventListener("submit", submitUpload);
+   on("upload-analyze", "click", () => analyzeUploadSelection({ apply: true, silent: false }));
+   on("upload-auto-ai", "change", (event) => {
+diff --git a/scripts/install_live_backend_service.sh b/scripts/install_live_backend_service.sh
+index 4b795b0..ece3151 100755
+--- a/scripts/install_live_backend_service.sh
++++ b/scripts/install_live_backend_service.sh
+@@ -26,7 +26,7 @@ Wants=network-online.target
+ [Service]
+ Type=simple
+ WorkingDirectory=${ROOT_DIR}
+-Environment=GALLERY_SERVICE_START_BACKEND_IF_MISSING=0
++Environment=GALLERY_SERVICE_START_BACKEND_IF_MISSING=1
+ ExecStart=/usr/bin/env bash -lc 'cd "${ROOT_DIR}" && exec bash ./scripts/start_live_tunnel_service.sh 8788'
+ Restart=always
+ RestartSec=15
+diff --git a/scripts/start_live_backend.sh b/scripts/start_live_backend.sh
+index a9cfbf9..f3b8606 100755
+--- a/scripts/start_live_backend.sh
++++ b/scripts/start_live_backend.sh
+@@ -360,7 +360,9 @@ if ! backend_ready; then
+   exit 1
+ fi
+ 
+-publish_offline_config
++# Keep the local config truthful while a tunnel is being created, but avoid
++# pushing a temporary offline state to GitHub right before the live URL push.
++write_offline_config
+ 
+ if [[ "${TUNNEL_PROVIDER}" == "cloudflare" || "${TUNNEL_PROVIDER}" == "auto" ]]; then
+   echo "Opening Cloudflare quick tunnel..."
+diff --git a/scripts/start_live_tunnel_service.sh b/scripts/start_live_tunnel_service.sh
+index 416046c..003add8 100755
+--- a/scripts/start_live_tunnel_service.sh
++++ b/scripts/start_live_tunnel_service.sh
+@@ -9,6 +9,7 @@ CONFIG_FILE="${ROOT_DIR}/live-config.json"
+ LOG_DIR="${ROOT_DIR}/.runtime"
+ TUNNEL_LOG="${LOG_DIR}/cloudflared-service.log"
+ UVICORN_LOG="${LOG_DIR}/uvicorn-service-fallback.log"
++PID_FILE="${LOG_DIR}/live_tunnel_service.pid"
+ INSTANCE_LOCK_FILE="${LOG_DIR}/live-manager.lock"
+ AUTO_PUSH_CONFIG="${GALLERY_AUTO_PUSH_CONFIG:-1}"
+ ALLOW_FALLBACK_BACKEND="${GALLERY_SERVICE_START_BACKEND_IF_MISSING:-1}"
+@@ -29,6 +30,7 @@ GLOBAL_FAILURE_COOLDOWN_SECONDS="${GALLERY_CLOUDFLARE_FAILURE_COOLDOWN_SECONDS:-
+ GLOBAL_RATE_LIMIT_COOLDOWN_SECONDS="${GALLERY_CLOUDFLARE_RATE_LIMIT_COOLDOWN_SECONDS:-900}"
+ 
+ mkdir -p "${BIN_DIR}" "${LOG_DIR}" "${GLOBAL_TUNNEL_STATE_DIR}"
++echo "$$" > "${PID_FILE}"
+ 
+ current_live_url() {
+   CONFIG_FILE_PATH="${CONFIG_FILE}" python3 <<'PY'
+@@ -288,6 +290,7 @@ release_global_tunnel_slot() {
+ cleanup() {
+   release_instance_lock
+   release_global_tunnel_slot
++  rm -f "${PID_FILE}"
+   if [[ -n "${PUBLISHED_GALLERY_URL:-}" ]] && grep -Fq "\"gallery_url\": \"${PUBLISHED_GALLERY_URL}\"" "${CONFIG_FILE}" 2>/dev/null; then
+     write_offline_config
+     publish_config
+@@ -467,7 +470,10 @@ if ! backend_ready; then
+   exit 1
+ fi
+ 
+-publish_offline_config
++# Mark the local config offline while the public tunnel is still being created,
++# but do not push this temporary state to GitHub Pages. This avoids an
++# unnecessary offline commit/push immediately before the live URL commit.
++write_offline_config
+ 
+ if [[ "${TUNNEL_PROVIDER}" == "cloudflare" || "${TUNNEL_PROVIDER}" == "auto" ]]; then
+   if start_named_cloudflare_tunnel "${CLOUDFLARE_PUBLIC_URL}" "${CLOUDFLARE_TUNNEL_TOKEN}" "/api/health"; then
+diff --git a/scripts/stop_live_backend.sh b/scripts/stop_live_backend.sh
+index 233e377..2738259 100755
+--- a/scripts/stop_live_backend.sh
++++ b/scripts/stop_live_backend.sh
+@@ -2,23 +2,76 @@
+ set -euo pipefail
+ 
+ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+-PID_FILE="${ROOT_DIR}/.runtime/live_backend.pid"
++RUNTIME_DIR="${ROOT_DIR}/.runtime"
++SERVICE_NAME="image-gallery-live-backend.service"
++PID_FILES=(
++  "${RUNTIME_DIR}/live_backend.pid"
++  "${RUNTIME_DIR}/live_tunnel_service.pid"
++)
+ 
+-if [[ ! -f "${PID_FILE}" ]]; then
+-  echo "No live backend pid file found."
+-  exit 0
+-fi
++run_systemctl() {
++  if command -v systemctl >/dev/null 2>&1; then
++    systemctl "$@"
++  elif command -v flatpak-spawn >/dev/null 2>&1; then
++    flatpak-spawn --host systemctl "$@"
++  else
++    return 1
++  fi
++}
+ 
+-PID="$(cat "${PID_FILE}")"
+-if [[ -z "${PID}" ]]; then
+-  rm -f "${PID_FILE}"
+-  echo "Live backend pid file was empty."
+-  exit 0
+-fi
++stop_user_service() {
++  if run_systemctl --user is-active --quiet "${SERVICE_NAME}" >/dev/null 2>&1; then
++    echo "Stopping ${SERVICE_NAME}..."
++    run_systemctl --user stop "${SERVICE_NAME}" >/dev/null 2>&1 || true
++  fi
++}
++
++stop_pid_file() {
++  local file="$1"
++  if [[ ! -f "${file}" ]]; then
++    return 1
++  fi
++
++  local pid
++  pid="$(cat "${file}" 2>/dev/null || true)"
++  if [[ -z "${pid}" || ! "${pid}" =~ ^[0-9]+$ ]]; then
++    rm -f "${file}"
++    echo "Removed invalid pid file ${file}."
++    return 0
++  fi
++
++  if kill -0 "${pid}" >/dev/null 2>&1; then
++    echo "Stopping Image Gallery live process ${pid} from ${file##*/}..."
++    kill "${pid}" >/dev/null 2>&1 || true
++    for _ in {1..30}; do
++      if ! kill -0 "${pid}" >/dev/null 2>&1; then
++        break
++      fi
++      sleep 0.2
++    done
++    if kill -0 "${pid}" >/dev/null 2>&1; then
++      echo "Process ${pid} did not exit after TERM; forcing it down."
++      kill -KILL "${pid}" >/dev/null 2>&1 || true
++    fi
++  else
++    echo "Live process ${pid} from ${file##*/} was not running."
++  fi
++
++  rm -f "${file}"
++  return 0
++}
++
++stop_user_service
++
++stopped=0
++for file in "${PID_FILES[@]}"; do
++  if stop_pid_file "${file}"; then
++    stopped=1
++  fi
++done
+ 
+-if kill "${PID}" >/dev/null 2>&1; then
+-  echo "Stopped live backend launcher ${PID}."
++if [[ "${stopped}" != "1" ]]; then
++  echo "No Image Gallery live backend pid files found."
+ else
+-  echo "Live backend launcher ${PID} was not running."
++  echo "Image Gallery live backend/tunnel stop request complete."
+ fi
+-rm -f "${PID_FILE}"

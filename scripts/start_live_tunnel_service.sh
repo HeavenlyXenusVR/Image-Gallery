@@ -9,6 +9,7 @@ CONFIG_FILE="${ROOT_DIR}/live-config.json"
 LOG_DIR="${ROOT_DIR}/.runtime"
 TUNNEL_LOG="${LOG_DIR}/cloudflared-service.log"
 UVICORN_LOG="${LOG_DIR}/uvicorn-service-fallback.log"
+PID_FILE="${LOG_DIR}/live_tunnel_service.pid"
 INSTANCE_LOCK_FILE="${LOG_DIR}/live-manager.lock"
 AUTO_PUSH_CONFIG="${GALLERY_AUTO_PUSH_CONFIG:-1}"
 ALLOW_FALLBACK_BACKEND="${GALLERY_SERVICE_START_BACKEND_IF_MISSING:-1}"
@@ -29,6 +30,7 @@ GLOBAL_FAILURE_COOLDOWN_SECONDS="${GALLERY_CLOUDFLARE_FAILURE_COOLDOWN_SECONDS:-
 GLOBAL_RATE_LIMIT_COOLDOWN_SECONDS="${GALLERY_CLOUDFLARE_RATE_LIMIT_COOLDOWN_SECONDS:-900}"
 
 mkdir -p "${BIN_DIR}" "${LOG_DIR}" "${GLOBAL_TUNNEL_STATE_DIR}"
+echo "$$" > "${PID_FILE}"
 
 current_live_url() {
   CONFIG_FILE_PATH="${CONFIG_FILE}" python3 <<'PY'
@@ -288,6 +290,7 @@ release_global_tunnel_slot() {
 cleanup() {
   release_instance_lock
   release_global_tunnel_slot
+  rm -f "${PID_FILE}"
   if [[ -n "${PUBLISHED_GALLERY_URL:-}" ]] && grep -Fq "\"gallery_url\": \"${PUBLISHED_GALLERY_URL}\"" "${CONFIG_FILE}" 2>/dev/null; then
     write_offline_config
     publish_config
@@ -467,7 +470,10 @@ if ! backend_ready; then
   exit 1
 fi
 
-publish_offline_config
+# Mark the local config offline while the public tunnel is still being created,
+# but do not push this temporary state to GitHub Pages. This avoids an
+# unnecessary offline commit/push immediately before the live URL commit.
+write_offline_config
 
 if [[ "${TUNNEL_PROVIDER}" == "cloudflare" || "${TUNNEL_PROVIDER}" == "auto" ]]; then
   if start_named_cloudflare_tunnel "${CLOUDFLARE_PUBLIC_URL}" "${CLOUDFLARE_TUNNEL_TOKEN}" "/api/health"; then
