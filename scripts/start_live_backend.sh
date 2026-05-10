@@ -14,6 +14,8 @@ TUNNEL_LOG="${LOG_DIR}/cloudflared.log"
 PID_FILE="${LOG_DIR}/live_backend.pid"
 INSTANCE_LOCK_FILE="${LOG_DIR}/live-manager.lock"
 AUTO_PUSH_CONFIG="${GALLERY_AUTO_PUSH_CONFIG:-1}"
+CONFIG_PUSH_COOLDOWN_SECONDS="${GALLERY_CONFIG_PUSH_COOLDOWN_SECONDS:-120}"
+LAST_PUSH_FILE="${LOG_DIR}/last-live-config-push"
 TUNNEL_PROVIDER="${GALLERY_TUNNEL_PROVIDER:-auto}"
 TUNNEL_READY_ATTEMPTS="${GALLERY_TUNNEL_READY_ATTEMPTS:-180}"
 
@@ -139,7 +141,8 @@ write_config() {
   local gallery_url="$1"
   local local_urls
   local_urls="$(local_urls_json)"
-  cat > "${CONFIG_FILE}" <<EOF
+  tmp_config="${CONFIG_FILE}.tmp.$$"
+  cat > "${tmp_config}" <<EOF
 {
   "gallery_url": "${gallery_url}",
   "status": "live",
@@ -147,12 +150,14 @@ write_config() {
   "updated_at": "$(date -Is)"
 }
 EOF
+  mv "${tmp_config}" "${CONFIG_FILE}"
 }
 
 write_offline_config() {
   local local_urls
   local_urls="$(local_urls_json)"
-  cat > "${CONFIG_FILE}" <<EOF
+  tmp_config="${CONFIG_FILE}.tmp.$$"
+  cat > "${tmp_config}" <<EOF
 {
   "gallery_url": "",
   "status": "offline",
@@ -160,6 +165,7 @@ write_offline_config() {
   "updated_at": "$(date -Is)"
 }
 EOF
+  mv "${tmp_config}" "${CONFIG_FILE}"
 }
 
 run_host_git() {
@@ -184,6 +190,13 @@ publish_config() {
   if run_host_git diff --quiet -- live-config.json; then
     return
   fi
+  local now last_push
+  now="$(date +%s)"
+  last_push="$(cat "${LAST_PUSH_FILE}" 2>/dev/null || echo 0)"
+  if [[ "$((now - last_push))" -lt "${CONFIG_PUSH_COOLDOWN_SECONDS}" ]]; then
+    echo "Skipping live-config auto-push; last push was less than ${CONFIG_PUSH_COOLDOWN_SECONDS}s ago."
+    return
+  fi
   if ! GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false run_host_git ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
     echo "Skipping live-config auto-push because GitHub auth is unavailable; local file was still updated."
     return
@@ -191,7 +204,7 @@ publish_config() {
   echo "Publishing updated live-config.json to GitHub Pages..."
   run_host_git add live-config.json
   run_host_git commit -m "Update live backend URL" -- live-config.json || true
-  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false run_host_git push origin main || echo "Could not push live-config.json automatically. Push it manually when convenient." >&2
+  if GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false run_host_git push origin main; then date +%s > "${LAST_PUSH_FILE}"; else echo "Could not push live-config.json automatically. Push it manually when convenient." >&2; fi
 }
 
 publish_offline_config() {

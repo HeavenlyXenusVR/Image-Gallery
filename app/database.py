@@ -125,25 +125,30 @@ class GalleryDatabase:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.pool: aiomysql.Pool | None = None
+        self._connect_lock = asyncio.Lock()
         self._blob_lock = asyncio.Lock()
         configured_chunk = int(getattr(settings, "db_blob_chunk_bytes", 8 * 1024 * 1024) or 0)
         self.media_chunk_bytes = max(1024 * 1024, min(configured_chunk, 16 * 1024 * 1024))
 
     async def connect(self) -> None:
-        await self._ensure_schema()
-        await self.ensure_packet_limit()
-        self.pool = await aiomysql.create_pool(
-            host=self.settings.db_host,
-            port=self.settings.db_port,
-            user=self.settings.db_user,
-            password=self.settings.db_password,
-            db=self.settings.db_schema,
-            autocommit=True,
-            minsize=1,
-            maxsize=10,
-            pool_recycle=180,
-        )
-        await self.ensure_tables()
+        async with self._connect_lock:
+            if self.pool and not getattr(self.pool, "closed", False):
+                return
+            await self._ensure_schema()
+            await self.ensure_packet_limit()
+            self.pool = await aiomysql.create_pool(
+                host=self.settings.db_host,
+                port=self.settings.db_port,
+                user=self.settings.db_user,
+                password=self.settings.db_password,
+                db=self.settings.db_schema,
+                autocommit=True,
+                minsize=int(getattr(self.settings, "db_pool_min_size", 1) or 1),
+                maxsize=int(getattr(self.settings, "db_pool_max_size", 8) or 8),
+                pool_recycle=int(getattr(self.settings, "db_pool_recycle_seconds", 180) or 180),
+                connect_timeout=int(getattr(self.settings, "db_connect_timeout_seconds", 10) or 10),
+            )
+            await self.ensure_tables()
 
     async def close(self) -> None:
         if self.pool:
@@ -174,6 +179,7 @@ class GalleryDatabase:
             user=self.settings.db_user,
             password=self.settings.db_password,
             autocommit=True,
+            connect_timeout=int(getattr(self.settings, "db_connect_timeout_seconds", 10) or 10),
         )
         try:
             async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -197,6 +203,7 @@ class GalleryDatabase:
             user=self.settings.db_user,
             password=self.settings.db_password,
             autocommit=True,
+            connect_timeout=int(getattr(self.settings, "db_connect_timeout_seconds", 10) or 10),
         )
         try:
             async with conn.cursor() as cur:
@@ -996,6 +1003,63 @@ class GalleryDatabase:
                             except Exception:
                                 pass
                         raise
+
+    async def get_media_file_info(self, media_id: int) -> dict[str, Any] | None:
+        """Return DB-backed file metadata without loading the BLOB into Python memory."""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT f.id, f.sha256, f.mime_type, f.original_filename, f.media_kind, f.file_size,
+                           OCTET_LENGTH(f.content) AS inline_size
+                    FROM media_files f
+                    JOIN media_items m ON m.media_file_id=f.id
+                    WHERE m.id=%s
+                    """,
+                    (media_id,),
+                )
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+    async def get_media_file_prefix(self, media_id: int, limit: int = 1048576) -> bytes:
+        """Read only the first bytes needed for cheap dimension sniffing."""
+        info = await self.get_media_file_info(media_id)
+        if not info:
+            return b""
+        file_id = int(info["id"])
+        max_bytes = max(4096, min(int(limit or 1048576), 2 * 1024 * 1024))
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                if int(info.get("inline_size") or 0) > 0:
+                    await cur.execute("SELECT SUBSTRING(content, 1, %s) AS content FROM media_files WHERE id=%s", (max_bytes, file_id))
+                    row = await cur.fetchone() or {}
+                    return bytes(row.get("content") or b"")
+                await cur.execute("SELECT content FROM media_file_chunks WHERE file_id=%s ORDER BY chunk_index ASC LIMIT 1", (file_id,))
+                row = await cur.fetchone() or {}
+                return bytes(row.get("content") or b"")[:max_bytes]
+
+    async def stream_media_file_content(self, file_id: int):
+        """Yield DB-backed media content in chunks for StreamingResponse."""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute("SELECT content FROM media_files WHERE id=%s", (file_id,))
+                row = await cur.fetchone() or {}
+                inline = row.get("content")
+                if inline:
+                    yield bytes(inline)
+                    return
+                await cur.execute(
+                    "SELECT content FROM media_file_chunks WHERE file_id=%s ORDER BY chunk_index ASC",
+                    (file_id,),
+                )
+                while True:
+                    rows = await cur.fetchmany(16)
+                    if not rows:
+                        break
+                    for chunk in rows:
+                        payload = chunk.get("content") or b""
+                        if payload:
+                            yield bytes(payload)
 
     async def get_media_file(self, media_id: int) -> dict[str, Any] | None:
         async with self.pool.acquire() as conn:

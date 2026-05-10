@@ -15,6 +15,8 @@ const LIVE_CHECK_INTERVAL_MS = 15000;
 const LOW_POWER_LIVE_CHECK_INTERVAL_MS = 45000;
 const SITE_BACKGROUND_REFRESH_MS = 5 * 60 * 1000;
 const SEARCH_DEBOUNCE_MS = 250;
+const API_REQUEST_TIMEOUT_MS = 30000;
+const LIVE_CHECK_MIN_GAP_MS = 5000;
 const DEFAULT_USER_SETTINGS = {
   theme_mode: "system",
   accent_color: "#37c9a7",
@@ -91,6 +93,8 @@ let revealObserver = null;
 let detectedLowPowerDevice = null;
 let galleryLoadController = null;
 let galleryRequestId = 0;
+let liveCheckInFlight = null;
+let lastLiveCheckAt = 0;
 
 const $ = (id) => document.getElementById(id);
 
@@ -410,23 +414,36 @@ async function refreshRemoteBackendConfig({ force = false } = {}) {
   }
 }
 
+function withRequestTimeout(options = {}, timeoutMs = API_REQUEST_TIMEOUT_MS) {
+  if (options.signal || !window.AbortController || timeoutMs <= 0) return { options, cleanup: () => {} };
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  return {
+    options: { ...options, signal: controller.signal },
+    cleanup: () => window.clearTimeout(timer),
+  };
+}
+
 async function apiFetch(path, options = {}, attempt = 0) {
   const headers = new Headers(options.headers || {});
   if (token) headers.set("Authorization", `Bearer ${token}`);
   let response;
+  const timeout = withRequestTimeout(options);
   try {
-    response = await fetch(apiUrl(path), { ...options, headers });
+    response = await fetch(apiUrl(path), { ...timeout.options, headers });
   } catch (err) {
-    if (err?.name === "AbortError") throw err;
+    if (err?.name === "AbortError" && options.signal) throw err;
     if (REMOTE_MODE && attempt === 0) {
       try {
         await refreshRemoteBackendConfig({ force: true });
         return apiFetch(path, options, attempt + 1);
       } catch (_refreshErr) {}
     }
-    const error = new Error(`Backend unreachable: ${err.message || err}`);
+    const error = new Error(err?.name === "AbortError" ? "Backend request timed out." : `Backend unreachable: ${err.message || err}`);
     error.status = 0;
     throw error;
+  } finally {
+    timeout.cleanup();
   }
   const text = await response.text();
   let data = {};
@@ -450,19 +467,22 @@ async function apiBlobFetch(path, options = {}, attempt = 0) {
   const headers = new Headers(options.headers || {});
   if (token) headers.set("Authorization", `Bearer ${token}`);
   let response;
+  const timeout = withRequestTimeout(options, 60000);
   try {
-    response = await fetch(apiUrl(path), { ...options, headers });
+    response = await fetch(apiUrl(path), { ...timeout.options, headers });
   } catch (err) {
-    if (err?.name === "AbortError") throw err;
+    if (err?.name === "AbortError" && options.signal) throw err;
     if (REMOTE_MODE && attempt === 0) {
       try {
         await refreshRemoteBackendConfig({ force: true });
         return apiBlobFetch(path, options, attempt + 1);
       } catch (_refreshErr) {}
     }
-    const error = new Error(`Backend unreachable: ${err.message || err}`);
+    const error = new Error(err?.name === "AbortError" ? "Backend file request timed out." : `Backend unreachable: ${err.message || err}`);
     error.status = 0;
     throw error;
+  } finally {
+    timeout.cleanup();
   }
   if (REMOTE_MODE && attempt === 0 && response.status >= 500) {
     try {
@@ -3372,8 +3392,8 @@ function ensureUploadControlFields() {
   else form.appendChild(wrapper);
 }
 
-function closeUploadDialog() {
-  if (uploadInFlight) return;
+function closeUploadDialog({ force = false } = {}) {
+  if (uploadInFlight && !force) return;
   setNotice("upload-error", "");
   const form = safeEl("upload-form");
   if (form) form.reset();
@@ -3413,6 +3433,7 @@ function resetUploadProgress() {
   const button = safeEl("upload-submit");
   if (button) {
     button.classList.remove("is-uploading");
+    button.disabled = false;
     button.textContent = "Post";
   }
 }
@@ -3652,7 +3673,7 @@ async function submitUpload(event) {
     }
     setUploadProgress(100, "Saved. Refreshing gallery");
     uploadInFlight = false;
-    closeUploadDialog();
+    closeUploadDialog({ force: true });
     focusGalleryOnNewestUploads();
     await refreshAll();
     const firstUploadedId = uploadedIds.find(Boolean);
@@ -3733,23 +3754,32 @@ function renderLiveChecks(data, silent = false) {
   return { missing };
 }
 
-async function runLiveChecks({ silent = false } = {}) {
+async function runLiveChecks({ silent = false, force = false } = {}) {
+  const now = Date.now();
+  if (silent && !force && liveCheckInFlight) return liveCheckInFlight;
+  if (silent && !force && now - lastLiveCheckAt < LIVE_CHECK_MIN_GAP_MS) return latestLiveSnapshot;
   if (!navigator.onLine) {
     renderLiveChecks({ checks: [{ label: "Browser network", ok: false, severity: "error", detail: "Your browser reports no internet connection." }] }, silent);
     return;
   }
-  try {
-    const data = await apiFetch("/api/live/checks");
-    const rendered = renderLiveChecks(data, silent);
-    if (!silent && rendered.missing > 0 && isSiteOwner() && confirm("Run a safe DB file migration batch now? This migrates up to 10 legacy disk files to DB blobs and may take a moment.")) {
-      const migrated = await apiFetch("/api/live/migrate", { method: "POST" });
-      alert(`Migration batch complete. Migrated: ${migrated.migrated?.migrated || 0}. Missing after batch: ${migrated.snapshot?.missing_db_files || 0}.`);
-      return runLiveChecks({ silent: true });
+  liveCheckInFlight = (async () => {
+    try {
+      lastLiveCheckAt = Date.now();
+      const data = await apiFetch("/api/live/checks");
+      const rendered = renderLiveChecks(data, silent);
+      if (!silent && rendered.missing > 0 && isSiteOwner() && confirm("Run a safe DB file migration batch now? This migrates up to 10 legacy disk files to DB blobs and may take a moment.")) {
+        const migrated = await apiFetch("/api/live/migrate", { method: "POST" });
+        alert(`Migration batch complete. Migrated: ${migrated.migrated?.migrated || 0}. Missing after batch: ${migrated.snapshot?.missing_db_files || 0}.`);
+        return runLiveChecks({ silent: true, force: true });
+      }
+      return data;
+    } catch (err) {
+      renderLiveChecks({ checks: [{ label: "Backend", ok: false, severity: "error", detail: err.message }] }, silent);
+    } finally {
+      liveCheckInFlight = null;
     }
-    return data;
-  } catch (err) {
-    renderLiveChecks({ checks: [{ label: "Backend", ok: false, severity: "error", detail: err.message }] }, silent);
-  }
+  })();
+  return liveCheckInFlight;
 }
 
 function startSilentChecks() {

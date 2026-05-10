@@ -21,7 +21,7 @@ from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -193,6 +193,21 @@ class ReportRequest(BaseModel):
     reason: str
     details: str | None = None
 
+
+async def _analyze_media_safely(**kwargs: Any):
+    """Run the existing smart metadata analyzer outside the event loop.
+
+    Local vision/Ollama/OpenAI calls are synchronous in ai_metadata.py; sending them
+    through a worker thread keeps uploads, previews, and live checks responsive.
+    """
+    timeout = max(15, int(kwargs.get("ai_timeout_seconds") or settings.ai_timeout_seconds or 45) + 10)
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(analyze_media_bytes, **kwargs), timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("Media AI analysis timed out after %ss; falling back to local heuristics.", timeout)
+        fallback_kwargs = dict(kwargs)
+        fallback_kwargs["ai_enabled"] = False
+        return await asyncio.to_thread(analyze_media_bytes, **fallback_kwargs)
 
 def _jsonable(value: Any) -> Any:
     if isinstance(value, list):
@@ -482,9 +497,9 @@ async def _background_candidate_rows() -> list[dict[str, Any]]:
             if row.get("mime_type") and not str(row["mime_type"]).startswith("image/"):
                 continue
             media_id = int(row["id"])
-            file_row = await db.get_media_file(media_id)
-            if file_row and file_row.get("content"):
-                dimensions = _background_dimensions_from_bytes(file_row["content"])
+            prefix = await db.get_media_file_prefix(media_id)
+            if prefix:
+                dimensions = _background_dimensions_from_bytes(prefix)
             else:
                 legacy = _legacy_upload_path(row.get("storage_path"))
                 dimensions = _background_dimensions_from_path(legacy) if legacy and legacy.exists() else None
@@ -850,7 +865,8 @@ def _safe_extension(filename: str, mime_type: str) -> str:
 
 
 async def _read_validated_upload(upload: UploadFile, max_bytes: int, *, image_only: bool = False) -> dict[str, Any]:
-    content = await upload.read()
+    # Read only one byte past the allowed size so oversized uploads do not exhaust RAM.
+    content = await upload.read(max_bytes + 1)
     if not content:
         raise HTTPException(status_code=400, detail="Upload is empty.")
     if len(content) > max_bytes:
@@ -900,6 +916,8 @@ async def lifespan(app: FastAPI):
         await migration_task
     except asyncio.CancelledError:
         pass
+    except Exception as exc:
+        logger.warning("Legacy migration task ended during shutdown: %s", exc)
     await db.close()
 
 
@@ -1526,7 +1544,7 @@ async def upload_media(
         raise HTTPException(status_code=400, detail="Visibility must be public, unlisted, or private.")
     _rate_limit(f"upload:{auth['id']}", limit=60, window_seconds=3600)
     uploaded = await _read_validated_upload(file, settings.max_upload_bytes)
-    analysis = analyze_media_bytes(
+    analysis = await _analyze_media_safely(
         content=uploaded["content"],
         filename=uploaded["original_filename"],
         mime_type=uploaded["mime_type"],
@@ -1631,7 +1649,7 @@ async def analyze_media_upload(
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
     _rate_limit(f"analyze:{auth['id']}", limit=120, window_seconds=3600)
     uploaded = await _read_validated_upload(file, settings.max_upload_bytes)
-    analysis = analyze_media_bytes(
+    analysis = await _analyze_media_safely(
         content=uploaded["content"],
         filename=uploaded["original_filename"],
         mime_type=uploaded["mime_type"],
@@ -1801,18 +1819,25 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
         if not adult_ok:
             raise HTTPException(status_code=403, detail="Age verification required for this 18+ post.")
 
-    file_row = await db.get_media_file(media_id)
-    if file_row:
-        digest = hashlib.sha256(file_row["content"]).hexdigest()
-        if digest != file_row["sha256"]:
-            raise HTTPException(status_code=500, detail="Stored file failed hash verification.")
-        headers = {"X-Content-SHA256": digest}
+    file_info = await db.get_media_file_info(media_id)
+    if file_info:
+        headers = {
+            "X-Content-SHA256": str(file_info.get("sha256") or ""),
+            "Accept-Ranges": "none",
+        }
+        if int(file_info.get("file_size") or 0) > 0:
+            headers["Content-Length"] = str(int(file_info["file_size"]))
         if as_download:
             await db.increment_counter(media_id, "downloads")
-            headers["Content-Disposition"] = _download_filename(file_row["original_filename"])
+            headers["Content-Disposition"] = _download_filename(file_info.get("original_filename"))
+            headers["Cache-Control"] = "private, max-age=0, no-cache"
         else:
             headers["Cache-Control"] = "public, max-age=86400"
-        return Response(content=file_row["content"], media_type=file_row["mime_type"], headers=headers)
+        return StreamingResponse(
+            db.stream_media_file_content(int(file_info["id"])),
+            media_type=file_info.get("mime_type") or "application/octet-stream",
+            headers=headers,
+        )
 
     legacy = _legacy_upload_path(item.get("storage_path"))
     if legacy:

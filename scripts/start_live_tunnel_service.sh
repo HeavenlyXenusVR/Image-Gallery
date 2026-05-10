@@ -12,6 +12,8 @@ UVICORN_LOG="${LOG_DIR}/uvicorn-service-fallback.log"
 PID_FILE="${LOG_DIR}/live_tunnel_service.pid"
 INSTANCE_LOCK_FILE="${LOG_DIR}/live-manager.lock"
 AUTO_PUSH_CONFIG="${GALLERY_AUTO_PUSH_CONFIG:-1}"
+CONFIG_PUSH_COOLDOWN_SECONDS="${GALLERY_CONFIG_PUSH_COOLDOWN_SECONDS:-120}"
+LAST_PUSH_FILE="${LOG_DIR}/last-live-config-push"
 ALLOW_FALLBACK_BACKEND="${GALLERY_SERVICE_START_BACKEND_IF_MISSING:-1}"
 TUNNEL_PROVIDER="${GALLERY_TUNNEL_PROVIDER:-cloudflare}"
 PAGES_ORIGIN="${GALLERY_PAGES_ORIGIN:-https://heavenlyxenusvr.github.io}"
@@ -124,7 +126,8 @@ write_config() {
   local gallery_url="$1"
   local local_urls
   local_urls="$(local_urls_json)"
-  cat > "${CONFIG_FILE}" <<JSON
+  tmp_config="${CONFIG_FILE}.tmp.$$"
+  cat > "${tmp_config}" <<JSON
 {
   "gallery_url": "${gallery_url}",
   "status": "live",
@@ -132,12 +135,14 @@ write_config() {
   "updated_at": "$(date -Is)"
 }
 JSON
+  mv "${tmp_config}" "${CONFIG_FILE}"
 }
 
 write_offline_config() {
   local local_urls
   local_urls="$(local_urls_json)"
-  cat > "${CONFIG_FILE}" <<JSON
+  tmp_config="${CONFIG_FILE}.tmp.$$"
+  cat > "${tmp_config}" <<JSON
 {
   "gallery_url": "",
   "status": "offline",
@@ -145,6 +150,7 @@ write_offline_config() {
   "updated_at": "$(date -Is)"
 }
 JSON
+  mv "${tmp_config}" "${CONFIG_FILE}"
 }
 
 run_git() {
@@ -172,6 +178,13 @@ publish_config() {
     echo "live-config.json already matches the current tunnel URL."
     return
   fi
+  local now last_push
+  now="$(date +%s)"
+  last_push="$(cat "${LAST_PUSH_FILE}" 2>/dev/null || echo 0)"
+  if [[ "$((now - last_push))" -lt "${CONFIG_PUSH_COOLDOWN_SECONDS}" ]]; then
+    echo "Skipping live-config auto-push; last push was less than ${CONFIG_PUSH_COOLDOWN_SECONDS}s ago."
+    return
+  fi
   if ! GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false run_git ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
     echo "Skipping live-config auto-push because GitHub auth is unavailable; local file was still updated."
     return
@@ -179,7 +192,7 @@ publish_config() {
   echo "Publishing updated live-config.json to GitHub Pages..."
   run_git add live-config.json
   run_git commit -m "Update live backend URL" -- live-config.json || true
-  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false run_git push origin main || echo "Could not push live-config.json automatically." >&2
+  if GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false run_git push origin main; then date +%s > "${LAST_PUSH_FILE}"; else echo "Could not push live-config.json automatically." >&2; fi
 }
 
 publish_offline_config() {

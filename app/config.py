@@ -53,6 +53,11 @@ class Settings:
     db_user: str
     db_password: str
     db_schema: str
+    db_pool_min_size: int
+    db_pool_max_size: int
+    db_pool_recycle_seconds: int
+    db_connect_timeout_seconds: int
+    db_query_timeout_seconds: int
     session_secret: str
     api_token_ttl_seconds: int
     cors_allowed_origins: list[str]
@@ -98,6 +103,11 @@ def load_settings() -> Settings:
         db_user=_env("GALLERY_DB_USER") or _env("DB_USER") or _env("MYSQL_USER") or "botuser",
         db_password=_env("GALLERY_DB_PASSWORD") or _env("DB_PASSWORD") or _env("MYSQL_PASSWORD") or "bot_logins",
         db_schema=_env("GALLERY_DB_SCHEMA", "image_gallery"),
+        db_pool_min_size=max(1, int(_env("GALLERY_DB_POOL_MIN_SIZE", "1"))),
+        db_pool_max_size=max(2, int(_env("GALLERY_DB_POOL_MAX_SIZE", "8"))),
+        db_pool_recycle_seconds=max(30, int(_env("GALLERY_DB_POOL_RECYCLE_SECONDS", "180"))),
+        db_connect_timeout_seconds=max(3, int(_env("GALLERY_DB_CONNECT_TIMEOUT_SECONDS", "10"))),
+        db_query_timeout_seconds=max(5, int(_env("GALLERY_DB_QUERY_TIMEOUT_SECONDS", "45"))),
         session_secret=_env("GALLERY_SESSION_SECRET", "change-this-gallery-secret"),
         api_token_ttl_seconds=int(_env("GALLERY_API_TOKEN_TTL_SECONDS", "1209600")),
         cors_allowed_origins=_env_csv("GALLERY_CORS_ALLOWED_ORIGINS"),
