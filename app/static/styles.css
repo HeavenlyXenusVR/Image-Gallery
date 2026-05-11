@@ -3575,3 +3575,704 @@ button,
     padding-right: 12px !important;
   }
 }
+
+/* =====================================================================
+   Xenus Global UI Density + Responsive Layout Patch
+   Fixes cramped desktop modals, upload/settings squash, and oversized mobile UI.
+   ===================================================================== */
+
+:root {
+  --xenus-page-pad: clamp(10px, 1.6vw, 22px);
+  --xenus-card-pad: clamp(12px, 1.5vw, 20px);
+  --xenus-field-gap: clamp(10px, 1.2vw, 16px);
+  --xenus-modal-width: min(1120px, calc(100vw - 32px));
+  --xenus-modal-pad: clamp(14px, 1.6vw, 24px);
+  --xenus-control-h: clamp(38px, 4.2vw, 46px);
+  --xenus-radius: clamp(12px, 1.4vw, 22px);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box !important;
+}
+
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden !important;
+}
+
+body {
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+
+input,
+select,
+textarea {
+  min-height: var(--xenus-control-h) !important;
+  line-height: 1.35 !important;
+}
+
+textarea {
+  min-height: 96px !important;
+  resize: vertical !important;
+}
+
+button,
+.button-link {
+  min-height: 38px;
+  line-height: 1.2;
+  white-space: normal;
+}
+
+/* General grid anti-squash */
+.layout,
+.content,
+.sidebar,
+.panel,
+.sidebar-block,
+.stats-grid,
+.media-card,
+.media-info,
+.collection-card,
+.studio-item,
+.user-card,
+.profile-hero,
+.profile-showcase,
+.modal,
+.modal-shell,
+.form-grid,
+.upload-controls-grid,
+.detail-grid,
+.profile-dashboard,
+.profile-column,
+.profile-rail {
+  min-width: 0 !important;
+}
+
+.media-info h2,
+.media-info p,
+.field span,
+.field small,
+.muted,
+.card-actions,
+.action-row,
+.modal-actions,
+.upload-ai-actions,
+.upload-file-summary,
+.upload-progress-meta,
+.profile-showcase-copy,
+.profile-headline {
+  overflow-wrap: anywhere !important;
+}
+
+/* Main page spacing so desktop does not feel crushed */
+.layout {
+  width: min(1680px, calc(100vw - var(--xenus-page-pad) * 2)) !important;
+  gap: clamp(14px, 1.5vw, 24px) !important;
+}
+
+.sidebar-block,
+.stats-grid,
+.account-card,
+.panel,
+.media-card,
+.collection-card,
+.studio-item,
+.user-card {
+  border-radius: var(--xenus-radius) !important;
+}
+
+.sidebar-block,
+.account-card,
+.panel {
+  padding: var(--xenus-card-pad) !important;
+}
+
+/* Universal dialog sizing */
+dialog.modal[open] {
+  width: min(1180px, calc(100vw - 24px)) !important;
+  max-width: calc(100vw - 24px) !important;
+  max-height: calc(100dvh - 24px) !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+}
+
+dialog.modal::backdrop {
+  background: rgba(0, 0, 0, 0.76) !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+dialog.modal .modal-shell,
+dialog.modal .modal-shell.wide,
+dialog.modal .detail-shell,
+dialog.modal .profile-shell,
+dialog.modal .slideshow-shell {
+  width: 100% !important;
+  max-width: 100% !important;
+  max-height: calc(100dvh - 24px) !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  overscroll-behavior: contain !important;
+  padding: 0 !important;
+  gap: 0 !important;
+  border-radius: var(--xenus-radius) !important;
+}
+
+dialog.modal .modal-head {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 30 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+  padding: clamp(12px, 1.5vw, 20px) var(--xenus-modal-pad) !important;
+  margin: 0 !important;
+  background: color-mix(in srgb, var(--panel) 95%, transparent) !important;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 78%, transparent) !important;
+}
+
+dialog.modal .modal-head h2 {
+  min-width: 0 !important;
+  margin: 0 !important;
+  font-size: clamp(1rem, 1.6vw, 1.35rem) !important;
+  overflow-wrap: anywhere !important;
+}
+
+dialog.modal .modal-head .icon-button {
+  flex: 0 0 auto !important;
+  width: 40px !important;
+  min-width: 40px !important;
+  height: 40px !important;
+}
+
+/* Modal body direct children spacing */
+dialog.modal .modal-shell > :not(.modal-head):not(.modal-actions) {
+  margin-left: var(--xenus-modal-pad) !important;
+  margin-right: var(--xenus-modal-pad) !important;
+}
+
+dialog.modal .modal-shell > .modal-head,
+dialog.modal .modal-shell > .modal-actions {
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+/* Forms */
+.form-grid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)) !important;
+  gap: var(--xenus-field-gap) !important;
+  width: auto !important;
+}
+
+.field,
+label.field {
+  display: grid !important;
+  gap: 6px !important;
+  min-width: 0 !important;
+  width: 100% !important;
+}
+
+.field > span,
+label.field > span {
+  font-size: clamp(0.78rem, 1vw, 0.9rem) !important;
+  line-height: 1.25 !important;
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100% !important;
+}
+
+/* Sticky modal actions should not crush the form */
+.modal-actions {
+  position: sticky !important;
+  bottom: 0 !important;
+  z-index: 28 !important;
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)) !important;
+  gap: 10px !important;
+  padding: 14px var(--xenus-modal-pad) calc(14px + env(safe-area-inset-bottom, 0px)) !important;
+  margin: clamp(12px, 1.4vw, 20px) 0 0 !important;
+  background: color-mix(in srgb, var(--panel) 95%, transparent) !important;
+  border-top: 1px solid color-mix(in srgb, var(--line) 78%, transparent) !important;
+  box-shadow: 0 -18px 34px rgba(0, 0, 0, 0.28) !important;
+}
+
+.modal-actions > * {
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+/* Upload modal */
+#upload-dialog[open] {
+  width: min(1180px, calc(100vw - 24px)) !important;
+}
+
+#upload-form {
+  display: grid !important;
+  grid-template-rows: auto !important;
+}
+
+#upload-error {
+  margin-top: 12px !important;
+}
+
+#upload-form .drop-zone {
+  display: grid !important;
+  place-items: center !important;
+  min-height: clamp(108px, 16dvh, 190px) !important;
+  padding: clamp(14px, 2vw, 28px) !important;
+  margin-top: var(--xenus-modal-pad) !important;
+  border-radius: var(--xenus-radius) !important;
+  border: 1px dashed color-mix(in srgb, var(--accent) 65%, var(--line)) !important;
+  text-align: center !important;
+}
+
+#upload-form .drop-zone input {
+  width: min(420px, 100%) !important;
+}
+
+#file-label {
+  display: block !important;
+  max-width: 100% !important;
+  margin-top: 8px !important;
+  font-size: clamp(0.78rem, 1vw, 0.92rem) !important;
+  line-height: 1.35 !important;
+}
+
+#upload-form .form-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)) !important;
+  margin-top: var(--xenus-field-gap) !important;
+}
+
+#upload-description,
+#upload-tags {
+  width: 100% !important;
+}
+
+#upload-form .upload-ai-panel {
+  display: grid !important;
+  gap: 12px !important;
+  padding: clamp(12px, 1.5vw, 18px) !important;
+  margin-top: var(--xenus-field-gap) !important;
+  border-radius: var(--xenus-radius) !important;
+  min-width: 0 !important;
+}
+
+#upload-form .upload-ai-actions {
+  display: grid !important;
+  grid-template-columns: minmax(180px, auto) minmax(0, 1fr) !important;
+  align-items: center !important;
+  gap: 10px !important;
+}
+
+#upload-ai-status {
+  min-width: 0 !important;
+  line-height: 1.35 !important;
+}
+
+#upload-form .check-card,
+#upload-form .check-row,
+#settings-dialog .check-card,
+#settings-dialog .check-row {
+  display: flex !important;
+  align-items: center !important;
+  gap: 10px !important;
+  min-width: 0 !important;
+  line-height: 1.35 !important;
+}
+
+#upload-form .check-card input,
+#upload-form .check-row input,
+#settings-dialog .check-card input,
+#settings-dialog .check-row input {
+  flex: 0 0 auto !important;
+  width: auto !important;
+  min-height: auto !important;
+}
+
+.upload-controls-grid {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)) !important;
+  gap: 10px !important;
+  padding: clamp(10px, 1.4vw, 16px) !important;
+  margin-top: var(--xenus-field-gap) !important;
+  border-radius: var(--xenus-radius) !important;
+}
+
+#upload-file-summary,
+#upload-progress-wrap {
+  margin-top: 12px !important;
+}
+
+.upload-progress-meta {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 8px !important;
+  justify-content: space-between !important;
+}
+
+/* Settings modal */
+#settings-dialog[open] {
+  width: min(1180px, calc(100vw - 24px)) !important;
+}
+
+#settings-dialog .settings-section {
+  width: auto !important;
+  padding: clamp(14px, 1.6vw, 22px) 0 !important;
+  margin-top: 0 !important;
+}
+
+#settings-dialog .profile-row {
+  display: grid !important;
+  grid-template-columns: 96px minmax(240px, 1fr) minmax(160px, auto) !important;
+  align-items: center !important;
+  gap: var(--xenus-field-gap) !important;
+}
+
+#settings-dialog .avatar.large {
+  width: 88px !important;
+  height: 88px !important;
+  justify-self: center !important;
+}
+
+#settings-dialog .toggle-row {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)) !important;
+  gap: 10px !important;
+}
+
+/* Edit media modal should match upload modal */
+#edit-media-dialog[open] {
+  width: min(1180px, calc(100vw - 24px)) !important;
+}
+
+#edit-media-form .form-grid,
+#edit-media-form .upload-controls-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)) !important;
+}
+
+/* Detail/profile/collection modals */
+.detail-modal,
+.profile-modal,
+.compare-modal,
+.insights-modal,
+.slideshow-modal {
+  width: min(1280px, calc(100vw - 24px)) !important;
+}
+
+.detail-grid {
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr) !important;
+  gap: clamp(12px, 1.5vw, 20px) !important;
+}
+
+.detail-media {
+  min-width: 0 !important;
+}
+
+.detail-media img,
+.detail-media video {
+  max-height: min(72dvh, 760px) !important;
+  object-fit: contain !important;
+}
+
+.card-actions,
+.action-row,
+.content-actions,
+.detail-head-actions,
+.profile-actions,
+.user-card-actions {
+  gap: 8px !important;
+}
+
+.card-actions,
+.action-row,
+.detail-head-actions,
+.profile-actions,
+.user-card-actions {
+  display: flex !important;
+  flex-wrap: wrap !important;
+}
+
+.card-actions > *,
+.action-row > *,
+.detail-head-actions > *,
+.profile-actions > *,
+.user-card-actions > * {
+  flex: 1 1 auto !important;
+  min-width: min(100%, 120px) !important;
+}
+
+/* Mobile: make the site usable instead of huge */
+@media (max-width: 900px) {
+  :root {
+    --xenus-page-pad: 10px;
+    --xenus-card-pad: 12px;
+    --xenus-modal-pad: 12px;
+    --xenus-control-h: 40px;
+  }
+
+  body {
+    font-size: 14px !important;
+  }
+
+  .topbar {
+    position: static !important;
+    height: auto !important;
+    padding: 10px !important;
+    gap: 10px !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+
+  .brand {
+    justify-content: center !important;
+  }
+
+  .brand h1,
+  .content-head h1 {
+    font-size: clamp(1.35rem, 8vw, 2rem) !important;
+    line-height: 1.05 !important;
+  }
+
+  .topbar-actions,
+  .content-actions {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 8px !important;
+    width: 100% !important;
+  }
+
+  .topbar-actions > *,
+  .content-actions > * {
+    width: 100% !important;
+    min-width: 0 !important;
+    padding-inline: 8px !important;
+  }
+
+  .layout {
+    width: calc(100vw - 12px) !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    margin: 10px auto !important;
+    gap: 10px !important;
+  }
+
+  .sidebar {
+    position: static !important;
+    max-height: none !important;
+  }
+
+  .content-head {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 10px !important;
+  }
+
+  .gallery-grid {
+    columns: 1 !important;
+    column-gap: 0 !important;
+  }
+
+  .media-card {
+    margin-bottom: 12px !important;
+  }
+
+  .media-preview {
+    min-height: 160px !important;
+  }
+
+  .media-info {
+    padding: 12px !important;
+    gap: 9px !important;
+  }
+
+  dialog.modal[open],
+  #upload-dialog[open],
+  #settings-dialog[open],
+  #edit-media-dialog[open] {
+    width: calc(100vw - 10px) !important;
+    max-width: calc(100vw - 10px) !important;
+    max-height: calc(100dvh - 10px) !important;
+  }
+
+  dialog.modal .modal-shell,
+  dialog.modal .modal-shell.wide,
+  dialog.modal .detail-shell,
+  dialog.modal .profile-shell {
+    max-height: calc(100dvh - 10px) !important;
+    border-radius: 14px !important;
+  }
+
+  dialog.modal .modal-head {
+    padding: 10px 12px !important;
+  }
+
+  dialog.modal .modal-shell > :not(.modal-head):not(.modal-actions) {
+    margin-left: 12px !important;
+    margin-right: 12px !important;
+  }
+
+  .form-grid,
+  #upload-form .form-grid,
+  #edit-media-form .form-grid,
+  .upload-controls-grid,
+  #edit-media-form .upload-controls-grid,
+  .detail-grid,
+  .collection-form,
+  .studio-summary,
+  .insight-grid,
+  .profile-dashboard,
+  .profile-spotlight-grid,
+  .profile-collection-grid,
+  .profile-friend-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  #upload-form .drop-zone {
+    min-height: 96px !important;
+    padding: 12px !important;
+  }
+
+  #upload-form .upload-ai-actions {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  #upload-form .upload-ai-actions button {
+    width: 100% !important;
+  }
+
+  #settings-dialog .profile-row {
+    grid-template-columns: minmax(0, 1fr) !important;
+    align-items: stretch !important;
+  }
+
+  #settings-dialog .avatar.large {
+    justify-self: start !important;
+  }
+
+  .modal-actions {
+    grid-template-columns: minmax(0, 1fr) !important;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  .detail-media {
+    min-height: 160px !important;
+  }
+
+  .detail-media img,
+  .detail-media video {
+    max-height: 48dvh !important;
+  }
+
+  .profile-hero,
+  .user-card,
+  .studio-item {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+
+@media (max-width: 520px) {
+  body {
+    font-size: 13px !important;
+  }
+
+  button,
+  .button-link {
+    min-height: 36px !important;
+    padding-inline: 8px !important;
+    font-size: 0.86rem !important;
+  }
+
+  input,
+  select,
+  textarea {
+    min-height: 38px !important;
+    font-size: 0.9rem !important;
+  }
+
+  .topbar-actions,
+  .content-actions,
+  .card-actions,
+  .action-row,
+  .detail-head-actions,
+  .profile-actions,
+  .user-card-actions {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .sidebar-block,
+  .stats-grid,
+  .account-card,
+  .panel,
+  .modal-shell,
+  .media-card {
+    border-radius: 12px !important;
+  }
+
+  .media-preview {
+    min-height: 140px !important;
+  }
+
+  .media-info h2 {
+    font-size: 0.98rem !important;
+  }
+
+  #upload-form .drop-zone {
+    min-height: 84px !important;
+  }
+
+  #file-label,
+  .muted,
+  small {
+    font-size: 0.78rem !important;
+  }
+}
+
+@media (max-width: 380px) {
+  body {
+    font-size: 12.5px !important;
+  }
+
+  .layout {
+    width: calc(100vw - 8px) !important;
+  }
+
+  dialog.modal[open] {
+    width: calc(100vw - 6px) !important;
+    max-width: calc(100vw - 6px) !important;
+  }
+
+  dialog.modal .modal-shell > :not(.modal-head):not(.modal-actions) {
+    margin-left: 8px !important;
+    margin-right: 8px !important;
+  }
+
+  dialog.modal .modal-head,
+  .modal-actions {
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+  }
+}
