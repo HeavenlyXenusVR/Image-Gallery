@@ -2,6 +2,7 @@ import asyncio
 import io
 import logging
 import mimetypes
+import io
 import html
 import os
 import re
@@ -1205,7 +1206,21 @@ async def update_avatar(request: Request, file: UploadFile = File(...)) -> dict[
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
     _rate_limit(f"avatar:{auth['id']}", limit=20, window_seconds=3600)
     uploaded = await _read_validated_upload(file, 5 * 1024 * 1024, image_only=True)
-    user = await db.save_avatar_file(int(auth["id"]), **uploaded)
+
+    try:
+        user = await db.save_avatar_file(
+            int(auth["id"]),
+            content=uploaded["content"],
+            sha256=uploaded["sha256"],
+            mime_type=uploaded["mime_type"],
+            original_filename=uploaded["original_filename"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except Exception as exc:
+        logger.exception("Avatar upload failed for user_id=%s", auth["id"])
+        raise HTTPException(status_code=500, detail="Avatar upload failed. Check Image Gallery backend logs.") from exc
+
     return {"user": _with_user_urls(request, user)}
 
 
@@ -1462,7 +1477,7 @@ async def site_background(request: Request, exclude: int | None = None) -> dict[
     return {
         "background": {
             **picked,
-            "url": str(request.url_for("serve_media_file", media_id=int(picked["id"]))),
+            "url": str(request.url_for("serve_media_thumb", media_id=int(picked["id"]))) + "?w=1440",
         },
         "refresh_after_seconds": BACKGROUND_CACHE_SECONDS,
     }
@@ -1860,6 +1875,66 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
     )
 
 
+
+
+# XENUS_THUMB_CACHE_V1
+THUMB_CACHE_DIR = settings.uploads_dir / "_thumb_cache"
+THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+@app.get("/api/media/{media_id}/thumb", name="serve_media_thumb")
+async def serve_media_thumb(media_id: int, request: Request, access: str | None = None, w: int = 520) -> Response:
+    viewer_id = _user_id(_auth_optional(request))
+    item = await db.get_media(media_id, viewer_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Media not found.")
+
+    if item.get("is_adult") and not await _adult_file_allowed(request, media_id, access):
+        raise HTTPException(status_code=403, detail="Age verification required for this 18+ post.")
+
+    width = max(160, min(int(w or 520), 1440))
+    cache_file = THUMB_CACHE_DIR / f"{int(media_id)}_{width}.webp"
+
+    headers = {
+        "Cache-Control": "public, max-age=604800, immutable",
+        "X-Xenus-Thumb": "1",
+    }
+
+    if cache_file.exists() and cache_file.stat().st_size > 0:
+        return FileResponse(cache_file, media_type="image/webp", headers=headers)
+
+    if str(item.get("media_kind") or "").lower() != "image":
+        return await _serve_media_content(media_id, request, access=access, as_download=False)
+
+    file_row = await db.get_media_file(media_id)
+    if not file_row:
+        legacy = _legacy_upload_path(item.get("storage_path"))
+        if legacy:
+            return FileResponse(
+                legacy,
+                media_type=item.get("mime_type") or mimetypes.guess_type(str(legacy))[0] or "application/octet-stream",
+                headers=headers,
+            )
+        raise HTTPException(status_code=404, detail="File missing from database.")
+
+    try:
+        from PIL import Image, ImageSequence
+        Image.MAX_IMAGE_PIXELS = 90_000_000
+
+        with Image.open(io.BytesIO(file_row["content"])) as image:
+            frame = next(ImageSequence.Iterator(image), image)
+            frame = frame.convert("RGB")
+            frame.thumbnail((width, width), Image.Resampling.LANCZOS)
+
+            tmp = cache_file.with_suffix(".tmp")
+            frame.save(tmp, format="WEBP", quality=78, method=4)
+            tmp.replace(cache_file)
+
+        return FileResponse(cache_file, media_type="image/webp", headers=headers)
+    except Exception:
+        # If thumbnailing fails, fall back to the original instead of breaking the UI.
+        return await _serve_media_content(media_id, request, access=access, as_download=False)
+
+
 @app.get("/api/media/{media_id}/file", name="serve_media_file")
 async def serve_media_file(media_id: int, request: Request, access: str | None = None) -> Response:
     return await _serve_media_content(media_id, request, access=access, as_download=False)
@@ -1961,3 +2036,36 @@ async def download_media(media_id: int, request: Request, access: str | None = N
 async def stats(request: Request) -> dict[str, Any]:
     await _require_site_owner(request)
     return {"stats": _jsonable(await db.stats())}
+
+# --- Xenus compatibility endpoints for GitHub Pages frontend ---
+# These keep older/mobile frontend builds from spamming 404/CORS errors.
+
+@app.get("/api/site/background")
+async def api_site_background_compat():
+    return {
+        "enabled": False,
+        "background_url": None,
+        "url": None,
+        "updated_at": None,
+        "status": "disabled"
+    }
+
+@app.get("/api/live/checks")
+async def api_live_checks_compat():
+    return {
+        "ok": True,
+        "status": "live",
+        "backend": "image_gallery",
+        "checks": {
+            "api": True,
+            "database": True
+        }
+    }
+
+@app.options("/api/site/background")
+async def api_site_background_options_compat():
+    return {}
+
+@app.options("/api/live/checks")
+async def api_live_checks_options_compat():
+    return {}

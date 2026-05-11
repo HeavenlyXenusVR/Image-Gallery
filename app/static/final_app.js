@@ -4620,3 +4620,45 @@ boot();
     ready();
   }
 })();
+
+/* XENUS_GALLERY_THUMB_LAZY_V1 */
+(() => {
+  const toThumbUrl = (url) => {
+    const value = String(url || "");
+    if (!value.includes("/api/media/") || !value.includes("/file")) return value;
+    return value.replace(/\/api\/media\/(\d+)\/file(\?[^"']*)?/, "/api/media/$1/thumb?w=520$2");
+  };
+
+  const applyThumbs = (root = document) => {
+    root.querySelectorAll?.('img[src*="/api/media/"][src*="/file"]').forEach((img) => {
+      if (img.closest(".detail-media, .slideshow-shell, .compare-modal")) return;
+      img.loading = "lazy";
+      img.decoding = "async";
+      const next = toThumbUrl(img.getAttribute("src"));
+      if (next && next !== img.getAttribute("src")) {
+        img.setAttribute("data-full-src", img.getAttribute("src"));
+        img.setAttribute("src", next);
+      }
+    });
+
+    root.querySelectorAll?.("video").forEach((video) => {
+      if (!video.closest(".detail-media, .slideshow-shell")) {
+        video.preload = "metadata";
+      }
+    });
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => applyThumbs(), { once: true });
+  } else {
+    applyThumbs();
+  }
+
+  new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      mutation.addedNodes.forEach((node) => {
+        if (node.nodeType === 1) applyThumbs(node);
+      });
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true });
+})();
