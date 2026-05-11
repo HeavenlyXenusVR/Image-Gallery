@@ -12,16 +12,17 @@ UVICORN_LOG="${LOG_DIR}/uvicorn-service-fallback.log"
 PID_FILE="${LOG_DIR}/live_tunnel_service.pid"
 INSTANCE_LOCK_FILE="${LOG_DIR}/live-manager.lock"
 AUTO_PUSH_CONFIG="${GALLERY_AUTO_PUSH_CONFIG:-1}"
+PUSH_OFFLINE_CONFIG="${GALLERY_PUSH_OFFLINE_CONFIG:-0}"
 CONFIG_PUSH_COOLDOWN_SECONDS="${GALLERY_CONFIG_PUSH_COOLDOWN_SECONDS:-120}"
 LAST_PUSH_FILE="${LOG_DIR}/last-live-config-push"
-ALLOW_FALLBACK_BACKEND="${GALLERY_SERVICE_START_BACKEND_IF_MISSING:-1}"
+ALLOW_FALLBACK_BACKEND="${GALLERY_SERVICE_START_BACKEND_IF_MISSING:-0}"
 TUNNEL_PROVIDER="${GALLERY_TUNNEL_PROVIDER:-cloudflare}"
 PAGES_ORIGIN="${GALLERY_PAGES_ORIGIN:-https://heavenlyxenusvr.github.io}"
 PAGES_URL="${GALLERY_PAGES_PUBLIC_URL:-https://heavenlyxenusvr.github.io/Image-Gallery/}"
 MAX_TUNNEL_START_ATTEMPTS="${GALLERY_MAX_TUNNEL_START_ATTEMPTS:-12}"
 TUNNEL_READY_ATTEMPTS="${GALLERY_TUNNEL_READY_ATTEMPTS:-900}"
 QUICK_TUNNEL_URL_ATTEMPTS="${GALLERY_QUICK_TUNNEL_URL_ATTEMPTS:-180}"
-CLOUDFLARE_PROTOCOL="${GALLERY_CLOUDFLARE_PROTOCOL:-quic}"
+CLOUDFLARE_PROTOCOL="${GALLERY_CLOUDFLARE_PROTOCOL:-http2}"
 CLOUDFLARE_TUNNEL_TOKEN="${GALLERY_CLOUDFLARE_TUNNEL_TOKEN:-}"
 CLOUDFLARE_PUBLIC_URL="${GALLERY_CLOUDFLARE_PUBLIC_URL:-}"
 GLOBAL_TUNNEL_STATE_DIR="${HOME}/.local/state/cloudflare-quick-tunnels"
@@ -197,7 +198,11 @@ publish_config() {
 
 publish_offline_config() {
   write_offline_config
-  publish_config
+  if [[ "${PUSH_OFFLINE_CONFIG}" == "1" ]]; then
+    publish_config
+  else
+    echo "Offline live-config written locally only; not pushing offline state to GitHub Pages."
+  fi
 }
 
 install_python_deps() {
@@ -258,7 +263,7 @@ port_in_use() {
 }
 
 kill_stale_port() {
-  if [[ "${GALLERY_KILL_STALE_PORT:-1}" != "1" ]]; then
+  if [[ "${GALLERY_KILL_STALE_PORT:-0}" != "1" ]]; then
     return 0
   fi
   if command -v fuser >/dev/null 2>&1; then
@@ -305,8 +310,7 @@ cleanup() {
   release_global_tunnel_slot
   rm -f "${PID_FILE}"
   if [[ -n "${PUBLISHED_GALLERY_URL:-}" ]] && grep -Fq "\"gallery_url\": \"${PUBLISHED_GALLERY_URL}\"" "${CONFIG_FILE}" 2>/dev/null; then
-    write_offline_config
-    publish_config
+    publish_offline_config
   fi
   if [[ -n "${TUNNEL_PID:-}" ]]; then
     kill "${TUNNEL_PID}" >/dev/null 2>&1 || true

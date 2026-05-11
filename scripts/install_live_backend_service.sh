@@ -26,7 +26,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${ROOT_DIR}
-Environment=GALLERY_SERVICE_START_BACKEND_IF_MISSING=1
+Environment=GALLERY_SERVICE_START_BACKEND_IF_MISSING=0
+Environment=GALLERY_PUSH_OFFLINE_CONFIG=0
+Environment=GALLERY_CLOUDFLARE_PROTOCOL=http2
+Environment=GALLERY_KILL_STALE_PORT=0
 ExecStart=/usr/bin/env bash -lc 'cd "${ROOT_DIR}" && exec bash ./scripts/start_live_tunnel_service.sh 8788'
 Restart=always
 RestartSec=15
