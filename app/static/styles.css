@@ -4825,3 +4825,335 @@ progress[value] {
     filter: none !important;
   }
 }
+
+/* =====================================================================
+   Xenus Front Page Compact Density Patch
+   Keeps modals spacious, but makes main gallery/front pages less huge.
+   ===================================================================== */
+
+:root {
+  --xenus-front-gap: clamp(8px, 0.8vw, 14px);
+  --xenus-front-pad: clamp(8px, 0.9vw, 14px);
+  --xenus-front-card-pad: clamp(8px, 0.9vw, 13px);
+  --xenus-front-control-h: clamp(28px, 2.2vw, 34px);
+  --xenus-front-radius: clamp(10px, 0.9vw, 16px);
+}
+
+@media (min-width: 901px) {
+  body {
+    font-size: clamp(12px, 0.78vw, 14px) !important;
+  }
+
+  .topbar {
+    min-height: unset !important;
+    padding: 7px 12px !important;
+    gap: 8px !important;
+  }
+
+  .brand {
+    gap: 7px !important;
+  }
+
+  .brand h1 {
+    font-size: clamp(0.92rem, 0.9vw, 1.05rem) !important;
+    line-height: 1 !important;
+  }
+
+  .brand small,
+  .brand p {
+    font-size: 0.68rem !important;
+    line-height: 1.1 !important;
+  }
+
+  .topbar-actions {
+    gap: 5px !important;
+    align-items: center !important;
+  }
+
+  .topbar-actions button,
+  .topbar-actions .button-link,
+  .topbar-actions select,
+  .topbar-actions input {
+    min-height: 28px !important;
+    height: 28px !important;
+    padding: 4px 9px !important;
+    font-size: 0.72rem !important;
+    border-radius: 10px !important;
+    line-height: 1.05 !important;
+  }
+
+  .topbar .avatar,
+  .topbar .user-avatar,
+  .topbar .profile-avatar {
+    width: 28px !important;
+    height: 28px !important;
+  }
+
+  .layout {
+    width: min(1780px, calc(100vw - 18px)) !important;
+    margin: 9px auto !important;
+    gap: var(--xenus-front-gap) !important;
+    grid-template-columns: minmax(190px, 230px) minmax(0, 1fr) !important;
+  }
+
+  .sidebar {
+    gap: 8px !important;
+  }
+
+  .sidebar-block,
+  .account-card,
+  .panel,
+  .stats-grid {
+    padding: var(--xenus-front-card-pad) !important;
+    border-radius: var(--xenus-front-radius) !important;
+  }
+
+  .sidebar-block h2,
+  .sidebar-block h3,
+  .panel h2,
+  .panel h3 {
+    font-size: 0.82rem !important;
+    line-height: 1.15 !important;
+    margin-bottom: 6px !important;
+  }
+
+  .sidebar-block label,
+  .sidebar-block .field,
+  .filter-panel label,
+  .filter-panel .field {
+    gap: 4px !important;
+  }
+
+  .sidebar input,
+  .sidebar select,
+  .sidebar textarea,
+  .sidebar button,
+  .filter-panel input,
+  .filter-panel select,
+  .filter-panel textarea,
+  .filter-panel button {
+    min-height: var(--xenus-front-control-h) !important;
+    height: auto !important;
+    padding: 5px 8px !important;
+    font-size: 0.72rem !important;
+    border-radius: 9px !important;
+  }
+
+  .sidebar textarea,
+  .filter-panel textarea {
+    min-height: 58px !important;
+  }
+
+  .tag-cloud,
+  .chip-row,
+  .pill-row {
+    gap: 5px !important;
+  }
+
+  .tag,
+  .chip,
+  .pill,
+  .badge,
+  .status-chip {
+    min-height: 23px !important;
+    padding: 3px 7px !important;
+    font-size: 0.68rem !important;
+    border-radius: 999px !important;
+  }
+
+  .content {
+    gap: 10px !important;
+  }
+
+  .content-head,
+  .hero,
+  .discover-hero,
+  .page-hero {
+    padding: clamp(10px, 1vw, 16px) !important;
+    gap: 8px !important;
+    border-radius: var(--xenus-front-radius) !important;
+  }
+
+  .content-head h1,
+  .hero h1,
+  .discover-hero h1,
+  .page-hero h1 {
+    font-size: clamp(1.25rem, 1.55vw, 1.9rem) !important;
+    line-height: 1.05 !important;
+  }
+
+  .content-head p,
+  .hero p,
+  .discover-hero p,
+  .page-hero p,
+  .muted {
+    font-size: 0.74rem !important;
+    line-height: 1.28 !important;
+  }
+
+  .content-actions,
+  .hero-actions,
+  .action-row,
+  .card-actions {
+    gap: 5px !important;
+  }
+
+  .content-actions button,
+  .hero-actions button,
+  .action-row button,
+  .card-actions button,
+  .content-actions .button-link,
+  .hero-actions .button-link,
+  .action-row .button-link,
+  .card-actions .button-link {
+    min-height: 27px !important;
+    padding: 4px 8px !important;
+    font-size: 0.68rem !important;
+    border-radius: 9px !important;
+  }
+
+  .gallery-grid {
+    column-gap: clamp(8px, 0.9vw, 14px) !important;
+  }
+
+  .media-card,
+  .collection-card,
+  .user-card,
+  .studio-item {
+    margin-bottom: clamp(8px, 0.9vw, 14px) !important;
+    border-radius: var(--xenus-front-radius) !important;
+  }
+
+  .media-preview {
+    min-height: clamp(135px, 13vw, 230px) !important;
+    max-height: clamp(210px, 22vw, 360px) !important;
+  }
+
+  .media-preview img,
+  .media-preview video {
+    max-height: clamp(210px, 22vw, 360px) !important;
+  }
+
+  .media-info {
+    padding: var(--xenus-front-card-pad) !important;
+    gap: 6px !important;
+  }
+
+  .media-info h2 {
+    font-size: clamp(0.82rem, 0.85vw, 1rem) !important;
+    line-height: 1.15 !important;
+  }
+
+  .media-info p,
+  .media-info small,
+  .media-meta,
+  .media-stats {
+    font-size: 0.68rem !important;
+    line-height: 1.25 !important;
+  }
+
+  .media-meta,
+  .media-stats,
+  .meta-row,
+  .stat-row {
+    gap: 5px !important;
+  }
+
+  .profile-hero,
+  .profile-card,
+  .profile-showcase,
+  .profile-dashboard,
+  .profile-column,
+  .profile-rail {
+    gap: 10px !important;
+    padding: var(--xenus-front-card-pad) !important;
+    border-radius: var(--xenus-front-radius) !important;
+  }
+
+  .avatar,
+  .profile-avatar,
+  .user-avatar {
+    width: clamp(30px, 2.4vw, 44px) !important;
+    height: clamp(30px, 2.4vw, 44px) !important;
+  }
+
+  .avatar.large,
+  .profile-avatar.large,
+  .user-avatar.large {
+    width: clamp(58px, 5vw, 82px) !important;
+    height: clamp(58px, 5vw, 82px) !important;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(auto-fit, minmax(86px, 1fr)) !important;
+    gap: 7px !important;
+  }
+
+  .stat-card,
+  .mini-stat {
+    padding: 8px !important;
+    border-radius: 12px !important;
+  }
+
+  .stat-card strong,
+  .mini-stat strong {
+    font-size: clamp(0.95rem, 1.1vw, 1.25rem) !important;
+  }
+
+  .stat-card span,
+  .mini-stat span {
+    font-size: 0.68rem !important;
+  }
+}
+
+/* Slightly denser laptop/tablet mode */
+@media (min-width: 901px) and (max-width: 1360px) {
+  .layout {
+    grid-template-columns: minmax(178px, 210px) minmax(0, 1fr) !important;
+  }
+
+  .gallery-grid {
+    column-gap: 9px !important;
+  }
+
+  .media-preview {
+    min-height: 120px !important;
+  }
+
+  .media-info {
+    padding: 8px !important;
+  }
+}
+
+/* Keep mobile compact but not cramped */
+@media (max-width: 900px) {
+  .topbar-actions button,
+  .content-actions button,
+  .card-actions button,
+  .action-row button {
+    min-height: 34px !important;
+    font-size: 0.82rem !important;
+  }
+
+  .content-head,
+  .hero,
+  .discover-hero,
+  .page-hero {
+    padding: 12px !important;
+  }
+
+  .content-head h1,
+  .hero h1,
+  .discover-hero h1,
+  .page-hero h1 {
+    font-size: clamp(1.18rem, 6.5vw, 1.75rem) !important;
+  }
+
+  .media-info {
+    padding: 10px !important;
+  }
+
+  .media-preview {
+    min-height: 130px !important;
+  }
+}
