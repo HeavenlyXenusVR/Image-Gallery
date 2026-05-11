@@ -4512,3 +4512,111 @@ boot();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true });
   else boot();
 })();
+
+
+/* XENUS_UX_ANIMATION_PACK_V1 */
+(() => {
+  const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (reduceMotion) {
+    document.body?.classList.add("xenus-animated-ready");
+    return;
+  }
+
+  const ready = () => {
+    document.body.classList.add("xenus-animated-ready");
+
+    const revealSelectors = [
+      ".media-card",
+      ".collection-card",
+      ".user-card",
+      ".studio-item",
+      ".sidebar-block",
+      ".account-card",
+      ".panel",
+      ".stats-grid",
+      ".content-head",
+      ".profile-hero",
+      ".profile-card",
+      ".profile-showcase",
+      ".upload-ai-panel",
+      ".drop-zone"
+    ];
+
+    const revealItems = () => {
+      const nodes = Array.from(document.querySelectorAll(revealSelectors.join(",")));
+      nodes.forEach((node, index) => {
+        if (node.dataset.xenusRevealReady === "1") return;
+        node.dataset.xenusRevealReady = "1";
+        node.classList.add("xenus-reveal");
+        node.style.setProperty("--xenus-stagger-delay", `${Math.min(index % 12, 11) * 45}ms`);
+      });
+
+      if (!("IntersectionObserver" in window)) {
+        nodes.forEach(node => node.classList.add("xenus-in-view"));
+        return;
+      }
+
+      const observer = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("xenus-in-view");
+            observer.unobserve(entry.target);
+          }
+        }
+      }, { threshold: 0.08, rootMargin: "0px 0px -6% 0px" });
+
+      nodes.forEach(node => {
+        if (!node.classList.contains("xenus-in-view")) observer.observe(node);
+      });
+    };
+
+    const addRipple = (event) => {
+      const button = event.target.closest("button, .button-link, .icon-button");
+      if (!button || button.disabled) return;
+
+      const rect = button.getBoundingClientRect();
+      const ripple = document.createElement("span");
+      ripple.className = "xenus-ripple";
+      ripple.style.left = `${event.clientX - rect.left}px`;
+      ripple.style.top = `${event.clientY - rect.top}px`;
+      button.appendChild(ripple);
+      setTimeout(() => ripple.remove(), 700);
+    };
+
+    document.addEventListener("pointerdown", addRipple, { passive: true });
+
+    revealItems();
+
+    const mutationObserver = new MutationObserver(() => {
+      window.requestAnimationFrame(revealItems);
+    });
+
+    mutationObserver.observe(document.body, {
+      childList: true,
+      subtree: true
+    });
+
+    document.addEventListener("click", (event) => {
+      const card = event.target.closest(".media-card, .collection-card, .user-card, .studio-item");
+      if (!card) return;
+      card.animate(
+        [
+          { transform: "scale(1)" },
+          { transform: "scale(.985)" },
+          { transform: "scale(1.012)" },
+          { transform: "scale(1)" }
+        ],
+        {
+          duration: 320,
+          easing: "cubic-bezier(.2, 1.4, .35, 1)"
+        }
+      );
+    }, { passive: true });
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", ready, { once: true });
+  } else {
+    ready();
+  }
+})();
