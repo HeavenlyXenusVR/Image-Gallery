@@ -4662,3 +4662,68 @@ boot();
     }
   }).observe(document.documentElement, { childList: true, subtree: true });
 })();
+
+/* XENUS_HARD_SINGLE_SCROLLBAR_GUARD_V1 */
+(() => {
+  const allowedScrollerSelector = [
+    "dialog",
+    ".modal",
+    ".modal-shell",
+    ".detail-shell",
+    ".profile-shell",
+    ".slideshow-shell",
+    ".table-wrap",
+    ".horizontal-scroll",
+    ".carousel",
+    ".tag-cloud",
+    ".chip-row",
+    ".scroll-panel"
+  ].join(",");
+
+  const isPageLikeScroller = (el) => {
+    if (!el || el === document.documentElement || el === document.body) return false;
+    if (el.closest(allowedScrollerSelector)) return false;
+
+    const style = getComputedStyle(el);
+    const overflowY = style.overflowY;
+    if (!["auto", "scroll", "overlay"].includes(overflowY)) return false;
+
+    const rect = el.getBoundingClientRect();
+    const almostViewport = rect.height >= window.innerHeight * 0.72;
+    const actuallyScrollable = el.scrollHeight > el.clientHeight + 8;
+
+    return almostViewport && actuallyScrollable;
+  };
+
+  const fixNestedScrollers = () => {
+    document.body.classList.toggle("xenus-modal-lock", !!document.querySelector("dialog[open], .modal[open]"));
+
+    document.querySelectorAll(".xenus-page-scroll-container").forEach((el) => {
+      el.classList.remove("xenus-page-scroll-container");
+    });
+
+    document.querySelectorAll("body *").forEach((el) => {
+      if (isPageLikeScroller(el)) {
+        el.classList.add("xenus-page-scroll-container");
+      }
+    });
+  };
+
+  const run = () => requestAnimationFrame(fixNestedScrollers);
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", run, { once: true });
+  } else {
+    run();
+  }
+
+  window.addEventListener("resize", run, { passive: true });
+  window.addEventListener("hashchange", run, { passive: true });
+
+  new MutationObserver(run).observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["open", "class", "style"]
+  });
+})();

@@ -5455,3 +5455,94 @@ dialog.modal[open] .modal-shell,
 dialog.modal[open] .modal-shell.wide {
   scrollbar-gutter: stable !important;
 }
+
+/* =====================================================================
+   Xenus Hard Single-Scrollbar Fix
+   Prevents full-page nested scroll containers while preserving modals/logs.
+   ===================================================================== */
+
+html,
+body {
+  height: auto !important;
+  min-height: 100% !important;
+  max-height: none !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+body {
+  min-height: 100dvh !important;
+}
+
+/* Kill nested full-page scrolling on normal app wrappers */
+body:not(.xenus-modal-lock) #app,
+body:not(.xenus-modal-lock) .app,
+body:not(.xenus-modal-lock) .app-shell,
+body:not(.xenus-modal-lock) .site-shell,
+body:not(.xenus-modal-lock) .page,
+body:not(.xenus-modal-lock) .page-shell,
+body:not(.xenus-modal-lock) .layout,
+body:not(.xenus-modal-lock) .content,
+body:not(.xenus-modal-lock) .main,
+body:not(.xenus-modal-lock) main,
+body:not(.xenus-modal-lock) .gallery-shell,
+body:not(.xenus-modal-lock) .gallery-page,
+body:not(.xenus-modal-lock) .gallery-grid,
+body:not(.xenus-modal-lock) .media-grid,
+body:not(.xenus-modal-lock) .profile-page,
+body:not(.xenus-modal-lock) .collections-page,
+body:not(.xenus-modal-lock) .users-page,
+body:not(.xenus-modal-lock) .studio-page,
+body:not(.xenus-modal-lock) .xenus-page-scroll-container {
+  height: auto !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  overflow-y: visible !important;
+  overflow-x: visible !important;
+}
+
+/* Sidebars should not become a second full-height page scrollbar */
+@media (min-width: 901px) {
+  body:not(.xenus-modal-lock) .sidebar,
+  body:not(.xenus-modal-lock) .filter-panel,
+  body:not(.xenus-modal-lock) .sidebar-block {
+    max-height: none !important;
+    overflow-y: visible !important;
+  }
+}
+
+/* Keep intentional scrollers */
+.table-wrap,
+.horizontal-scroll,
+.carousel,
+.tag-cloud,
+.chip-row,
+.scroll-panel {
+  overflow-x: auto !important;
+}
+
+/* Modals are the only full-height internal scrollers */
+body.xenus-modal-lock {
+  overflow: hidden !important;
+}
+
+dialog[open],
+dialog.modal[open],
+.modal[open] {
+  overflow: hidden !important;
+}
+
+dialog[open] .modal-shell,
+dialog[open] .modal-shell.wide,
+dialog[open] .detail-shell,
+dialog[open] .profile-shell,
+dialog[open] .slideshow-shell {
+  max-height: calc(100dvh - 24px) !important;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+}
+
+dialog[open] form {
+  max-height: none !important;
+  overflow: visible !important;
+}
