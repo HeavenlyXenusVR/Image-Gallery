@@ -5367,3 +5367,91 @@ dialog.modal button {
     font-size: 0.94rem !important;
   }
 }
+
+/* =====================================================================
+   Xenus Single Scrollbar Fix
+   Normal pages use browser scrollbar only. Modals keep internal scrolling.
+   ===================================================================== */
+
+html {
+  height: auto !important;
+  min-height: 100% !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  scrollbar-gutter: stable !important;
+}
+
+body {
+  height: auto !important;
+  min-height: 100dvh !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+body:has(dialog[open]),
+body:has(.modal[open]) {
+  overflow: hidden !important;
+}
+
+/* Normal page wrappers should not create a second vertical scrollbar */
+#app,
+.app,
+.app-shell,
+.page,
+.page-shell,
+.layout,
+.content,
+.main,
+main,
+.gallery-shell,
+.gallery-page,
+.gallery-grid,
+.profile-page,
+.collections-page,
+.users-page,
+.studio-page,
+.sidebar,
+.filter-panel,
+.sidebar-block,
+.panel {
+  max-height: none !important;
+  overflow-y: visible !important;
+}
+
+/* Keep only intentional horizontal/contained scrollers */
+.table-wrap,
+.swarm-table-wrap,
+.carousel,
+.horizontal-scroll,
+.tag-cloud,
+.chip-row {
+  overflow-x: auto !important;
+}
+
+/* Modals/dialogs are allowed to scroll internally */
+dialog.modal[open],
+.modal[open] {
+  overflow: hidden !important;
+}
+
+dialog.modal[open] .modal-shell,
+dialog.modal[open] .modal-shell.wide,
+dialog.modal[open] .detail-shell,
+dialog.modal[open] .profile-shell,
+dialog.modal[open] .slideshow-shell,
+dialog.modal[open] form {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  max-height: calc(100dvh - 24px) !important;
+}
+
+/* Prevent nested modal form scrollbars unless the whole modal needs it */
+dialog.modal[open] form {
+  max-height: none !important;
+  overflow-y: visible !important;
+}
+
+dialog.modal[open] .modal-shell,
+dialog.modal[open] .modal-shell.wide {
+  scrollbar-gutter: stable !important;
+}
