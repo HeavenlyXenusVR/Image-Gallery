@@ -5157,3 +5157,213 @@ progress[value] {
     min-height: 130px !important;
   }
 }
+
+/* =====================================================================
+   Xenus Soft 7% Upscale Patch
+   Makes the Image Gallery UI slightly larger without breaking responsive fixes.
+   ===================================================================== */
+
+:root {
+  --xenus-soft-scale: 1.07;
+}
+
+/* Global soft bump */
+body {
+  font-size: clamp(12.84px, 0.835vw, 14.98px) !important;
+}
+
+/* Top/front page controls */
+@media (min-width: 901px) {
+  .topbar {
+    padding: 8px 13px !important;
+    gap: 9px !important;
+  }
+
+  .brand h1 {
+    font-size: clamp(0.98rem, 0.96vw, 1.12rem) !important;
+  }
+
+  .brand small,
+  .brand p {
+    font-size: 0.73rem !important;
+  }
+
+  .topbar-actions button,
+  .topbar-actions .button-link,
+  .topbar-actions select,
+  .topbar-actions input {
+    min-height: 30px !important;
+    height: 30px !important;
+    padding: 5px 10px !important;
+    font-size: 0.77rem !important;
+  }
+
+  .layout {
+    width: min(1780px, calc(100vw - 18px)) !important;
+    gap: clamp(9px, 0.92vw, 15px) !important;
+    grid-template-columns: minmax(204px, 246px) minmax(0, 1fr) !important;
+  }
+
+  .sidebar-block,
+  .account-card,
+  .panel,
+  .stats-grid,
+  .media-info {
+    padding: clamp(9px, 0.98vw, 14px) !important;
+  }
+
+  .sidebar-block h2,
+  .sidebar-block h3,
+  .panel h2,
+  .panel h3 {
+    font-size: 0.88rem !important;
+  }
+
+  .sidebar input,
+  .sidebar select,
+  .sidebar textarea,
+  .sidebar button,
+  .filter-panel input,
+  .filter-panel select,
+  .filter-panel textarea,
+  .filter-panel button {
+    min-height: 36px !important;
+    padding: 6px 9px !important;
+    font-size: 0.77rem !important;
+  }
+
+  .content-head,
+  .hero,
+  .discover-hero,
+  .page-hero {
+    padding: clamp(11px, 1.08vw, 17px) !important;
+  }
+
+  .content-head h1,
+  .hero h1,
+  .discover-hero h1,
+  .page-hero h1 {
+    font-size: clamp(1.34rem, 1.66vw, 2.03rem) !important;
+  }
+
+  .content-head p,
+  .hero p,
+  .discover-hero p,
+  .page-hero p,
+  .muted {
+    font-size: 0.79rem !important;
+  }
+
+  .content-actions button,
+  .hero-actions button,
+  .action-row button,
+  .card-actions button,
+  .content-actions .button-link,
+  .hero-actions .button-link,
+  .action-row .button-link,
+  .card-actions .button-link {
+    min-height: 30px !important;
+    padding: 5px 9px !important;
+    font-size: 0.73rem !important;
+  }
+
+  .media-preview {
+    min-height: clamp(144px, 13.9vw, 246px) !important;
+    max-height: clamp(225px, 23.5vw, 385px) !important;
+  }
+
+  .media-preview img,
+  .media-preview video {
+    max-height: clamp(225px, 23.5vw, 385px) !important;
+  }
+
+  .media-info h2 {
+    font-size: clamp(0.88rem, 0.91vw, 1.07rem) !important;
+  }
+
+  .media-info p,
+  .media-info small,
+  .media-meta,
+  .media-stats {
+    font-size: 0.73rem !important;
+  }
+
+  .tag,
+  .chip,
+  .pill,
+  .badge,
+  .status-chip {
+    min-height: 25px !important;
+    padding: 4px 8px !important;
+    font-size: 0.73rem !important;
+  }
+}
+
+/* Modals: only a gentle bump */
+dialog.modal .modal-head h2 {
+  font-size: clamp(1.07rem, 1.71vw, 1.44rem) !important;
+}
+
+dialog.modal .modal-shell,
+dialog.modal .modal-shell.wide,
+dialog.modal .detail-shell,
+dialog.modal .profile-shell {
+  font-size: 1.035em !important;
+}
+
+dialog.modal input,
+dialog.modal select,
+dialog.modal textarea,
+dialog.modal button {
+  font-size: 0.96rem !important;
+}
+
+/* Mobile gets a smaller bump so it stays usable */
+@media (max-width: 900px) {
+  body {
+    font-size: 14.4px !important;
+  }
+
+  .content-head h1,
+  .hero h1,
+  .discover-hero h1,
+  .page-hero h1 {
+    font-size: clamp(1.26rem, 6.9vw, 1.87rem) !important;
+  }
+
+  .topbar-actions button,
+  .content-actions button,
+  .card-actions button,
+  .action-row button {
+    min-height: 36px !important;
+    font-size: 0.87rem !important;
+  }
+
+  .media-info h2 {
+    font-size: 1.04rem !important;
+  }
+
+  .media-info,
+  .sidebar-block,
+  .panel,
+  .account-card {
+    padding: 11px !important;
+  }
+}
+
+@media (max-width: 520px) {
+  body {
+    font-size: 13.45px !important;
+  }
+
+  button,
+  .button-link {
+    font-size: 0.9rem !important;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 0.94rem !important;
+  }
+}
