@@ -54,10 +54,23 @@ BACKGROUND_ASPECT_RATIO = 16 / 9
 BACKGROUND_ASPECT_TOLERANCE = 0.035
 BACKGROUND_CACHE_SECONDS = 300
 PREVIEW_CACHE_MAX_ITEMS = 256
-API_CACHE_MAX_ITEMS = max(64, int(os.getenv("GALLERY_API_CACHE_MAX_ITEMS", "256")))
-MEDIA_LIST_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_MEDIA_LIST_CACHE_SECONDS", "12") or "12"))
-LOOKUP_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_LOOKUP_CACHE_SECONDS", "60") or "60"))
+API_CACHE_MAX_ITEMS = max(64, int(os.getenv("GALLERY_API_CACHE_MAX_ITEMS", "512")))
+MEDIA_LIST_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_MEDIA_LIST_CACHE_SECONDS", "30") or "30"))
+LOOKUP_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_LOOKUP_CACHE_SECONDS", "300") or "300"))
 MAX_IMAGE_PIXELS = max(8_000_000, int(os.getenv("GALLERY_MAX_IMAGE_PIXELS", "80000000")))
+APP_SHELL_PATHS = {
+    "/",
+    "/collections",
+    "/following",
+    "/liked",
+    "/users",
+    "/friends",
+    "/studio",
+    "/profile",
+    "/upload",
+    "/settings",
+    "/login",
+}
 _background_cache_lock = asyncio.Lock()
 _background_cache: dict[str, Any] = {"built_at": 0.0, "items": []}
 _preview_cache: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
@@ -895,7 +908,9 @@ def _security_headers(request: Request, response: Response) -> None:
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
     if request.url.scheme == "https":
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-    if request.url.path in {"/"} or request.url.path.startswith("/api/auth/"):
+    if request.url.path.startswith(("/static/", "/app/static/")):
+        response.headers.setdefault("Cache-Control", "public, max-age=86400")
+    if request.url.path in APP_SHELL_PATHS or request.url.path.startswith(("/media/", "/users/")) or request.url.path.startswith("/api/auth/"):
         response.headers.setdefault("Cache-Control", "no-store")
 
 
@@ -1044,6 +1059,30 @@ async def browser_origin_and_headers(request: Request, call_next):
 
 @app.get("/")
 async def index() -> FileResponse:
+    return FileResponse(ROOT_DIR / "index.html")
+
+
+@app.get("/collections")
+@app.get("/following")
+@app.get("/liked")
+@app.get("/users")
+@app.get("/friends")
+@app.get("/studio")
+@app.get("/profile")
+@app.get("/upload")
+@app.get("/settings")
+@app.get("/login")
+async def app_page() -> FileResponse:
+    return FileResponse(ROOT_DIR / "index.html")
+
+
+@app.get("/media/{media_id:int}")
+async def media_page(media_id: int) -> FileResponse:
+    return FileResponse(ROOT_DIR / "index.html")
+
+
+@app.get("/users/{username}")
+async def user_page(username: str) -> FileResponse:
     return FileResponse(ROOT_DIR / "index.html")
 
 

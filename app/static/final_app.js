@@ -85,6 +85,7 @@ const revealedAdultMedia = new Set();
 let localBackendUrls = [];
 let remoteConfigRefreshPromise = null;
 let currentPage = "discover";
+let routeSyncInProgress = false;
 let activeCollectionId = null;
 let collectionsMineMode = false;
 let profilePageData = null;
@@ -100,6 +101,16 @@ let liveCheckInFlight = null;
 let lastLiveCheckAt = 0;
 let galleryAssetPreloadHandle = 0;
 const galleryAssetPreloadCache = new Set();
+const PAGE_ROUTES = {
+  discover: "/",
+  following: "/following",
+  liked: "/liked",
+  collections: "/collections",
+  users: "/users",
+  friends: "/friends",
+  studio: "/studio",
+  profile: "/profile",
+};
 
 const $ = (id) => document.getElementById(id);
 
@@ -1111,7 +1122,21 @@ function renderTopbarPageState() {
   });
 }
 
-function setCurrentPage(page) {
+function routeTo(path, { replace = false } = {}) {
+  if (REMOTE_MODE || routeSyncInProgress || !path) return;
+  const normalized = path === "/" ? "/" : path.replace(/\/+$/, "");
+  const current = location.pathname === "/" ? "/" : location.pathname.replace(/\/+$/, "");
+  if (current === normalized && !location.hash) return;
+  history[replace ? "replaceState" : "pushState"]({ galleryRoute: true, path: normalized }, "", normalized);
+}
+
+function routeForPage(page) {
+  if (page === "profile" && activeProfileUsername) return `/users/${encodeURIComponent(activeProfileUsername)}`;
+  return PAGE_ROUTES[page] || "/";
+}
+
+function setCurrentPage(page, options = {}) {
+  const { updateRoute = true, replaceRoute = false } = options;
   currentPage = page;
   if (page !== "profile") activeProfileUsername = "";
   document.body.dataset.page = page;
@@ -1133,6 +1158,7 @@ function setCurrentPage(page) {
   if (page !== "profile" && location.hash.startsWith("#user/")) {
     history.replaceState(null, "", location.pathname + location.search);
   }
+  if (updateRoute) routeTo(routeForPage(page), { replace: replaceRoute });
   renderGalleryHeading();
   renderTopbarPageState();
   renderPageSidebar();
@@ -1466,10 +1492,14 @@ function stopMediaPlayback(root = document) {
   });
 }
 
-function closeDetailDialog() {
+function closeDetailDialog(options = {}) {
+  const { updateRoute = true } = options;
   const dialog = $("detail-dialog");
   stopMediaPlayback(dialog);
   if (dialog.open) dialog.close();
+  if (updateRoute && /^\/media\/\d+\/?$/.test(location.pathname)) {
+    routeTo(routeForPage(currentPage || "discover"), { replace: false });
+  }
 }
 
 function applyDetailTransform() {
@@ -2311,6 +2341,7 @@ function renderMediaGrid() {
     const accent = safeHexColor(item.profile_color, "#37c9a7");
     const avatarUrl = avatarUrlForRecord(item, { urlKey: "user_avatar_url", pathKey: "user_avatar_path", fileIdKey: "user_avatar_file_id", idKey: "user_id" });
     card.className = `media-card${item.is_adult ? " adult-card" : ""}${selectedForCompare ? " is-compared" : ""}`;
+    card.dataset.open = item.id;
     card.innerHTML = `
       <button class="media-preview" type="button" data-open="${item.id}">${renderPreview(item)}</button>
       <div class="media-info">
@@ -2355,7 +2386,8 @@ async function loadCurrentGalleryPage(page = galleryPage, options = {}) {
   return loadMedia(page, options);
 }
 
-async function openDetail(id) {
+async function openDetail(id, options = {}) {
+  const { updateRoute = true, replaceRoute = false } = options;
   let data;
   try {
     data = await apiFetch(`/api/media/${id}`);
@@ -2366,6 +2398,7 @@ async function openDetail(id) {
     }
     throw err;
   }
+  if (updateRoute) routeTo(`/media/${encodeURIComponent(id)}`, { replace: replaceRoute });
   stopMediaPlayback($("detail-dialog"));
   activeDetail = data.media;
   const item = activeDetail;
@@ -2908,15 +2941,13 @@ async function openProfile(username) {
     const data = await apiFetch(`/api/users/${encodeURIComponent(username)}/profile`);
     profilePageData = data;
     renderProfile(data);
-    if (location.hash !== `#user/${encodeURIComponent(username)}`) {
-      history.replaceState(null, "", `#user/${encodeURIComponent(username)}`);
-    }
-    setCurrentPage("profile");
+    routeTo(`/users/${encodeURIComponent(username)}`);
+    setCurrentPage("profile", { updateRoute: false });
   } catch (err) {
     activeProfileUsername = previousUsername;
     profilePageData = previousData;
-    if (location.hash === `#user/${encodeURIComponent(username)}`) {
-      history.replaceState(null, "", location.pathname + location.search);
+    if (location.hash === `#user/${encodeURIComponent(username)}` || location.pathname === `/users/${encodeURIComponent(username)}`) {
+      routeTo(routeForPage(currentPage === "profile" ? "discover" : currentPage), { replace: true });
     }
     showToast(err.message || "Profile unavailable.", "error");
     return null;
@@ -3459,6 +3490,7 @@ function closeUploadDialog({ force = false } = {}) {
   resetUploadProgress();
   const dialog = safeEl("upload-dialog");
   if (dialog?.open) dialog.close();
+  if (location.pathname === "/upload") routeTo(routeForPage(currentPage || "discover"));
   checkUploadReadiness();
 }
 
@@ -3641,15 +3673,23 @@ function renderUploadQueue(activeIndex = -1, statuses = []) {
   enhanceMotion(queue);
 }
 
-function openSettingsPanel() {
-  if (!currentUser) return safeEl("auth-dialog")?.showModal();
+function openSettingsPanel(options = {}) {
+  const { updateRoute = true } = options;
+  if (updateRoute) routeTo("/settings");
+  if (!currentUser) {
+    routeTo("/login");
+    return safeEl("auth-dialog")?.showModal();
+  }
   fillSettingsForm();
   safeEl("settings-dialog")?.showModal();
 }
 
 async function openCurrentUserDestination(target) {
   const destination = target || (currentUser ? ACCOUNT_NAVIGATION.signedInUsernameTarget : ACCOUNT_NAVIGATION.signedOutUsernameTarget);
-  if (!currentUser) return safeEl("auth-dialog")?.showModal();
+  if (!currentUser) {
+    routeTo("/login");
+    return safeEl("auth-dialog")?.showModal();
+  }
   if (destination === "settings") return openSettingsPanel();
   return openProfile(currentUser.username);
 }
@@ -3950,7 +3990,10 @@ function bindEvents() {
     }
   }, true);
   $("auth-open").addEventListener("click", () => openCurrentUserDestination());
-  if ($("auth-close")) $("auth-close").addEventListener("click", () => $("auth-dialog").close());
+  if ($("auth-close")) $("auth-close").addEventListener("click", () => {
+    $("auth-dialog").close();
+    if (location.pathname === "/login") routeTo(routeForPage(currentPage || "discover"));
+  });
   $("logout").addEventListener("click", async () => {
     token = "";
     currentUser = null;
@@ -4074,7 +4117,10 @@ function bindEvents() {
   $("collection-picker-form").addEventListener("submit", addToCollection);
   $("studio-open").addEventListener("click", openStudio);
   $("studio-close").addEventListener("click", () => $("studio-dialog").close());
-  if ($("settings-close")) $("settings-close").addEventListener("click", () => $("settings-dialog").close());
+  if ($("settings-close")) $("settings-close").addEventListener("click", () => {
+    $("settings-dialog").close();
+    if (location.pathname === "/settings") routeTo(routeForPage(currentPage || "discover"));
+  });
   $("report-form").addEventListener("submit", submitReport);
   if ($("report-close")) $("report-close").addEventListener("click", () => $("report-dialog").close());
   $("clear-tag").addEventListener("click", () => {
@@ -4095,7 +4141,10 @@ function bindEvents() {
   $("age-close").addEventListener("click", () => $("age-dialog").close());
   $("avatar-save").addEventListener("click", saveAvatar);
   $("settings-avatar-file").addEventListener("change", previewSelectedAvatar);
-  $("upload-open").addEventListener("click", () => currentUser ? $("upload-dialog").showModal() : $("auth-dialog").showModal());
+  $("upload-open").addEventListener("click", () => {
+    routeTo(currentUser ? "/upload" : "/login");
+    currentUser ? $("upload-dialog").showModal() : $("auth-dialog").showModal();
+  });
   if ($("upload-close")) $("upload-close").addEventListener("click", closeUploadDialog);
   on("upload-dialog", "cancel", (event) => {
     event.preventDefault();
@@ -4189,6 +4238,7 @@ function bindEvents() {
   });
   $("gallery-grid").addEventListener("click", async (event) => {
     const open = event.target.closest("[data-open]");
+    const cardOpen = event.target.closest(".media-card[data-open]");
     const profile = event.target.closest("[data-profile]");
     const compare = event.target.closest("[data-compare]");
     const like = event.target.closest("[data-like]");
@@ -4201,15 +4251,16 @@ function bindEvents() {
     const del = event.target.closest("[data-delete-media]");
     if (profile) return openProfile(profile.dataset.profile);
     if (compare) return toggleCompareSelection(compare.dataset.compare);
-    if (open && !handleAdultOpen(open.dataset.open)) await openDetail(open.dataset.open);
-    if (manage) await editOwnMedia(manage.dataset.editMedia);
-    if (del) await deleteOwnMedia(del.dataset.deleteMedia);
-    if (download) await downloadMedia(download.dataset.download);
-    if (like) await toggleLike(like.dataset.like);
-    if (bookmark) await toggleBookmark(bookmark.dataset.bookmark);
-    if (collect) await openCollectionPicker(collect.dataset.collect);
-    if (copy) await copyAddress(copy.dataset.copy);
-    if (ageGate) openAgeDialog("Verify your age to download this 18+ post.");
+    if (open && !handleAdultOpen(open.dataset.open)) return openDetail(open.dataset.open);
+    if (manage) return editOwnMedia(manage.dataset.editMedia);
+    if (del) return deleteOwnMedia(del.dataset.deleteMedia);
+    if (download) return downloadMedia(download.dataset.download);
+    if (like) return toggleLike(like.dataset.like);
+    if (bookmark) return toggleBookmark(bookmark.dataset.bookmark);
+    if (collect) return openCollectionPicker(collect.dataset.collect);
+    if (copy) return copyAddress(copy.dataset.copy);
+    if (ageGate) return openAgeDialog("Verify your age to download this 18+ post.");
+    if (cardOpen && !handleAdultOpen(cardOpen.dataset.open)) return openDetail(cardOpen.dataset.open);
   });
   $("user-search-results").addEventListener("click", async (event) => {
     const profile = event.target.closest("[data-profile]");
@@ -4375,10 +4426,80 @@ function bindEvents() {
   });
 }
 
+async function openRouteFromLocation() {
+  if (REMOTE_MODE) return false;
+  const path = location.pathname.replace(/\/+$/, "") || "/";
+  const mediaMatch = path.match(/^\/media\/(\d+)$/);
+  const userMatch = path.match(/^\/users\/([^/]+)$/);
+  routeSyncInProgress = true;
+  try {
+    if (mediaMatch) {
+      if (!["discover", "following", "liked", "collections", "studio", "profile"].includes(currentPage)) {
+        setCurrentPage("discover", { updateRoute: false });
+      }
+      await openDetail(mediaMatch[1], { updateRoute: false });
+      return true;
+    }
+    if (safeEl("detail-dialog")?.open) closeDetailDialog({ updateRoute: false });
+    if (userMatch) {
+      await openProfile(decodeURIComponent(userMatch[1]));
+      return true;
+    }
+    if (path === "/collections") {
+      await openCollectionsPage();
+      return true;
+    }
+    if (path === "/following") {
+      await openFollowingPage();
+      return true;
+    }
+    if (path === "/liked") {
+      await openLikedPage();
+      return true;
+    }
+    if (path === "/users") {
+      await openUserSearchPage({ preserveQuery: true });
+      return true;
+    }
+    if (path === "/friends") {
+      await openFriendsPage();
+      return true;
+    }
+    if (path === "/studio") {
+      await openStudio();
+      return true;
+    }
+    if (path === "/profile" && currentUser?.username) {
+      await openProfile(currentUser.username);
+      return true;
+    }
+    if (path === "/upload") {
+      setCurrentPage("discover", { updateRoute: false });
+      currentUser ? safeEl("upload-dialog")?.showModal() : safeEl("auth-dialog")?.showModal();
+      return true;
+    }
+    if (path === "/settings") {
+      currentUser ? openSettingsPanel() : safeEl("auth-dialog")?.showModal();
+      return true;
+    }
+    if (path === "/login") {
+      safeEl("auth-dialog")?.showModal();
+      return true;
+    }
+    if (path === "/") {
+      setCurrentPage("discover", { updateRoute: false });
+      return true;
+    }
+    return false;
+  } finally {
+    routeSyncInProgress = false;
+  }
+}
+
 async function boot() {
   applyRuntimePerformanceMode();
   bindEvents();
-  setCurrentPage("discover");
+  setCurrentPage("discover", { updateRoute: false });
   renderAuth();
   updateCompareUi();
   enhanceMotion(document);
@@ -4388,12 +4509,20 @@ async function boot() {
     if (!hashProfile) return;
     await openProfile(hashProfile);
   });
+  window.addEventListener("popstate", async () => {
+    try {
+      await openRouteFromLocation();
+    } catch (err) {
+      showToast(err.message || "Route unavailable.", "error");
+    }
+  });
   const hasBackendConfig = await initApiOrigin();
   if (REMOTE_MODE && !hasBackendConfig) return;
   try {
     refreshSiteBackground({ force: false });
     if (token) await refreshMe();
     await refreshAll();
+    await openRouteFromLocation();
     const hashProfile = decodeURIComponent(location.hash || "").match(/^#user\/(.+)/)?.[1];
     if (hashProfile) await openProfile(hashProfile);
     $("connection-status").textContent = REMOTE_MODE ? "Live" : "Local";
