@@ -1,5 +1,6 @@
 import asyncio
 import io
+import json
 import logging
 import mimetypes
 import io
@@ -53,10 +54,14 @@ BACKGROUND_ASPECT_RATIO = 16 / 9
 BACKGROUND_ASPECT_TOLERANCE = 0.035
 BACKGROUND_CACHE_SECONDS = 300
 PREVIEW_CACHE_MAX_ITEMS = 256
+API_CACHE_MAX_ITEMS = max(64, int(os.getenv("GALLERY_API_CACHE_MAX_ITEMS", "256")))
+MEDIA_LIST_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_MEDIA_LIST_CACHE_SECONDS", "12") or "12"))
+LOOKUP_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_LOOKUP_CACHE_SECONDS", "60") or "60"))
 MAX_IMAGE_PIXELS = max(8_000_000, int(os.getenv("GALLERY_MAX_IMAGE_PIXELS", "80000000")))
 _background_cache_lock = asyncio.Lock()
 _background_cache: dict[str, Any] = {"built_at": 0.0, "items": []}
 _preview_cache: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
+_api_cache: OrderedDict[str, tuple[float, str, str]] = OrderedDict()
 
 
 class RegisterRequest(BaseModel):
@@ -359,6 +364,65 @@ def _etag_matches(request: Request, etag: str) -> bool:
         return False
     candidates = {part.strip() for part in raw.split(",") if part.strip()}
     return "*" in candidates or etag in candidates
+
+
+def _api_cache_origin(request: Request) -> str:
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    forwarded_host = request.headers.get("x-forwarded-host")
+    scheme = (forwarded_proto or request.url.scheme or "http").split(",", 1)[0].strip()
+    host = (forwarded_host or request.headers.get("host") or request.url.netloc).split(",", 1)[0].strip()
+    return f"{scheme}://{host}"
+
+
+def _api_cache_key(prefix: str, request: Request, *parts: Any) -> str:
+    normalized_parts = [prefix, _api_cache_origin(request)]
+    normalized_parts.extend(str(part) for part in parts)
+    return "|".join(normalized_parts)
+
+
+def _api_json_response(request: Request, payload: str, etag: str, ttl_seconds: float) -> Response:
+    max_age = max(0, int(ttl_seconds))
+    headers = {
+        "Cache-Control": f"private, max-age={max_age}",
+        "ETag": etag,
+        "Vary": "Authorization, Cookie",
+    }
+    if _etag_matches(request, etag):
+        return Response(status_code=304, headers=headers)
+    return Response(content=payload, media_type="application/json", headers=headers)
+
+
+def _api_cache_response(request: Request, cache_key: str) -> Response | None:
+    cached = _api_cache.get(cache_key)
+    if not cached:
+        return None
+    expires_at, payload, etag = cached
+    if expires_at <= time.time():
+        _api_cache.pop(cache_key, None)
+        return None
+    _api_cache.move_to_end(cache_key)
+    return _api_json_response(request, payload, etag, max(0.0, expires_at - time.time()))
+
+
+def _store_api_cache_response(request: Request, cache_key: str, value: Any, ttl_seconds: float) -> Response:
+    payload = json.dumps(_jsonable(value), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    etag = f"\"api:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}\""
+    if ttl_seconds > 0:
+        _api_cache[cache_key] = (time.time() + ttl_seconds, payload, etag)
+        _api_cache.move_to_end(cache_key)
+        while len(_api_cache) > API_CACHE_MAX_ITEMS:
+            _api_cache.popitem(last=False)
+    return _api_json_response(request, payload, etag, ttl_seconds)
+
+
+def _invalidate_api_cache(*prefixes: str) -> None:
+    if not prefixes:
+        _api_cache.clear()
+        return
+    normalized = tuple(f"{prefix}|" for prefix in prefixes)
+    for key in list(_api_cache.keys()):
+        if key.startswith(normalized):
+            _api_cache.pop(key, None)
 
 
 def _cached_preview(cache_key: tuple[str, str]) -> tuple[bytes, str] | None:
@@ -1185,6 +1249,7 @@ async def update_profile(payload: ProfileUpdateRequest, request: Request) -> dic
         user = await db.update_user_profile(int(auth["id"]), payload.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    _invalidate_api_cache("media")
     return {"user": _with_user_urls(request, user)}
 
 
@@ -1221,6 +1286,7 @@ async def update_avatar(request: Request, file: UploadFile = File(...)) -> dict[
         logger.exception("Avatar upload failed for user_id=%s", auth["id"])
         raise HTTPException(status_code=500, detail="Avatar upload failed. Check Image Gallery backend logs.") from exc
 
+    _invalidate_api_cache("media")
     return {"user": _with_user_urls(request, user)}
 
 
@@ -1405,8 +1471,12 @@ async def user_friends(user_id: int, request: Request) -> dict[str, Any]:
     return {"friends": [_with_user_urls(request, user) for user in users]}
 
 @app.get("/api/categories")
-async def categories() -> dict[str, Any]:
-    return {"categories": _jsonable(await db.list_categories())}
+async def categories(request: Request) -> Response:
+    cache_key = _api_cache_key("categories", request)
+    cached = _api_cache_response(request, cache_key)
+    if cached:
+        return cached
+    return _store_api_cache_response(request, cache_key, {"categories": _jsonable(await db.list_categories())}, LOOKUP_CACHE_SECONDS)
 
 
 @app.post("/api/categories")
@@ -1416,6 +1486,7 @@ async def create_category(payload: CategoryRequest, request: Request) -> dict[st
         category = await db.create_category(payload.name, payload.media_kind, int(auth["id"]))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    _invalidate_api_cache("categories", "media", "tags")
     return {"category": _jsonable(category)}
 
 
@@ -1435,26 +1506,53 @@ async def media(
     sort: str = "new",
     limit: int = 60,
     offset: int = 0,
-) -> dict[str, Any]:
+) -> Response:
     viewer_id = _user_id(_auth_optional(request))
     adult_allowed = await _viewer_can_open_adult(request)
+    normalized_query = (q or "").strip()[:80] or None
+    normalized_uploader = (uploader or "").strip()[:80] or None
+    normalized_date_from = (date_from or "").strip()[:10] or None
+    normalized_date_to = (date_to or "").strip()[:10] or None
+    normalized_adult = adult if adult in {"show", "hide", "only"} else None
+    cache_key = _api_cache_key(
+        "media",
+        request,
+        viewer_id or "anon",
+        int(bool(adult_allowed)),
+        media_kind or "",
+        category_id or "",
+        subcategory_id or "",
+        normalized_query or "",
+        normalized_uploader or "",
+        min_size or "",
+        max_size or "",
+        normalized_date_from or "",
+        normalized_date_to or "",
+        normalized_adult or "",
+        sort or "new",
+        limit,
+        offset,
+    )
+    cached = _api_cache_response(request, cache_key)
+    if cached:
+        return cached
     items = await db.list_media(
         viewer_id=viewer_id,
         media_kind=media_kind,
         category_id=category_id,
         subcategory_id=subcategory_id,
-        query=(q or "").strip()[:80] or None,
-        uploader=(uploader or "").strip()[:80] or None,
+        query=normalized_query,
+        uploader=normalized_uploader,
         min_size=min_size,
         max_size=max_size,
-        date_from=(date_from or "").strip()[:10] or None,
-        date_to=(date_to or "").strip()[:10] or None,
-        adult=adult if adult in {"show", "hide", "only"} else None,
+        date_from=normalized_date_from,
+        date_to=normalized_date_to,
+        adult=normalized_adult,
         sort=sort,
         limit=limit,
         offset=offset,
     )
-    return {"media": [_with_urls(request, item, adult_allowed) for item in items]}
+    return _store_api_cache_response(request, cache_key, {"media": [_with_urls(request, item, adult_allowed) for item in items]}, MEDIA_LIST_CACHE_SECONDS)
 
 
 @app.get("/api/media/random")
@@ -1484,8 +1582,12 @@ async def site_background(request: Request, exclude: int | None = None) -> dict[
 
 
 @app.get("/api/tags")
-async def tags() -> dict[str, Any]:
-    return {"tags": _jsonable(await db.tag_cloud())}
+async def tags(request: Request) -> Response:
+    cache_key = _api_cache_key("tags", request)
+    cached = _api_cache_response(request, cache_key)
+    if cached:
+        return cached
+    return _store_api_cache_response(request, cache_key, {"tags": _jsonable(await db.tag_cloud())}, LOOKUP_CACHE_SECONDS)
 
 
 @app.get("/api/collections")
@@ -1650,6 +1752,7 @@ async def upload_media(
         }
     )
     adult_allowed = await _viewer_can_open_adult(request)
+    _invalidate_api_cache("media", "tags", "categories")
     return {"media": _with_urls(request, item, adult_allowed)}
 
 
@@ -1714,6 +1817,7 @@ async def edit_media(media_id: int, payload: MediaUpdateRequest, request: Reques
     if not item:
         raise HTTPException(status_code=404, detail="Media not found.")
     adult_allowed = await _viewer_can_open_adult(request)
+    _invalidate_api_cache("media", "tags", "categories")
     return {"media": _with_urls(request, item, adult_allowed)}
 
 
@@ -1729,6 +1833,7 @@ async def edit_media_controls(media_id: int, payload: MediaControlRequest, reque
     if not item:
         raise HTTPException(status_code=404, detail="Media not found.")
     adult_allowed = await _viewer_can_open_adult(request)
+    _invalidate_api_cache("media")
     return {"media": _with_urls(request, item, adult_allowed)}
 
 
@@ -1742,6 +1847,7 @@ async def restore_media(media_id: int, request: Request) -> dict[str, Any]:
     if not item:
         raise HTTPException(status_code=404, detail="Media not found.")
     adult_allowed = await _viewer_can_open_adult(request)
+    _invalidate_api_cache("media")
     return {"media": _with_urls(request, item, adult_allowed)}
 
 
@@ -1752,6 +1858,7 @@ async def like_media(media_id: int, payload: LikeRequest, request: Request) -> d
     if not item:
         raise HTTPException(status_code=404, detail="Media not found.")
     adult_allowed = await _viewer_can_open_adult(request)
+    _invalidate_api_cache("media")
     return {"media": _with_urls(request, item, adult_allowed)}
 
 
@@ -1762,6 +1869,7 @@ async def bookmark_media(media_id: int, payload: BookmarkRequest, request: Reque
     if not item:
         raise HTTPException(status_code=404, detail="Media not found.")
     adult_allowed = await _viewer_can_open_adult(request)
+    _invalidate_api_cache("media")
     return {"media": _with_urls(request, item, adult_allowed)}
 
 
@@ -1776,6 +1884,7 @@ async def add_comment(media_id: int, payload: CommentRequest, request: Request) 
         raise HTTPException(status_code=403, detail=str(exc)) from None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    _invalidate_api_cache("media")
     return {"comment": _jsonable(comment)}
 
 
@@ -1788,6 +1897,7 @@ async def delete_comment(comment_id: int, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail=str(exc)) from None
     if not deleted:
         raise HTTPException(status_code=404, detail="Comment not found.")
+    _invalidate_api_cache("media")
     return {"deleted": True}
 
 
@@ -1800,6 +1910,7 @@ async def report_media(media_id: int, payload: ReportRequest, request: Request) 
         report = await db.report_media(media_id, int(auth["id"]), payload.reason, payload.details)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    _invalidate_api_cache("media")
     return {"report": _jsonable(report)}
 
 
@@ -1809,6 +1920,7 @@ async def delete_media(media_id: int, request: Request) -> dict[str, Any]:
     item = await db.delete_media(media_id, int(auth["id"]))
     if not item:
         raise HTTPException(status_code=404, detail="Media not found.")
+    _invalidate_api_cache("media", "tags", "categories")
     return {"deleted": True}
 
 

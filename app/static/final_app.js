@@ -17,6 +17,9 @@ const SITE_BACKGROUND_REFRESH_MS = 5 * 60 * 1000;
 const SEARCH_DEBOUNCE_MS = 250;
 const API_REQUEST_TIMEOUT_MS = 30000;
 const LIVE_CHECK_MIN_GAP_MS = 5000;
+const GALLERY_ASSET_PRELOAD_LIMIT = 10;
+const LOW_POWER_GALLERY_ASSET_PRELOAD_LIMIT = 4;
+const GALLERY_ASSET_PRELOAD_CACHE_LIMIT = 240;
 const DEFAULT_USER_SETTINGS = {
   theme_mode: "system",
   accent_color: "#37c9a7",
@@ -95,6 +98,8 @@ let galleryLoadController = null;
 let galleryRequestId = 0;
 let liveCheckInFlight = null;
 let lastLiveCheckAt = 0;
+let galleryAssetPreloadHandle = 0;
+const galleryAssetPreloadCache = new Set();
 
 const $ = (id) => document.getElementById(id);
 
@@ -833,6 +838,50 @@ function renderPreview(item, size = "card") {
     <span class="${blur ? "adult-blur" : ""}">${body}</span>
     ${isAdult && !revealed ? `<span class="adult-overlay">${placeholderText}</span>` : ""}
   `;
+}
+
+function rememberGalleryPreload(url) {
+  if (!url || galleryAssetPreloadCache.has(url)) return false;
+  galleryAssetPreloadCache.add(url);
+  while (galleryAssetPreloadCache.size > GALLERY_ASSET_PRELOAD_CACHE_LIMIT) {
+    const oldest = galleryAssetPreloadCache.values().next().value;
+    galleryAssetPreloadCache.delete(oldest);
+  }
+  return true;
+}
+
+function preloadGalleryImage(url) {
+  const normalized = normalizedPublicUrl(url);
+  if (!normalized || !rememberGalleryPreload(normalized)) return;
+  const image = new Image();
+  image.decoding = "async";
+  image.fetchPriority = "low";
+  image.src = normalized;
+  if (typeof image.decode === "function") image.decode().catch(() => {});
+}
+
+function scheduleGalleryAssetPrecache(items = mediaItems) {
+  if (!Array.isArray(items) || !items.length || navigator.connection?.saveData) return;
+  if (galleryAssetPreloadHandle) {
+    if (window.cancelIdleCallback) window.cancelIdleCallback(galleryAssetPreloadHandle);
+    else window.clearTimeout(galleryAssetPreloadHandle);
+    galleryAssetPreloadHandle = 0;
+  }
+  const limit = isLowPowerMode() ? LOW_POWER_GALLERY_ASSET_PRELOAD_LIMIT : GALLERY_ASSET_PRELOAD_LIMIT;
+  const snapshot = items.slice(0, limit).filter((item) => item && canRevealAdult(item));
+  const run = () => {
+    galleryAssetPreloadHandle = 0;
+    for (const item of snapshot) {
+      if (item.media_kind === "image") {
+        const previewBase = item.preview_url || item.url;
+        preloadGalleryImage(appendQueryParam(previewBase, "size", "mini"));
+      }
+      preloadGalleryImage(avatarUrlForRecord(item, { urlKey: "user_avatar_url", pathKey: "user_avatar_path", fileIdKey: "user_avatar_file_id", idKey: "user_id" }));
+    }
+  };
+  galleryAssetPreloadHandle = window.requestIdleCallback
+    ? window.requestIdleCallback(run, { timeout: 1600 })
+    : window.setTimeout(run, 180);
 }
 
 function userSettings() {
@@ -1928,6 +1977,7 @@ async function loadMedia(page = galleryPage, { scrollToTop = false } = {}) {
     galleryHasNext = rows.length > pageSize;
     mediaItems = rows.slice(0, pageSize);
     renderMediaGrid();
+    scheduleGalleryAssetPrecache(mediaItems);
     if (scrollToTop) safeEl("gallery-grid")?.scrollIntoView({ behavior: isLowPowerMode() ? "auto" : "smooth", block: "start" });
   } catch (err) {
     if (err.name === "AbortError" || requestId !== galleryRequestId) return;
@@ -2707,6 +2757,7 @@ async function loadPagedFeed(path, mode, page = 1, { scrollToTop = false } = {})
     galleryHasNext = rows.length > pageSize;
     mediaItems = rows.slice(0, pageSize);
     renderMediaGrid();
+    scheduleGalleryAssetPrecache(mediaItems);
     if (scrollToTop) safeEl("gallery-grid")?.scrollIntoView({ behavior: isLowPowerMode() ? "auto" : "smooth", block: "start" });
   } catch (err) {
     if (err.name === "AbortError" || requestId !== galleryRequestId) return;
