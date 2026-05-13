@@ -76,6 +76,7 @@ _background_cache_lock = asyncio.Lock()
 _background_cache: dict[str, Any] = {"built_at": 0.0, "items": []}
 _preview_cache: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
 _api_cache: OrderedDict[str, tuple[float, str, str]] = OrderedDict()
+_thumb_generation_locks: dict[str, asyncio.Lock] = {}
 
 
 def _app_shell_path() -> Path:
@@ -301,6 +302,10 @@ def _public_url(request: Request, storage_path: str, media_id: int | None = None
 
 def _preview_url(request: Request, media_id: int) -> str:
     return str(request.url_for("serve_media_preview", media_id=media_id))
+
+
+def _thumb_url(request: Request, media_id: int, width: int = 640) -> str:
+    return str(request.url_for("serve_media_thumb", media_id=media_id)) + f"?w={int(width)}"
 
 
 def _download_filename(value: str | None, fallback: str = "download") -> str:
@@ -683,16 +688,20 @@ def _with_urls(request: Request, item: dict[str, Any] | None, adult_allowed: boo
         clone.pop("storage_path", None)
         clone["url"] = None
         clone["preview_url"] = None
+        clone["thumb_url"] = None
         clone["download_url"] = None
     else:
         media_id = int(clone["id"])
         clone["url"] = _public_url(request, clone.get("storage_path", ""), media_id)
+        clone["thumb_url"] = _thumb_url(request, media_id) if clone.get("media_kind") == "image" else None
         clone["preview_url"] = _preview_url(request, media_id) if clone.get("media_kind") == "image" else clone["url"]
         clone["download_url"] = str(request.url_for("download_media", media_id=media_id))
         if clone.get("is_adult") and adult_allowed:
             token = _media_access_token(media_id)
             clone["url"] = _append_query(clone["url"], "access", token)
             clone["preview_url"] = _append_query(clone["preview_url"], "access", token)
+            if clone.get("thumb_url"):
+                clone["thumb_url"] = _append_query(clone["thumb_url"], "access", token)
             clone["download_url"] = _append_query(clone["download_url"], "access", token)
     if clone.get("user_avatar_path"):
         clone["user_avatar_url"] = _avatar_url(
@@ -1065,6 +1074,18 @@ async def browser_origin_and_headers(request: Request, call_next):
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(_app_shell_path())
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> Response:
+    svg = (
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+        "<rect width='64' height='64' rx='14' fill='#10161d'/>"
+        "<path d='M13 43l12-14 9 10 7-8 10 12H13z' fill='#37c9a7'/>"
+        "<circle cx='43' cy='22' r='7' fill='#6ec7ff'/>"
+        "</svg>"
+    )
+    return Response(content=svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.get("/collections")
@@ -2037,6 +2058,17 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
 THUMB_CACHE_DIR = settings.uploads_dir / "_thumb_cache"
 THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+def _thumb_file_response(request: Request, cache_file: Path, headers: dict[str, str]) -> Response | None:
+    if not cache_file.exists() or cache_file.stat().st_size <= 0:
+        return None
+    stat = cache_file.stat()
+    etag = f"\"thumb:{cache_file.stem}:{stat.st_mtime_ns}:{stat.st_size}\""
+    response_headers = {**headers, "ETag": etag}
+    if _etag_matches(request, etag):
+        return Response(status_code=304, headers=response_headers)
+    return FileResponse(cache_file, media_type="image/webp", headers=response_headers)
+
+
 @app.get("/api/media/{media_id}/thumb", name="serve_media_thumb")
 async def serve_media_thumb(media_id: int, request: Request, access: str | None = None, w: int = 520) -> Response:
     viewer_id = _user_id(_auth_optional(request))
@@ -2056,39 +2088,51 @@ async def serve_media_thumb(media_id: int, request: Request, access: str | None 
     }
 
     if cache_file.exists() and cache_file.stat().st_size > 0:
-        return FileResponse(cache_file, media_type="image/webp", headers=headers)
+        cached = _thumb_file_response(request, cache_file, headers)
+        if cached:
+            return cached
 
     if str(item.get("media_kind") or "").lower() != "image":
         return await _serve_media_content(media_id, request, access=access, as_download=False)
 
-    file_row = await db.get_media_file(media_id)
-    if not file_row:
-        legacy = _legacy_upload_path(item.get("storage_path"))
-        if legacy:
-            return FileResponse(
-                legacy,
-                media_type=item.get("mime_type") or mimetypes.guess_type(str(legacy))[0] or "application/octet-stream",
-                headers=headers,
-            )
-        raise HTTPException(status_code=404, detail="File missing from database.")
+    lock_key = f"{int(media_id)}:{width}"
+    lock = _thumb_generation_locks.setdefault(lock_key, asyncio.Lock())
+    async with lock:
+        cached = _thumb_file_response(request, cache_file, headers)
+        if cached:
+            return cached
 
-    try:
-        from PIL import Image, ImageSequence
-        Image.MAX_IMAGE_PIXELS = 90_000_000
+        file_row = await db.get_media_file(media_id)
+        if not file_row:
+            legacy = _legacy_upload_path(item.get("storage_path"))
+            if legacy:
+                return FileResponse(
+                    legacy,
+                    media_type=item.get("mime_type") or mimetypes.guess_type(str(legacy))[0] or "application/octet-stream",
+                    headers=headers,
+                )
+            raise HTTPException(status_code=404, detail="File missing from database.")
 
-        with Image.open(io.BytesIO(file_row["content"])) as image:
-            frame = next(ImageSequence.Iterator(image), image)
-            frame = frame.convert("RGB")
-            frame.thumbnail((width, width), Image.Resampling.LANCZOS)
+        try:
+            from PIL import Image, ImageSequence
+            Image.MAX_IMAGE_PIXELS = 90_000_000
 
-            tmp = cache_file.with_suffix(".tmp")
-            frame.save(tmp, format="WEBP", quality=78, method=4)
-            tmp.replace(cache_file)
+            with Image.open(io.BytesIO(file_row["content"])) as image:
+                frame = next(ImageSequence.Iterator(image), image)
+                frame = frame.convert("RGB")
+                frame.thumbnail((width, width), Image.Resampling.LANCZOS)
 
-        return FileResponse(cache_file, media_type="image/webp", headers=headers)
-    except Exception:
-        # If thumbnailing fails, fall back to the original instead of breaking the UI.
-        return await _serve_media_content(media_id, request, access=access, as_download=False)
+                tmp = cache_file.with_suffix(".tmp")
+                frame.save(tmp, format="WEBP", quality=78, method=4)
+                tmp.replace(cache_file)
+
+            cached = _thumb_file_response(request, cache_file, headers)
+            if cached:
+                return cached
+            return FileResponse(cache_file, media_type="image/webp", headers=headers)
+        except Exception:
+            # If thumbnailing fails, fall back to the original instead of breaking the UI.
+            return await _serve_media_content(media_id, request, access=access, as_download=False)
 
 
 @app.get("/api/media/{media_id}/file", name="serve_media_file")
