@@ -5,6 +5,8 @@ PORT="${1:-${GALLERY_BACKEND_PORT:-8788}}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
 BIN_DIR="${ROOT_DIR}/.bin"
+PYTHON_BIN="${VENV_DIR}/bin/python"
+PYTHON_TARGET_DIR="${ROOT_DIR}/.runtime/python-packages"
 CONFIG_FILE="${ROOT_DIR}/live-config.json"
 PAGES_ORIGIN="${GALLERY_PAGES_ORIGIN:-https://heavenlyxenusvr.github.io}"
 PAGES_URL="${GALLERY_PAGES_PUBLIC_URL:-https://heavenlyxenusvr.github.io/Image-Gallery/}"
@@ -219,13 +221,23 @@ publish_offline_config() {
 
 install_python_deps() {
   if [[ -x "${VENV_DIR}/bin/python" ]] && ! "${VENV_DIR}/bin/python" -m pip --version >/dev/null 2>&1; then
+    echo "Existing virtualenv cannot run pip; rebuilding ${VENV_DIR}..." >&2
     rm -rf "${VENV_DIR}"
   fi
   if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
-    python3 -m venv "${VENV_DIR}"
+    if ! python3 -m venv "${VENV_DIR}"; then
+      echo "python3 venv support is unavailable; installing dependencies into ${PYTHON_TARGET_DIR}." >&2
+      rm -rf "${VENV_DIR}"
+      mkdir -p "${PYTHON_TARGET_DIR}"
+      python3 -m pip install --upgrade --target "${PYTHON_TARGET_DIR}" -r "${ROOT_DIR}/requirements.txt"
+      PYTHON_BIN="python3"
+      export PYTHONPATH="${PYTHON_TARGET_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+      return
+    fi
   fi
-  "${VENV_DIR}/bin/python" -m pip install --upgrade pip
-  "${VENV_DIR}/bin/python" -m pip install -r "${ROOT_DIR}/requirements.txt"
+  PYTHON_BIN="${VENV_DIR}/bin/python"
+  "${PYTHON_BIN}" -m pip install --upgrade pip
+  "${PYTHON_BIN}" -m pip install -r "${ROOT_DIR}/requirements.txt"
 }
 
 cloudflared_bin() {
@@ -280,7 +292,7 @@ publish_live_url() {
 start_pinggy_tunnel() {
   echo "Opening Pinggy tunnel..."
   : > "${TUNNEL_LOG}"
-  "${VENV_DIR}/bin/python" "${ROOT_DIR}/scripts/start_pinggy_tunnel.py" --port "${PORT}" >"${TUNNEL_LOG}" 2>&1 &
+  "${PYTHON_BIN}" "${ROOT_DIR}/scripts/start_pinggy_tunnel.py" --port "${PORT}" >"${TUNNEL_LOG}" 2>&1 &
   TUNNEL_PID="$!"
 
   local gallery_url=""
@@ -353,7 +365,7 @@ else
       exit 1
     fi
     echo "Starting Image Gallery backend on http://127.0.0.1:${PORT}"
-    "${VENV_DIR}/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port "${PORT}" >"${UVICORN_LOG}" 2>&1 &
+    "${PYTHON_BIN}" -m uvicorn app.main:app --host 127.0.0.1 --port "${PORT}" >"${UVICORN_LOG}" 2>&1 &
     UVICORN_PID="$!"
     STARTED_LOCAL_BACKEND=1
 
