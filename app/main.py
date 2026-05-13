@@ -71,10 +71,15 @@ APP_SHELL_PATHS = {
     "/settings",
     "/login",
 }
+REACT_SHELL_PATH = ROOT_DIR / "app" / "static" / "react" / "index.html"
 _background_cache_lock = asyncio.Lock()
 _background_cache: dict[str, Any] = {"built_at": 0.0, "items": []}
 _preview_cache: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
 _api_cache: OrderedDict[str, tuple[float, str, str]] = OrderedDict()
+
+
+def _app_shell_path() -> Path:
+    return REACT_SHELL_PATH if REACT_SHELL_PATH.exists() else ROOT_DIR / "index.html"
 
 
 class RegisterRequest(BaseModel):
@@ -1059,7 +1064,7 @@ async def browser_origin_and_headers(request: Request, call_next):
 
 @app.get("/")
 async def index() -> FileResponse:
-    return FileResponse(ROOT_DIR / "index.html")
+    return FileResponse(_app_shell_path())
 
 
 @app.get("/collections")
@@ -1073,17 +1078,17 @@ async def index() -> FileResponse:
 @app.get("/settings")
 @app.get("/login")
 async def app_page() -> FileResponse:
-    return FileResponse(ROOT_DIR / "index.html")
+    return FileResponse(_app_shell_path())
 
 
 @app.get("/media/{media_id:int}")
 async def media_page(media_id: int) -> FileResponse:
-    return FileResponse(ROOT_DIR / "index.html")
+    return FileResponse(_app_shell_path())
 
 
 @app.get("/users/{username}")
 async def user_page(username: str) -> FileResponse:
-    return FileResponse(ROOT_DIR / "index.html")
+    return FileResponse(_app_shell_path())
 
 
 @app.get("/api/uploads/{path:path}", name="serve_legacy_upload")
