@@ -4,15 +4,16 @@ import { Bookmark, Download, Film, Heart, Image as ImageIcon, Lock, RefreshCw, S
 import { apiFetch, clearApiCache } from "../api.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
 import { formatBytes, formatDate, numberish } from "../utils/format.js";
-import { thumbUrl } from "../utils/media.js";
+import { isPerfLiteRuntime, thumbUrl } from "../utils/media.js";
 import { Avatar, EmptyState, SkeletonGrid, StatsRow } from "./ui.jsx";
 
 export function MediaGrid({ ctx, items, loading = false, emptyTitle = "No media", onItemUpdated }) {
   if (loading) return <SkeletonGrid count={8} />;
   if (!items?.length) return <EmptyState title={emptyTitle} />;
+  const eagerCount = isPerfLiteRuntime() ? 1 : 4;
   return (
     <div className="media-grid">
-      {items.map((item, index) => <MediaCard ctx={ctx} item={item} key={item.id} eager={index < 4} onItemUpdated={onItemUpdated} />)}
+      {items.map((item, index) => <MediaCard ctx={ctx} item={item} key={item.id} eager={index < eagerCount} onItemUpdated={onItemUpdated} />)}
     </div>
   );
 }

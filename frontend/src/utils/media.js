@@ -4,6 +4,15 @@ let activePreloads = 0;
 const MAX_PRELOADS = 2;
 const MAX_SEEN_PRELOADS = 700;
 
+export function isPerfLiteRuntime() {
+  if (typeof document === "undefined") return false;
+  return document.documentElement.classList.contains("perf-lite");
+}
+
+function defaultThumbWidth() {
+  return isPerfLiteRuntime() ? 360 : 640;
+}
+
 function scheduleIdle(callback) {
   if (typeof window === "undefined") return;
   if ("requestIdleCallback" in window) {
@@ -29,7 +38,7 @@ function pumpPreloadQueue() {
   }
 }
 
-export function thumbUrl(item, width = 640) {
+export function thumbUrl(item, width = defaultThumbWidth()) {
   if (!item || item.locked) return "";
   if (item.thumb_url) return item.thumb_url;
   if (item.media_kind === "image" && item.preview_url) return item.preview_url;
@@ -44,10 +53,11 @@ export function replaceMedia(rows, updated) {
 
 export function preloadMediaAssets(items, options = {}) {
   if (typeof Image === "undefined") return;
-  const limit = Math.max(0, Math.min(Number(options.limit || 6), 12));
+  const perfLite = isPerfLiteRuntime();
+  const limit = Math.max(0, Math.min(Number(options.limit || (perfLite ? 2 : 6)), perfLite ? 3 : 12));
   for (const item of (items || []).slice(0, limit)) {
     if (item?.media_kind === "video") continue;
-    const src = thumbUrl(item, options.width || 640);
+    const src = thumbUrl(item, options.width || defaultThumbWidth());
     if (!src || preloadedMedia.has(src)) continue;
     preloadedMedia.add(src);
     preloadQueue.push(src);

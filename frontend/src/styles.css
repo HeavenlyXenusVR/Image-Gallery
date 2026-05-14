@@ -28,11 +28,13 @@
 html {
   min-width: 320px;
   background: var(--bg);
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
+  overflow-x: hidden;
   background:
     linear-gradient(180deg, rgba(20, 30, 38, 0.72), transparent 320px),
     var(--bg);
@@ -159,6 +161,7 @@ video {
   gap: 6px;
   overflow-x: auto;
   scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
 }
 
 .nav-item {
@@ -453,6 +456,7 @@ textarea:focus {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 14px;
+  contain: layout paint;
 }
 
 .media-card,
@@ -471,6 +475,7 @@ textarea:focus {
   overflow: hidden;
   content-visibility: auto;
   contain-intrinsic-size: 340px;
+  contain: layout paint style;
 }
 
 .media-link {
@@ -1023,6 +1028,52 @@ textarea:focus {
   }
 }
 
+@supports not (content-visibility: auto) {
+  .media-card {
+    content-visibility: visible;
+    contain-intrinsic-size: auto;
+  }
+}
+
+.perf-lite *,
+.perf-lite *::before,
+.perf-lite *::after {
+  transition-duration: 0.001ms !important;
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+}
+
+.perf-lite body {
+  background: var(--bg);
+}
+
+.perf-lite .topbar {
+  background: #0e1217;
+  backdrop-filter: none;
+}
+
+.perf-lite .filter-rail,
+.perf-lite .list-panel,
+.perf-lite .detail-panel,
+.perf-lite .content-panel,
+.perf-lite .side-box,
+.perf-lite .auth-card,
+.perf-lite .create-box,
+.perf-lite .comments-panel,
+.perf-lite .media-stage,
+.perf-lite .detail-side,
+.perf-lite .upload-drop,
+.perf-lite .stacked-form,
+.perf-lite .media-card,
+.perf-lite .user-card,
+.perf-lite .studio-item,
+.perf-lite .friend-request,
+.perf-lite .comment,
+.perf-lite .metric,
+.perf-lite .toast {
+  box-shadow: none;
+}
+
 @media (max-width: 1180px) {
   .topbar {
     grid-template-columns: 1fr auto;
@@ -1059,19 +1110,62 @@ textarea:focus {
 }
 
 @media (max-width: 760px) {
+  .app-shell {
+    padding-bottom: calc(74px + env(safe-area-inset-bottom));
+  }
+
   .main-stage {
     width: min(100vw - 20px, 1720px);
-    padding-top: 14px;
+    padding: 14px 0 28px;
   }
 
   .topbar {
-    padding: 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 9px 10px;
   }
 
   .brand span:last-child,
-  .nav-item span,
   .health-pill {
     display: none;
+  }
+
+  .primary-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 60;
+    order: initial;
+    grid-column: auto;
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(66px, 1fr);
+    gap: 4px;
+    padding: 6px max(8px, env(safe-area-inset-left)) calc(7px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-right));
+    border-top: 1px solid rgba(77, 95, 116, 0.62);
+    background: #0e1217;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  .nav-item {
+    min-height: 54px;
+    flex-direction: column;
+    gap: 3px;
+    padding: 5px 6px;
+    font-size: 0.72rem;
+  }
+
+  .nav-item span {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .account-actions {
+    gap: 6px;
   }
 
   .page-head {
@@ -1097,6 +1191,24 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
+  .media-grid {
+    gap: 10px;
+  }
+
+  .media-copy {
+    padding: 9px 10px 3px;
+  }
+
+  .card-meta,
+  .card-actions {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .card-actions button {
+    min-height: 38px;
+  }
+
   .detail-side,
   .comments-panel,
   .content-panel,
@@ -1116,5 +1228,15 @@ textarea:focus {
   .studio-item,
   .comment {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 420px) {
+  .page-head h1 {
+    font-size: 1.7rem;
+  }
+
+  .thumb-frame {
+    aspect-ratio: 1 / 1;
   }
 }

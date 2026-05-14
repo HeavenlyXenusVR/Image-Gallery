@@ -5,9 +5,11 @@ const API_CACHE_STALE_TTL = 5 * 60_000;
 const API_CACHE_VERSION = "v2";
 const API_CACHE_STORE_PREFIX = "image_gallery_api_cache:";
 const MAX_STORED_CACHE_BYTES = 700_000;
+const REMOTE_ORIGIN_KEY = "image_gallery_remote_origin";
 
 const memoryCache = new Map();
 const inFlightFetches = new Map();
+let remoteOriginPromise = null;
 
 export function readToken() {
   try {
@@ -61,7 +63,7 @@ export function clearApiCache(prefix = "") {
 export function apiUrl(path) {
   if (/^https?:\/\//i.test(path)) return path;
   const normalized = path.startsWith("/") ? path : `/${path}`;
-  return `${window.IMAGE_GALLERY_API_ORIGIN || ""}${normalized}`;
+  return `${currentApiOrigin()}${normalized}`;
 }
 
 export async function apiFetch(path, options = {}) {
@@ -72,7 +74,7 @@ export async function apiFetch(path, options = {}) {
   if (options.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(apiUrl(path), { ...options, headers });
+  const response = await fetch(await resolveApiUrl(path), { ...options, headers });
   const contentType = response.headers.get("content-type") || "";
   const isJson = contentType.includes("application/json");
   const payload = isJson ? await response.json().catch(() => null) : await response.text();
@@ -123,6 +125,58 @@ export function toQuery(params) {
   return serialized ? `?${serialized}` : "";
 }
 
+export async function resolveApiUrl(path) {
+  if (/^https?:\/\//i.test(path)) return path;
+  await ensureRemoteOrigin();
+  return apiUrl(path);
+}
+
+function currentApiOrigin() {
+  return String(window.IMAGE_GALLERY_API_ORIGIN || "").replace(/\/+$/, "");
+}
+
+function isRemoteStaticHost() {
+  return Boolean(window.IMAGE_GALLERY_REMOTE_MODE) || window.location.hostname.endsWith("github.io");
+}
+
+function remoteConfigUrl() {
+  if (window.IMAGE_GALLERY_CONFIG_URL) return window.IMAGE_GALLERY_CONFIG_URL;
+  const basename = String(window.IMAGE_GALLERY_BASENAME || "").replace(/\/+$/, "");
+  if (basename) return `${basename}/live-config.json`;
+  return "live-config.json";
+}
+
+async function ensureRemoteOrigin() {
+  if (currentApiOrigin() || !isRemoteStaticHost()) return currentApiOrigin();
+  if (!remoteOriginPromise) {
+    remoteOriginPromise = loadRemoteOrigin().finally(() => {
+      remoteOriginPromise = null;
+    });
+  }
+  return remoteOriginPromise;
+}
+
+async function loadRemoteOrigin() {
+  const cached = readStorageValue(REMOTE_ORIGIN_KEY);
+  if (cached) {
+    window.IMAGE_GALLERY_API_ORIGIN = cached;
+    return cached;
+  }
+  try {
+    const response = await fetch(`${remoteConfigUrl()}?t=${Date.now()}`, { cache: "no-store" });
+    if (!response.ok) return "";
+    const config = await response.json();
+    const origin = String(config.gallery_url || config.api_url || "").replace(/\/+$/, "");
+    if (origin) {
+      window.IMAGE_GALLERY_API_ORIGIN = origin;
+      writeStorageValue(REMOTE_ORIGIN_KEY, origin);
+    }
+    return origin;
+  } catch (_error) {
+    return "";
+  }
+}
+
 function revalidateCache(cacheKey, path, options, ttl, staleTtl, storage) {
   if (inFlightFetches.has(cacheKey)) return inFlightFetches.get(cacheKey);
   const promise = apiFetch(path, options)
@@ -141,6 +195,23 @@ function revalidateCache(cacheKey, path, options, ttl, staleTtl, storage) {
     .finally(() => inFlightFetches.delete(cacheKey));
   inFlightFetches.set(cacheKey, promise);
   return promise;
+}
+
+function readStorageValue(key) {
+  try {
+    return localStorage.getItem(key) || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function writeStorageValue(key, value) {
+  try {
+    if (value) localStorage.setItem(key, value);
+    else localStorage.removeItem(key);
+  } catch (_error) {
+    // Storage can be unavailable in hardened browser contexts.
+  }
 }
 
 function safeStorage(storage) {
