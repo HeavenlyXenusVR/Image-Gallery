@@ -79,7 +79,7 @@ export function UploadPage({ ctx }) {
       const body = new FormData();
       Object.entries(form).forEach(([key, value]) => {
         if (key === "file" && value) body.set("file", value);
-        else if (value !== null && value !== undefined) body.set(key, String(value));
+        else if (value !== null && value !== undefined && value !== "") body.set(key, String(value));
       });
       const data = await apiFetch("/api/media", { method: "POST", body });
       clearApiCache();

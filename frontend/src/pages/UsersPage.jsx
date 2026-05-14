@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Search } from "lucide-react";
 import { cachedApiFetch, toQuery } from "../api.js";
+import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { UserCard } from "../components/social.jsx";
 import { EmptyState, Page, SkeletonGrid } from "../components/ui.jsx";
 
@@ -9,20 +10,26 @@ export function UsersPage({ ctx }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
 
+  const loadUsers = useCallback(async ({ background = false } = {}) => {
+    if (!background) setLoading(true);
+    try {
+      const data = await cachedApiFetch(`/api/users/search${toQuery({ q: query, limit: 42 })}`, { ttl: background ? 8_000 : 20_000 });
+      setUsers(data.users || []);
+    } catch (error) {
+      if (!background) ctx.showToast(error.message, "error");
+    } finally {
+      if (!background) setLoading(false);
+    }
+  }, [ctx, query]);
+
   useEffect(() => {
-    const timer = window.setTimeout(async () => {
-      setLoading(true);
-      try {
-        const data = await cachedApiFetch(`/api/users/search${toQuery({ q: query, limit: 42 })}`, { ttl: 20_000 });
-        setUsers(data.users || []);
-      } catch (error) {
-        ctx.showToast(error.message, "error");
-      } finally {
-        setLoading(false);
-      }
+    const timer = window.setTimeout(() => {
+      loadUsers();
     }, 220);
     return () => window.clearTimeout(timer);
-  }, [ctx, query]);
+  }, [loadUsers]);
+
+  useLiveRefresh(() => loadUsers({ background: true }), { interval: 25_000 });
 
   return (
     <Page title="Users" eyebrow="People">
@@ -31,7 +38,7 @@ export function UsersPage({ ctx }) {
       </div>
       {loading ? <SkeletonGrid count={6} /> : (
         <div className="user-grid">
-          {users.map((user) => <UserCard ctx={ctx} user={user} key={user.id} />)}
+          {users.map((user) => <UserCard ctx={ctx} user={user} onChanged={() => loadUsers({ background: true })} key={user.id} />)}
         </div>
       )}
       {!loading && !users.length ? <EmptyState title="No users found" /> : null}

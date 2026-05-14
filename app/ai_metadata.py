@@ -156,11 +156,13 @@ def analyze_media_bytes(
 
     local_classifier = _local_vision_command()
     provider = str(os.getenv("GALLERY_AI_PROVIDER", "")).strip().lower()
-    if provider not in {"local", "ollama", "openai"}:
+    if provider not in {"local", "ollama", "openai", "google", "gemini"}:
         if local_classifier:
             provider = "local"
         elif os.getenv("GALLERY_OLLAMA_MODEL") or os.getenv("GALLERY_OLLAMA_BASE_URL"):
             provider = "ollama"
+        elif os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+            provider = "google"
         else:
             provider = "openai"
     enabled_default = bool(
@@ -170,6 +172,9 @@ def analyze_media_bytes(
         or ai_model
         or ai_api_key
         or os.getenv("GALLERY_AI_API_KEY")
+        or os.getenv("GALLERY_GEMINI_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
         or os.getenv("OPENAI_API_KEY")
     )
     enabled = _resolve_bool(ai_enabled, env_name="GALLERY_AI_ENABLED", default=enabled_default)
@@ -204,6 +209,26 @@ def analyze_media_bytes(
                     media_kind=media_kind,
                 )
 
+    if provider in {"google", "gemini"}:
+        failed_at = VISION_BACKOFF.get("google", 0.0)
+        if failed_at and (time.time() - failed_at) < backoff_seconds:
+            local_clip_result = _local_clip_analysis(
+                content=content,
+                filename=filename,
+                mime_type=mime_type,
+                media_kind=media_kind,
+                fallback=fallback,
+            )
+            if local_clip_result:
+                local_clip_result["reason"] = "Local CLIP fallback used while Gemini vision is cooling down after a recent failure."
+                return _merge_analysis(
+                    ai_result=local_clip_result,
+                    fallback=fallback,
+                    filename=filename,
+                    mime_type=mime_type,
+                    media_kind=media_kind,
+                )
+
     try:
         if provider == "local":
             local_clip_result = _local_clip_analysis(
@@ -225,9 +250,9 @@ def analyze_media_bytes(
             if os.getenv("GALLERY_OLLAMA_MODEL") or os.getenv("GALLERY_OLLAMA_BASE_URL"):
                 provider = "ollama"
             else:
-                api_key = str(ai_api_key or os.getenv("GALLERY_AI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+                api_key = str(ai_api_key or os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GALLERY_AI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
                 if api_key:
-                    provider = "openai"
+                    provider = "google" if (os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")) else "openai"
                 else:
                     fallback.reason = "Local vision classifier could not confidently identify this image."
                     return fallback
@@ -249,6 +274,25 @@ def analyze_media_bytes(
                 timeout_seconds=timeout_seconds,
             )
             VISION_BACKOFF.pop("ollama", None)
+        elif provider in {"google", "gemini"} or os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+            api_key = str(ai_api_key or os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
+            if not api_key:
+                return fallback
+            ai_result = _gemini_vision_analysis(
+                preview_image_b64=preview_image_b64,
+                filename=filename,
+                mime_type=mime_type,
+                media_kind=media_kind,
+                title_hint=title_hint,
+                description_hint=description_hint,
+                tags_hint=tags_hint or [],
+                fallback=fallback,
+                api_key=api_key,
+                model=str(ai_model or os.getenv("GALLERY_GEMINI_MODEL") or os.getenv("GEMINI_MODEL") or "gemini-2.5-flash-lite").strip(),
+                timeout_seconds=timeout_seconds,
+            )
+            provider = "google"
+            VISION_BACKOFF.pop("google", None)
         else:
             api_key = str(ai_api_key or os.getenv("GALLERY_AI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
             if not api_key:
@@ -273,6 +317,8 @@ def analyze_media_bytes(
     except Exception as exc:
         if provider == "ollama":
             VISION_BACKOFF["ollama"] = time.time()
+        if provider in {"google", "gemini"}:
+            VISION_BACKOFF["google"] = time.time()
         local_clip_result = local_clip_result or _local_clip_analysis(
             content=content,
             filename=filename,
@@ -430,6 +476,13 @@ def _merge_analysis(
         source = inferred_source
     elif (os.getenv("GALLERY_AI_PROVIDER", "").strip().lower() == "ollama" or os.getenv("GALLERY_OLLAMA_MODEL")) and confidence >= 0.45:
         source = "ollama"
+    elif (
+        os.getenv("GALLERY_AI_PROVIDER", "").strip().lower() in {"google", "gemini"}
+        or os.getenv("GALLERY_GEMINI_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+    ) and confidence >= 0.45:
+        source = "google-gemini"
     else:
         source = "openai" if confidence >= 0.45 else fallback.source
     return SmartMediaAnalysis(
@@ -535,6 +588,80 @@ def _ollama_vision_analysis(
     text = str(data.get("response") or "").strip()
     if not text:
         raise RuntimeError("Ollama response did not include text.")
+    return json.loads(text)
+
+
+def _gemini_vision_analysis(
+    *,
+    preview_image_b64: str,
+    filename: str,
+    mime_type: str,
+    media_kind: str,
+    title_hint: str,
+    description_hint: str,
+    tags_hint: list[str],
+    fallback: SmartMediaAnalysis,
+    api_key: str,
+    model: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    prompt = (
+        "You analyze media uploads for a personal gallery. Return JSON only. "
+        "Identify visible characters, franchises, subjects, and backgrounds when evidence is strong. "
+        "Never use generic titles like Backgrounds, Wallpaper, Image, Art, Artwork, or the filename. "
+        "Do not guess a named character if the identity is unclear; describe visible traits instead. "
+        "Create up to 12 short lowercase tags, including character/franchise/background tags when reliable. "
+        "Prefer these main categories when they fit: "
+        + ", ".join(KNOWN_CATEGORIES)
+        + ". If it looks like a phone wallpaper use Phone Backgrounds; desktop wallpaper use Desktop Backgrounds. "
+        "Return exactly this JSON schema: "
+        '{"title":"string","suggested_filename_base":"string","tags":["tag"],"category_name":"string","subcategory_name":"string","is_adult":false,"confidence":0.0,"reason":"string"}\n\n'
+        f"Filename: {filename}\n"
+        f"MIME type: {mime_type}\n"
+        f"Media kind: {media_kind}\n"
+        f"Existing title hint: {_clean_title(title_hint) or '(none)'}\n"
+        f"Existing description hint: {_clean_title(description_hint) or '(none)'}\n"
+        f"Existing tags hint: {', '.join(_normalize_tags(tags_hint)) or '(none)'}\n"
+        f"Local analyzer fallback title: {fallback.title}\n"
+        f"Local analyzer fallback category: {fallback.category_name or 'Wallpapers'}\n"
+        f"Local analyzer fallback subcategory: {fallback.subcategory_name or '(none)'}"
+    )
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": preview_image_b64}},
+                ],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.15,
+            "responseMimeType": "application/json",
+        },
+    }
+    safe_model = urllib.parse.quote(model or "gemini-2.5-flash-lite", safe="")
+    request = urllib.request.Request(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{safe_model}:generateContent?key={urllib.parse.quote(api_key, safe='')}",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Gemini API error {exc.code}: {body[:240]}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"Gemini API network error: {exc.reason}") from exc
+    data = json.loads(raw or "{}")
+    candidates = data.get("candidates") or []
+    parts = ((candidates[0] if candidates else {}).get("content") or {}).get("parts") or []
+    text = "\n".join(str(part.get("text") or "").strip() for part in parts if part.get("text")).strip()
+    if not text:
+        raise RuntimeError("Gemini response did not include structured text.")
     return json.loads(text)
 
 

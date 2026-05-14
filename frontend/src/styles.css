@@ -1070,6 +1070,15 @@ textarea:focus {
   min-height: 280px;
 }
 
+.loading-tip {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(17, 24, 32, 0.9);
+  color: var(--muted);
+}
+
 .skeleton-row {
   min-height: 64px;
 }

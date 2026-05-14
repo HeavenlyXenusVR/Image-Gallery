@@ -761,6 +761,15 @@ def _parse_tags(value: str | None) -> list[str]:
     return tags[:12]
 
 
+def _optional_form_int(value: Any, field_name: str) -> int | None:
+    if value in (None, "", 0, "0"):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail=f"{field_name} must be a number.") from None
+
+
 def _merge_upload_tags(primary: list[str], secondary: list[str]) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
@@ -1724,8 +1733,8 @@ async def upload_media(
     file: UploadFile = File(...),
     title: str = Form(""),
     description: str = Form(""),
-    category_id: int | None = Form(None),
-    subcategory_id: int | None = Form(None),
+    category_id: str | None = Form(None),
+    subcategory_id: str | None = Form(None),
     category_name: str = Form(""),
     subcategory_name: str = Form(""),
     category_kind: str = Form("mixed"),
@@ -1738,6 +1747,8 @@ async def upload_media(
     auto_ai: bool = Form(True),
 ) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+    category_id_int = _optional_form_int(category_id, "category_id")
+    subcategory_id_int = _optional_form_int(subcategory_id, "subcategory_id")
     media_kind = _detect_media_kind(file)
     visibility = str(visibility or "public").lower()
     if visibility not in {"public", "unlisted", "private"}:
@@ -1764,15 +1775,15 @@ async def upload_media(
     parsed_tags = _merge_upload_tags(_parse_tags(tags), analysis.tags)
     chosen_category_name = " ".join(category_name.strip().split())[:80] or analysis.category_name or ""
     chosen_subcategory_name = " ".join(subcategory_name.strip().split())[:80] or analysis.subcategory_name or ""
-    if not category_id:
+    if not category_id_int:
         if not chosen_category_name:
             raise HTTPException(status_code=400, detail="Category is required.")
         inferred_kind = category_kind if category_kind in {"image", "video", "mixed"} else ("video" if uploaded["media_kind"] == "video" else "image")
         category = await db.create_category(chosen_category_name, inferred_kind, int(auth["id"]))
-        category_id = int(category["id"])
-    category_id, subcategory_id = await db.resolve_category_ids(
-        category_id=category_id,
-        subcategory_id=subcategory_id,
+        category_id_int = int(category["id"])
+    category_id_int, subcategory_id_int = await db.resolve_category_ids(
+        category_id=category_id_int,
+        subcategory_id=subcategory_id_int,
         subcategory_name=chosen_subcategory_name,
         user_id=int(auth["id"]),
     )
@@ -1815,8 +1826,8 @@ async def upload_media(
     item = await db.add_media(
         {
             "user_id": int(auth["id"]),
-            "category_id": category_id,
-            "subcategory_id": subcategory_id,
+            "category_id": category_id_int,
+            "subcategory_id": subcategory_id_int,
             "title": title,
             "description": description.strip()[:2000] or None,
             "tags": parsed_tags,

@@ -35,7 +35,11 @@ export function ProfileActions({ ctx, user, onChanged }) {
   );
 }
 
-export function UserCard({ ctx, user }) {
+export function UserCard({ ctx, user, onChanged }) {
+  function refreshUserState() {
+    clearApiCache("/api/users/search");
+    onChanged?.();
+  }
   return (
     <article className="user-card">
       <Avatar user={user} large />
@@ -43,7 +47,7 @@ export function UserCard({ ctx, user }) {
         <Link to={`/users/${user.username}`}><h3>{user.display_name || user.username}</h3></Link>
         <p>@{user.username}{user.profile_headline ? ` / ${user.profile_headline}` : ""}</p>
       </div>
-      <ProfileActions ctx={ctx} user={user} onChanged={() => clearApiCache("/api/users/search")} />
+      <ProfileActions ctx={ctx} user={user} onChanged={refreshUserState} />
     </article>
   );
 }

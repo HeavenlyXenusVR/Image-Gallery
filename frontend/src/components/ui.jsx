@@ -129,7 +129,17 @@ export function NotFound() {
 }
 
 export function SkeletonGrid({ count = 8 }) {
-  return <div className="media-grid skeleton-grid">{Array.from({ length: count }, (_, index) => <div className="skeleton-card" key={index} />)}</div>;
+  const tips = [
+    "Large galleries load faster after the first warm cache pass.",
+    "Friend and profile changes refresh while you browse.",
+    "Uploads can use AI metadata before publishing.",
+  ];
+  return (
+    <div>
+      <div className="loading-tip">{tips[count % tips.length]}</div>
+      <div className="media-grid skeleton-grid">{Array.from({ length: count }, (_, index) => <div className="skeleton-card" key={index} />)}</div>
+    </div>
+  );
 }
 
 export function SkeletonList() {

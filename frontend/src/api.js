@@ -83,13 +83,24 @@ export async function apiFetch(path, options = {}) {
   const isJson = contentType.includes("application/json");
   const payload = isJson ? await response.json().catch(() => null) : await response.text();
   if (!response.ok) {
-    const message = payload?.detail || payload?.message || payload || `Request failed (${response.status})`;
-    const error = new Error(message);
+    const error = new Error(errorMessage(payload, response.status));
     error.status = response.status;
     error.payload = payload;
     throw error;
   }
   return payload;
+}
+
+function errorMessage(payload, status) {
+  const raw = payload?.detail || payload?.message || payload;
+  if (!raw) return `Request failed (${status})`;
+  if (Array.isArray(raw)) {
+    return raw.map((item) => item?.msg || item?.message || JSON.stringify(item)).join("; ");
+  }
+  if (typeof raw === "object") {
+    return raw.msg || raw.message || JSON.stringify(raw);
+  }
+  return String(raw);
 }
 
 export async function cachedApiFetch(path, options = {}) {
