@@ -20,6 +20,26 @@ def _env_csv(name: str) -> list[str]:
     return [item.strip().rstrip("/") for item in _env(name).split(",") if item.strip()]
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int_set(name: str) -> set[int]:
+    values: set[int] = set()
+    for item in _env(name).split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            values.add(int(item))
+        except ValueError:
+            continue
+    return values
+
+
 def _ai_provider(ai_api_key: str) -> str:
     preferred = _env("GALLERY_AI_PROVIDER")
     if preferred:
@@ -81,6 +101,9 @@ class Settings:
     ollama_base_url: str
     ollama_model: str
     ai_timeout_seconds: int
+    telegram_bot_token: str
+    telegram_allowed_chat_ids: set[int]
+    telegram_polling_enabled: bool
 
     @property
     def active_ai_base_url(self) -> str:
@@ -131,4 +154,7 @@ def load_settings() -> Settings:
         ollama_base_url=(_env("GALLERY_OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/"),
         ollama_model=_env("GALLERY_OLLAMA_MODEL", "qwen2.5vl:7b"),
         ai_timeout_seconds=max(10, int(_env("GALLERY_AI_TIMEOUT_SECONDS", "45"))),
+        telegram_bot_token=_env("GALLERY_TELEGRAM_BOT_TOKEN") or _env("TELEGRAM_BOT_TOKEN"),
+        telegram_allowed_chat_ids=_env_int_set("GALLERY_TELEGRAM_ALLOWED_CHAT_IDS") or _env_int_set("TELEGRAM_ALLOWED_CHAT_IDS"),
+        telegram_polling_enabled=_env_bool("GALLERY_TELEGRAM_POLLING_ENABLED", bool(_env("GALLERY_TELEGRAM_BOT_TOKEN") or _env("TELEGRAM_BOT_TOKEN"))),
     )

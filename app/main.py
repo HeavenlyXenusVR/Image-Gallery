@@ -33,10 +33,12 @@ from .auth import extract_bearer_token, issue_token, require_auth, verify_token
 from .config import ROOT_DIR, load_settings
 from .database import GalleryDatabase
 from .emailer import EmailDeliveryError, send_verification_email
+from .telegram import TelegramPollingService
 
 
 settings = load_settings()
 db = GalleryDatabase(settings)
+telegram_service: TelegramPollingService | None = None
 logger = logging.getLogger("image_gallery")
 IMAGE_MIME_PREFIXES = ("image/",)
 VIDEO_MIME_PREFIXES = ("video/",)
@@ -1009,11 +1011,75 @@ async def _read_validated_upload(upload: UploadFile, max_bytes: int, *, image_on
     }
 
 
+def _telegram_command_parts(text: str) -> tuple[str, str]:
+    cleaned = str(text or "").strip()
+    if not cleaned:
+        return "", ""
+    first, _, rest = cleaned.partition(" ")
+    return first.split("@", 1)[0].lower(), rest.strip()
+
+
+def _format_gallery_stats(stats_payload: dict[str, Any]) -> str:
+    stats = stats_payload or {}
+    return (
+        "Image Gallery status\n"
+        f"Users: {int(stats.get('users') or 0)}\n"
+        f"Categories: {int(stats.get('categories') or 0)}\n"
+        f"Media: {int(stats.get('media') or 0)}\n"
+        f"Storage: {int(stats.get('bytes') or 0) // (1024 * 1024)} MB\n"
+        f"Likes: {int(stats.get('likes') or 0)}"
+    )
+
+
+async def _handle_telegram_command(message: dict[str, Any]) -> str:
+    command, _rest = _telegram_command_parts(str(message.get("text") or ""))
+    if command in {"/start", "/help", "help"}:
+        return (
+            "Image Gallery Telegram bridge is online.\n"
+            "Commands: /status, /stats, /recent, /id"
+        )
+    if command == "/id":
+        return f"Telegram chat id: {message.get('chat_id')}"
+    if command in {"/status", "status", "/stats", "stats"}:
+        stats_payload = await db.stats()
+        return _format_gallery_stats(stats_payload)
+    if command in {"/recent", "recent"}:
+        items = await db.list_media(viewer_id=None, sort="new", limit=5, offset=0)
+        if not items:
+            return "No public gallery posts found."
+        lines = ["Recent public gallery posts"]
+        for item in items:
+            title = item.get("title") or "Untitled"
+            kind = item.get("media_kind") or "media"
+            user = item.get("display_name") or item.get("username") or "unknown"
+            lines.append(f"- {title} ({kind}) by {user}")
+        return "\n".join(lines)
+    return "Unknown command. Use /help for Image Gallery Telegram commands."
+
+
 async def lifespan(app: FastAPI):
+    global telegram_service
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
     await db.connect()
     migration_task = asyncio.create_task(_auto_migrate_legacy_uploads())
+    telegram_service = TelegramPollingService(
+        token=settings.telegram_bot_token,
+        name="Image Gallery",
+        handler=_handle_telegram_command,
+        allowed_chat_ids=settings.telegram_allowed_chat_ids,
+        commands=[
+            ("status", "Show Image Gallery status"),
+            ("stats", "Show gallery counts"),
+            ("recent", "List recent public posts"),
+            ("id", "Show this Telegram chat id"),
+            ("help", "Show available commands"),
+        ],
+    )
+    await telegram_service.start()
     yield
+    if telegram_service:
+        await telegram_service.close()
+        telegram_service = None
     migration_task.cancel()
     try:
         await migration_task
@@ -1144,6 +1210,15 @@ async def live_checks(request: Request) -> dict[str, Any]:
         owner = False
         checks.append({"id": "api", "label": "API reachable", "ok": True, "detail": "Backend responded."})
         checks.append({"id": "db", "label": "Database reachable", "ok": True, "detail": f"Schema {settings.db_schema} responded."})
+        if settings.telegram_bot_token:
+            telegram_snapshot = telegram_service.snapshot() if telegram_service else {}
+            checks.append({
+                "id": "telegram",
+                "label": "Telegram bridge",
+                "ok": bool(telegram_snapshot.get("running")),
+                "severity": "warn" if not telegram_snapshot.get("running") else "ok",
+                "detail": f"@{telegram_snapshot.get('bot_username')}" if telegram_snapshot.get("bot_username") else (telegram_snapshot.get("last_error") or "Telegram token configured; bridge is starting."),
+            })
         if auth:
             user = await db.get_user(int(auth["id"]))
             owner = _is_site_owner_user(user)
@@ -1200,6 +1275,20 @@ async def live_checks(request: Request) -> dict[str, Any]:
             "snapshot": {},
             "server_time": datetime.utcnow().isoformat() + "Z",
         }
+
+
+@app.get("/api/telegram/status")
+async def telegram_status(request: Request) -> dict[str, Any]:
+    await _require_site_owner(request)
+    status = telegram_service.snapshot() if telegram_service else {
+        "enabled": bool(settings.telegram_bot_token),
+        "running": False,
+        "bot_username": "",
+        "allowed_chat_count": len(settings.telegram_allowed_chat_ids),
+        "last_error": "",
+        "last_update_at": 0.0,
+    }
+    return {"telegram": status}
 
 
 @app.post("/api/live/migrate")
