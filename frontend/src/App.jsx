@@ -4,6 +4,7 @@ import { apiFetch, cachedApiFetch, clearApiCache, readStoredUser, readToken, wri
 import { Shell } from "./components/Shell.jsx";
 import { NotFound } from "./components/ui.jsx";
 import { DEFAULT_SETTINGS } from "./config.js";
+import { useLiveRefresh } from "./hooks/useLiveRefresh.js";
 import { AuthPage } from "./pages/AuthPage.jsx";
 import { CollectionsPage } from "./pages/CollectionsPage.jsx";
 import { DiscoverPage } from "./pages/DiscoverPage.jsx";
@@ -82,6 +83,9 @@ function App() {
     refreshMe();
     refreshLookups();
   }, [refreshMe, refreshLookups]);
+
+  useLiveRefresh(refreshLookups, { interval: 30_000 });
+  useLiveRefresh(refreshMe, { enabled: Boolean(token), interval: 45_000 });
 
   useEffect(() => {
     if (!toast) return undefined;

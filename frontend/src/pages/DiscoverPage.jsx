@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { RefreshCw, Search, SlidersHorizontal, Sparkles } from "lucide-react";
 import { apiFetch, cachedApiFetch, clearApiCache, prefetchApi, toQuery } from "../api.js";
+import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { PAGE_SIZE } from "../config.js";
 import { MediaGrid } from "../components/media.jsx";
 import { Notice, Page, Pager, TagCloud } from "../components/ui.jsx";
@@ -34,9 +35,11 @@ export function DiscoverPage({ ctx }) {
   }, [ctx.lookups.categories, filters.category_id]);
   const subcategories = selectedCategory?.subcategories || selectedCategory?.children || [];
 
-  const loadMedia = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  const loadMedia = useCallback(async ({ background = false } = {}) => {
+    if (!background) {
+      setLoading(true);
+      setError("");
+    }
     try {
       const page = Math.max(1, Number(filters.page) || 1);
       const queryParams = {
@@ -55,7 +58,10 @@ export function DiscoverPage({ ctx }) {
         offset: (page - 1) * PAGE_SIZE,
       };
       const query = toQuery(queryParams);
-      const data = await cachedApiFetch(`/api/media${query}`, { ttl: 20_000, staleTtl: 5 * 60_000, storage: "session" });
+      const path = `/api/media${query}`;
+      const data = background
+        ? await apiFetch(path)
+        : await cachedApiFetch(path, { ttl: 20_000, staleTtl: 5 * 60_000, storage: "session" });
       const rows = data.media || [];
       setItems(rows.slice(0, PAGE_SIZE));
       setHasNext(rows.length > PAGE_SIZE);
@@ -64,11 +70,13 @@ export function DiscoverPage({ ctx }) {
         prefetchApi(`/api/media${toQuery({ ...queryParams, offset: page * PAGE_SIZE })}`, { ttl: 30_000, staleTtl: 5 * 60_000, storage: "session" });
       }
     } catch (fetchError) {
-      setError(fetchError.message);
-      setItems([]);
-      setHasNext(false);
+      if (!background) {
+        setError(fetchError.message);
+        setItems([]);
+        setHasNext(false);
+      }
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, [filters]);
 
@@ -80,6 +88,11 @@ export function DiscoverPage({ ctx }) {
     setSearchParams(next, { replace: true });
     loadMedia();
   }, [filters, loadMedia, setSearchParams]);
+
+  useLiveRefresh(() => loadMedia({ background: true }), {
+    enabled: Number(filters.page) === 1,
+    interval: ctx.user ? 18_000 : 28_000,
+  });
 
   function updateFilter(key, value) {
     setFilters((current) => ({

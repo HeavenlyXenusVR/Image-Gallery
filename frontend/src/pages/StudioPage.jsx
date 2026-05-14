@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { apiFetch } from "../api.js";
+import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { StudioItem } from "../components/media.jsx";
 import { EmptyState, Metric, Page, RequireLogin, SkeletonList } from "../components/ui.jsx";
 import { replaceMedia } from "../utils/media.js";
@@ -9,22 +10,24 @@ export function StudioPage({ ctx }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const loadStudio = useCallback(async () => {
+  const loadStudio = useCallback(async ({ background = false } = {}) => {
     if (!ctx.user) return;
-    setLoading(true);
+    if (!background) setLoading(true);
     try {
       const data = await apiFetch("/api/me/media?include_deleted=true");
       setItems(data.media || []);
     } catch (error) {
-      ctx.showToast(error.message, "error");
+      if (!background) ctx.showToast(error.message, "error");
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, [ctx]);
 
   useEffect(() => {
     loadStudio();
   }, [loadStudio]);
+
+  useLiveRefresh(() => loadStudio({ background: true }), { enabled: Boolean(ctx.user), interval: 25_000 });
 
   if (!ctx.user) return <RequireLogin />;
   const totals = items.reduce((acc, item) => ({

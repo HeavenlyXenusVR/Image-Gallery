@@ -19,6 +19,9 @@
   --ok: #7ee787;
   --radius: 8px;
   --shadow: 0 16px 50px rgba(0, 0, 0, 0.28);
+  --motion-fast: 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-med: 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-slow: 520ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 * {
@@ -64,7 +67,8 @@ button,
   padding: 8px 12px;
   text-decoration: none;
   cursor: pointer;
-  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+  transform: translateZ(0);
+  transition: border-color var(--motion-fast), background var(--motion-fast), box-shadow var(--motion-fast), transform var(--motion-fast);
 }
 
 button:hover,
@@ -79,6 +83,14 @@ button:hover,
 button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+button:active,
+.button-link:active,
+.auth-link:active,
+.nav-item:active,
+.icon-button:active {
+  transform: translateY(1px) scale(0.99);
 }
 
 .primary,
@@ -187,6 +199,7 @@ video {
 .health-pill {
   display: inline-flex;
   align-items: center;
+  gap: 7px;
   min-height: 28px;
   padding: 4px 10px;
   border: 1px solid var(--line);
@@ -195,9 +208,22 @@ video {
   font-size: 0.85rem;
 }
 
+.health-pill::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-2);
+}
+
 .health-pill.is-live {
   border-color: rgba(126, 231, 135, 0.4);
   color: var(--ok);
+}
+
+.health-pill.is-live::before {
+  background: var(--ok);
+  animation: live-pulse 1.8s ease-out infinite;
 }
 
 .icon-button {
@@ -249,6 +275,7 @@ video {
 .page {
   display: grid;
   gap: 18px;
+  animation: page-enter var(--motion-slow) both;
 }
 
 .page-head {
@@ -307,6 +334,7 @@ video {
   border-radius: var(--radius);
   background: rgba(21, 27, 34, 0.88);
   box-shadow: var(--shadow);
+  transition: border-color var(--motion-med), box-shadow var(--motion-med), transform var(--motion-med);
 }
 
 .filter-rail {
@@ -476,6 +504,8 @@ textarea:focus {
   content-visibility: auto;
   contain-intrinsic-size: 340px;
   contain: layout paint style;
+  animation: surface-enter var(--motion-slow) both;
+  transition: border-color var(--motion-med), box-shadow var(--motion-med), transform var(--motion-med);
 }
 
 .media-link {
@@ -499,6 +529,7 @@ textarea:focus {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: transform var(--motion-slow), filter var(--motion-med);
 }
 
 .video-thumb-placeholder {
@@ -988,6 +1019,35 @@ textarea:focus {
   background: #17202a;
   color: var(--text);
   box-shadow: var(--shadow);
+  animation: toast-in var(--motion-med) both;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  button:hover,
+  .button-link:hover,
+  .auth-link:hover,
+  .nav-item:hover,
+  .icon-button:hover {
+    transform: translateY(-1px);
+  }
+
+  .media-card:hover,
+  .user-card:hover,
+  .studio-item:hover,
+  .friend-request:hover,
+  .collection-row:hover,
+  .side-box:hover,
+  .content-panel:hover,
+  .filter-rail:hover {
+    border-color: var(--line-strong);
+    transform: translateY(-2px);
+  }
+
+  .media-card:hover .thumb-frame img,
+  .media-card:hover .thumb-frame video {
+    transform: scale(1.035);
+    filter: saturate(1.05);
+  }
 }
 
 .toast-error {
@@ -1025,6 +1085,62 @@ textarea:focus {
   }
   to {
     background-position: -220% 0;
+  }
+}
+
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes surface-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(126, 231, 135, 0.42);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(126, 231, 135, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(126, 231, 135, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
 

@@ -1167,7 +1167,15 @@ async def live_checks(request: Request) -> dict[str, Any]:
         else:
             snapshot = {"media_active": snapshot.get("media_active"), "db_time": snapshot.get("db_time")}
         status = "ok" if all(c.get("ok") or c.get("severity") == "warn" for c in checks) else "attention"
-        return {"ok": True, "status": status, "checks": checks, "snapshot": _jsonable(snapshot), "server_time": datetime.utcnow().isoformat() + "Z"}
+        return {
+            "ok": True,
+            "status": status,
+            "backend": "image_gallery",
+            "checks": checks,
+            "check_map": {str(item.get("id")): bool(item.get("ok")) for item in checks},
+            "snapshot": _jsonable(snapshot),
+            "server_time": datetime.utcnow().isoformat() + "Z",
+        }
     except Exception as exc:
         if "Packet sequence number wrong" in str(exc):
             try:
@@ -1177,7 +1185,9 @@ async def live_checks(request: Request) -> dict[str, Any]:
         return {
             "ok": False,
             "status": "offline",
+            "backend": "image_gallery",
             "checks": [{"id": "db", "label": "Database reachable", "ok": False, "severity": "error", "detail": str(exc)[:240]}],
+            "check_map": {"api": True, "db": False, "database": False},
             "snapshot": {},
             "server_time": datetime.utcnow().isoformat() + "Z",
         }
@@ -1634,7 +1644,15 @@ async def random_media(request: Request) -> dict[str, Any]:
 async def site_background(request: Request, exclude: int | None = None) -> dict[str, Any]:
     candidates = await _background_candidate_rows()
     if not candidates:
-        raise HTTPException(status_code=404, detail="No 16:9 public images are available for the site background.")
+        return {
+            "enabled": False,
+            "background": None,
+            "background_url": None,
+            "url": None,
+            "updated_at": None,
+            "status": "disabled",
+            "refresh_after_seconds": BACKGROUND_CACHE_SECONDS,
+        }
     pool = [item for item in candidates if int(item["id"]) != int(exclude or 0)] or candidates
     picked = random.choice(pool)
     return {
@@ -2236,31 +2254,6 @@ async def download_media(media_id: int, request: Request, access: str | None = N
 async def stats(request: Request) -> dict[str, Any]:
     await _require_site_owner(request)
     return {"stats": _jsonable(await db.stats())}
-
-# --- Xenus compatibility endpoints for GitHub Pages frontend ---
-# These keep older/mobile frontend builds from spamming 404/CORS errors.
-
-@app.get("/api/site/background")
-async def api_site_background_compat():
-    return {
-        "enabled": False,
-        "background_url": None,
-        "url": None,
-        "updated_at": None,
-        "status": "disabled"
-    }
-
-@app.get("/api/live/checks")
-async def api_live_checks_compat():
-    return {
-        "ok": True,
-        "status": "live",
-        "backend": "image_gallery",
-        "checks": {
-            "api": True,
-            "database": True
-        }
-    }
 
 @app.options("/api/site/background")
 async def api_site_background_options_compat():

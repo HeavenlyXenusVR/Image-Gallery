@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Bookmark, Download, Heart, Lock, MessageCircle, Save, Trash2 } from "lucide-react";
 import { apiFetch } from "../api.js";
+import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
 import { MediaControls } from "../components/media.jsx";
 import { Avatar, ChipRow, EmptyState, Notice, NotFound, Page, SkeletonGrid, StatsRow, UserLine } from "../components/ui.jsx";
@@ -19,9 +20,11 @@ export function MediaDetailPage({ ctx }) {
   const [error, setError] = useState("");
   const actions = useMediaActions(ctx, (updated) => setMedia(updated));
 
-  const loadDetail = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  const loadDetail = useCallback(async ({ background = false } = {}) => {
+    if (!background) {
+      setLoading(true);
+      setError("");
+    }
     try {
       const data = await apiFetch(`/api/media/${mediaId}`);
       setMedia(data.media);
@@ -31,16 +34,20 @@ export function MediaDetailPage({ ctx }) {
         setCollections(mine.collections || []);
       }
     } catch (fetchError) {
-      setError(fetchError.message);
-      setMedia(null);
+      if (!background) {
+        setError(fetchError.message);
+        setMedia(null);
+      }
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, [ctx.user, mediaId]);
 
   useEffect(() => {
     loadDetail();
   }, [loadDetail]);
+
+  useLiveRefresh(() => loadDetail({ background: true }), { enabled: Boolean(mediaId), interval: 24_000 });
 
   async function addComment(event) {
     event.preventDefault();

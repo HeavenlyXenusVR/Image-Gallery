@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { cachedApiFetch, prefetchApi, toQuery } from "../api.js";
+import { useCallback, useEffect, useState } from "react";
+import { apiFetch, cachedApiFetch, prefetchApi, toQuery } from "../api.js";
+import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { PAGE_SIZE } from "../config.js";
 import { MediaGrid } from "../components/media.jsx";
 import { Notice, Page, Pager, RequireLogin } from "../components/ui.jsx";
@@ -14,15 +15,16 @@ export function FeedPage({ ctx, mode }) {
   const title = mode === "liked" ? "Liked" : "Following";
   const endpoint = mode === "liked" ? "/api/me/likes" : "/api/feed/following";
 
-  useEffect(() => {
-    if (!ctx.user) return;
-    let ignore = false;
-    async function load() {
-      setLoading(true);
-      setError("");
+  const loadFeed = useCallback(({ background = false } = {}) => {
+    if (!ctx.user) return Promise.resolve();
+    return (async () => {
+      if (!background) setLoading(true);
+      if (!background) setError("");
       try {
-        const data = await cachedApiFetch(`${endpoint}${toQuery({ limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE })}`, { ttl: 20_000, staleTtl: 3 * 60_000 });
-        if (ignore) return;
+        const path = `${endpoint}${toQuery({ limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE })}`;
+        const data = background
+          ? await apiFetch(path)
+          : await cachedApiFetch(path, { ttl: 20_000, staleTtl: 3 * 60_000 });
         const rows = data.media || [];
         setItems(rows.slice(0, PAGE_SIZE));
         setHasNext(rows.length > PAGE_SIZE);
@@ -31,15 +33,17 @@ export function FeedPage({ ctx, mode }) {
           prefetchApi(`${endpoint}${toQuery({ limit: PAGE_SIZE + 1, offset: page * PAGE_SIZE })}`, { ttl: 30_000, staleTtl: 3 * 60_000 });
         }
       } catch (fetchError) {
-        if (ignore) return;
-        setError(fetchError.message);
+        if (!background) setError(fetchError.message);
       } finally {
-        if (!ignore) setLoading(false);
+        if (!background) setLoading(false);
       }
-    }
-    load();
-    return () => { ignore = true; };
+    })();
   }, [ctx.user, endpoint, page]);
+
+  useEffect(() => {
+    loadFeed();
+  }, [loadFeed]);
+  useLiveRefresh(() => loadFeed({ background: true }), { enabled: Boolean(ctx.user) && page === 1, interval: 22_000 });
 
   if (!ctx.user) return <RequireLogin />;
   return (

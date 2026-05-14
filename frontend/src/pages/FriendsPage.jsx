@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Check, RefreshCw, X } from "lucide-react";
 import { apiFetch } from "../api.js";
+import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { FriendColumn } from "../components/social.jsx";
 import { EmptyState, Page, RequireLogin, SkeletonGrid, UserMini } from "../components/ui.jsx";
 
@@ -8,9 +9,9 @@ export function FriendsPage({ ctx }) {
   const [state, setState] = useState({ incoming: [], outgoing: [], friends: [] });
   const [loading, setLoading] = useState(true);
 
-  const loadFriends = useCallback(async () => {
+  const loadFriends = useCallback(async ({ background = false } = {}) => {
     if (!ctx.user) return;
-    setLoading(true);
+    if (!background) setLoading(true);
     try {
       const [requests, friends] = await Promise.all([
         apiFetch("/api/friends/requests"),
@@ -18,15 +19,17 @@ export function FriendsPage({ ctx }) {
       ]);
       setState({ incoming: requests.incoming || [], outgoing: requests.outgoing || [], friends: friends.friends || [] });
     } catch (error) {
-      ctx.showToast(error.message, "error");
+      if (!background) ctx.showToast(error.message, "error");
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, [ctx]);
 
   useEffect(() => {
     loadFriends();
   }, [loadFriends]);
+
+  useLiveRefresh(() => loadFriends({ background: true }), { enabled: Boolean(ctx.user), interval: 20_000 });
 
   async function respond(id, action) {
     try {
