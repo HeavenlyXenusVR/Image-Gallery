@@ -6,7 +6,7 @@ import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
 import { MediaControls } from "../components/media.jsx";
 import { Avatar, ChipRow, EmptyState, Notice, NotFound, Page, SkeletonGrid, StatsRow, UserLine } from "../components/ui.jsx";
-import { thumbUrl } from "../utils/media.js";
+import { imageQualityUrl, isGifMedia, thumbUrl, videoQualityUrl } from "../utils/media.js";
 
 export function MediaDetailPage({ ctx }) {
   const { mediaId } = useParams();
@@ -18,6 +18,8 @@ export function MediaDetailPage({ ctx }) {
   const [report, setReport] = useState({ reason: "", details: "" });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [imageQuality, setImageQuality] = useState("medium");
+  const [videoQuality, setVideoQuality] = useState("high");
   const actions = useMediaActions(ctx, (updated) => setMedia(updated));
 
   const loadDetail = useCallback(async ({ background = false } = {}) => {
@@ -47,7 +49,7 @@ export function MediaDetailPage({ ctx }) {
     loadDetail();
   }, [loadDetail]);
 
-  useLiveRefresh(() => loadDetail({ background: true }), { enabled: Boolean(mediaId), interval: 24_000 });
+  useLiveRefresh(() => loadDetail({ background: true }), { enabled: Boolean(mediaId) && media?.media_kind !== "video", interval: 45_000 });
 
   async function addComment(event) {
     event.preventDefault();
@@ -107,6 +109,7 @@ export function MediaDetailPage({ ctx }) {
   if (!media) return <NotFound />;
 
   const isOwner = ctx.user && Number(ctx.user.id) === Number(media.user_id);
+  const gif = isGifMedia(media);
 
   return (
     <Page title={media.title || `Media ${media.id}`} eyebrow={media.media_kind || "Media"} actions={(
@@ -121,9 +124,31 @@ export function MediaDetailPage({ ctx }) {
           {media.locked ? (
             <div className="locked-state"><Lock size={38} /><h2>Age verification required</h2></div>
           ) : media.media_kind === "video" ? (
-            <video controls playsInline src={media.url} poster={thumbUrl(media)} />
+            <>
+              <div className="quality-bar">
+                <span>Video quality</span>
+                <select value={videoQuality} onChange={(event) => setVideoQuality(event.target.value)}>
+                  <option value="high">High</option>
+                  <option value="medium">Medium</option>
+                  <option value="low">Low</option>
+                </select>
+              </div>
+              <video controls playsInline preload="metadata" src={videoQualityUrl(media, videoQuality)} poster={thumbUrl(media, 1280)} />
+            </>
           ) : (
-            <img src={media.preview_url || media.url} alt={media.title || ""} />
+            <>
+              {!gif ? (
+                <div className="quality-bar">
+                  <span>Image quality</span>
+                  <select value={imageQuality} onChange={(event) => setImageQuality(event.target.value)}>
+                    <option value="high">High / full</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </select>
+                </div>
+              ) : null}
+              <img className={gif ? "gif-full" : ""} src={imageQualityUrl(media, imageQuality)} alt={media.title || ""} />
+            </>
           )}
         </article>
         <aside className="detail-side">

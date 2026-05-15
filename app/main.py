@@ -379,6 +379,12 @@ def _preview_options(size: str | None) -> tuple[str, int, int]:
     return normalized, 720, 80
 
 
+def _is_gif_media(item: dict[str, Any]) -> bool:
+    mime = str(item.get("mime_type") or "").lower()
+    filename = str(item.get("original_filename") or item.get("storage_path") or "").lower()
+    return mime == "image/gif" or filename.endswith(".gif")
+
+
 def _preview_etag(digest: str, size: str | None) -> str:
     return f"\"{digest}:{_normalized_preview_size(size)}\""
 
@@ -499,6 +505,45 @@ def _render_image_preview(content: bytes, mime_type: str | None, digest: str, *,
                 return _store_preview(cache_key, (preview_bytes, "image/jpeg"))
     except Exception:
         return _store_preview(cache_key, (content, mime_type or "application/octet-stream"))
+
+
+def _render_video_placeholder_thumb(item: dict[str, Any], width: int) -> tuple[bytes, str]:
+    cache_key = (f"video:{item.get('id')}:{item.get('updated_at') or item.get('created_at')}", f"w{width}")
+    cached = _cached_preview(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        from PIL import Image, ImageDraw, ImageFilter
+
+        height = max(120, int(width * 9 / 16))
+        base = Image.new("RGB", (width, height), "#18212d")
+        draw = ImageDraw.Draw(base)
+        for y in range(height):
+            shade = int(24 + (y / max(1, height)) * 34)
+            draw.line([(0, y), (width, y)], fill=(shade, min(70, shade + 18), min(92, shade + 30)))
+        for x in range(-width, width * 2, max(24, width // 9)):
+            draw.line([(x, 0), (x + width // 2, height)], fill=(72, 94, 114), width=max(2, width // 120))
+        base = base.filter(ImageFilter.GaussianBlur(radius=max(6, width // 80)))
+        overlay = Image.new("RGBA", (width, height), (0, 0, 0, 74))
+        base = Image.alpha_composite(base.convert("RGBA"), overlay)
+        draw = ImageDraw.Draw(base)
+        cx, cy = width // 2, height // 2
+        radius = max(28, width // 13)
+        draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=(255, 255, 255, 150), width=max(2, width // 180))
+        draw.polygon(
+            [(cx - radius // 3, cy - radius // 2), (cx - radius // 3, cy + radius // 2), (cx + radius // 2, cy)],
+            fill=(255, 255, 255, 170),
+        )
+        output = io.BytesIO()
+        base.convert("RGB").save(output, format="WEBP", quality=76, method=4)
+        return _store_preview(cache_key, (output.getvalue(), "image/webp"))
+    except Exception:
+        svg = (
+            f"<svg xmlns='http://www.w3.org/2000/svg' width='{width}' height='{max(120, int(width * 9 / 16))}' viewBox='0 0 {width} {max(120, int(width * 9 / 16))}'>"
+            "<rect width='100%' height='100%' fill='#18212d'/><circle cx='50%' cy='50%' r='48' fill='none' stroke='rgba(255,255,255,.62)' stroke-width='4'/>"
+            "<path d='M48% 42%v16l14-8z' fill='rgba(255,255,255,.72)'/></svg>"
+        ).encode("utf-8")
+        return _store_preview(cache_key, (svg, "image/svg+xml"))
 
 
 def _is_widescreen_background(width: int, height: int) -> bool:
@@ -695,8 +740,8 @@ def _with_urls(request: Request, item: dict[str, Any] | None, adult_allowed: boo
     else:
         media_id = int(clone["id"])
         clone["url"] = _public_url(request, clone.get("storage_path", ""), media_id)
-        clone["thumb_url"] = _thumb_url(request, media_id) if clone.get("media_kind") == "image" else None
-        clone["preview_url"] = _preview_url(request, media_id) if clone.get("media_kind") == "image" else clone["url"]
+        clone["thumb_url"] = _thumb_url(request, media_id) if clone.get("media_kind") in {"image", "video"} else None
+        clone["preview_url"] = clone["url"] if _is_gif_media(clone) else (_preview_url(request, media_id) if clone.get("media_kind") == "image" else clone["thumb_url"])
         clone["download_url"] = str(request.url_for("download_media", media_id=media_id))
         if clone.get("is_adult") and adult_allowed:
             token = _media_access_token(media_id)
@@ -2113,6 +2158,34 @@ async def _adult_file_allowed(request: Request, media_id: int, access: str | Non
     return _valid_media_access_token(media_id, access) or await _viewer_can_open_adult(request)
 
 
+def _parse_range_header(range_header: str | None, file_size: int) -> tuple[int, int] | None:
+    if not range_header or not range_header.startswith("bytes=") or file_size <= 0:
+        return None
+    first_range = range_header[6:].split(",", 1)[0].strip()
+    if "-" not in first_range:
+        return None
+    start_raw, end_raw = first_range.split("-", 1)
+    try:
+        if start_raw == "":
+            suffix = int(end_raw)
+            if suffix <= 0:
+                return None
+            start = max(0, file_size - suffix)
+            end = file_size - 1
+        else:
+            start = int(start_raw)
+            end = int(end_raw) if end_raw else file_size - 1
+    except ValueError:
+        return None
+    if start < 0 or start >= file_size or end < start:
+        raise HTTPException(
+            status_code=416,
+            detail="Requested range is not satisfiable.",
+            headers={"Content-Range": f"bytes */{file_size}"},
+        )
+    return start, min(end, file_size - 1)
+
+
 async def _serve_media_content(media_id: int, request: Request, *, access: str | None, as_download: bool) -> Response:
     auth = _auth_optional(request)
     viewer_id = _user_id(auth)
@@ -2131,18 +2204,30 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
 
     file_info = await db.get_media_file_info(media_id)
     if file_info:
+        file_size = int(file_info.get("file_size") or 0)
+        requested_range = None if as_download else _parse_range_header(request.headers.get("range"), file_size)
         headers = {
             "X-Content-SHA256": str(file_info.get("sha256") or ""),
-            "Accept-Ranges": "none",
+            "Accept-Ranges": "bytes",
         }
-        if int(file_info.get("file_size") or 0) > 0:
-            headers["Content-Length"] = str(int(file_info["file_size"]))
+        if file_size > 0:
+            headers["Content-Length"] = str(file_size)
         if as_download:
             await db.increment_counter(media_id, "downloads")
             headers["Content-Disposition"] = _download_filename(file_info.get("original_filename"))
             headers["Cache-Control"] = "private, max-age=0, no-cache"
         else:
             headers["Cache-Control"] = "public, max-age=86400"
+        if requested_range:
+            start, end = requested_range
+            headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+            headers["Content-Length"] = str(end - start + 1)
+            return StreamingResponse(
+                db.stream_media_file_content(int(file_info["id"]), start=start, end=end),
+                status_code=206,
+                media_type=file_info.get("mime_type") or "application/octet-stream",
+                headers=headers,
+            )
         return StreamingResponse(
             db.stream_media_file_content(int(file_info["id"])),
             media_type=file_info.get("mime_type") or "application/octet-stream",
@@ -2209,6 +2294,14 @@ async def serve_media_thumb(media_id: int, request: Request, access: str | None 
         cached = _thumb_file_response(request, cache_file, headers)
         if cached:
             return cached
+
+    if str(item.get("media_kind") or "").lower() == "video":
+        preview_bytes, preview_mime = await asyncio.to_thread(_render_video_placeholder_thumb, item, width)
+        etag = f"\"video-thumb:{int(media_id)}:{width}:{hashlib.sha256(preview_bytes).hexdigest()[:16]}\""
+        video_headers = {**headers, "ETag": etag, "X-Xenus-Video-Thumb": "blurred"}
+        if _etag_matches(request, etag):
+            return Response(status_code=304, headers=video_headers)
+        return Response(content=preview_bytes, media_type=preview_mime, headers=video_headers)
 
     if str(item.get("media_kind") or "").lower() != "image":
         return await _serve_media_content(media_id, request, access=access, as_download=False)

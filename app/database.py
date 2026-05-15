@@ -1038,20 +1038,24 @@ class GalleryDatabase:
                 row = await cur.fetchone() or {}
                 return bytes(row.get("content") or b"")[:max_bytes]
 
-    async def stream_media_file_content(self, file_id: int):
+    async def stream_media_file_content(self, file_id: int, start: int | None = None, end: int | None = None):
         """Yield DB-backed media content in chunks for StreamingResponse."""
+        start = max(0, int(start or 0))
+        end = int(end) if end is not None else None
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute("SELECT content FROM media_files WHERE id=%s", (file_id,))
                 row = await cur.fetchone() or {}
                 inline = row.get("content")
                 if inline:
-                    yield bytes(inline)
+                    payload = bytes(inline)
+                    yield payload[start:(end + 1) if end is not None else None]
                     return
                 await cur.execute(
                     "SELECT content FROM media_file_chunks WHERE file_id=%s ORDER BY chunk_index ASC",
                     (file_id,),
                 )
+                offset = 0
                 while True:
                     rows = await cur.fetchmany(16)
                     if not rows:
@@ -1059,7 +1063,18 @@ class GalleryDatabase:
                     for chunk in rows:
                         payload = chunk.get("content") or b""
                         if payload:
-                            yield bytes(payload)
+                            payload = bytes(payload)
+                            chunk_start = offset
+                            chunk_end = offset + len(payload) - 1
+                            offset += len(payload)
+                            if chunk_end < start:
+                                continue
+                            if end is not None and chunk_start > end:
+                                return
+                            slice_start = max(0, start - chunk_start)
+                            slice_end = len(payload) if end is None else min(len(payload), end - chunk_start + 1)
+                            if slice_start < slice_end:
+                                yield payload[slice_start:slice_end]
 
     async def get_media_file(self, media_id: int) -> dict[str, Any] | None:
         async with self.pool.acquire() as conn:

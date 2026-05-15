@@ -541,6 +541,16 @@ textarea:focus {
   color: #cfe8f6;
 }
 
+.blurred-video-thumb {
+  filter: blur(3px) saturate(0.86) brightness(0.84);
+  transform: scale(1.035);
+}
+
+.gif-thumb,
+.gif-full {
+  image-rendering: auto;
+}
+
 .kind-badge {
   position: absolute;
   left: 8px;
@@ -723,6 +733,27 @@ textarea:focus {
   width: 100%;
   max-height: 78vh;
   object-fit: contain;
+}
+
+.media-stage > div {
+  width: 100%;
+}
+
+.quality-bar {
+  align-self: start;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(8, 12, 16, 0.76);
+  color: var(--muted);
+}
+
+.quality-bar select {
+  width: auto;
+  min-width: 132px;
 }
 
 .detail-side,
@@ -1071,12 +1102,26 @@ textarea:focus {
 }
 
 .loading-tip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   margin-bottom: 10px;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: rgba(17, 24, 32, 0.9);
   color: var(--muted);
+}
+
+.loading-tip::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  animation: spin 0.8s linear infinite;
+  flex: 0 0 auto;
 }
 
 .skeleton-row {
@@ -1094,6 +1139,12 @@ textarea:focus {
   }
   to {
     background-position: -220% 0;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

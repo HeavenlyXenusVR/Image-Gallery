@@ -4,7 +4,7 @@ import { Bookmark, Download, Film, Heart, Image as ImageIcon, Lock, RefreshCw, S
 import { apiFetch, clearApiCache } from "../api.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
 import { formatBytes, formatDate, numberish } from "../utils/format.js";
-import { isPerfLiteRuntime, thumbUrl } from "../utils/media.js";
+import { isGifMedia, isPerfLiteRuntime, thumbUrl } from "../utils/media.js";
 import { Avatar, EmptyState, SkeletonGrid, StatsRow } from "./ui.jsx";
 
 export function MediaGrid({ ctx, items, loading = false, emptyTitle = "No media", onItemUpdated }) {
@@ -25,7 +25,9 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
     <article className={`media-card ${item.locked ? "is-locked" : ""}`}>
       <Link className="media-link" to={`/media/${item.id}`} aria-label={item.title || `Open media ${item.id}`}>
         <div className="thumb-frame">
-          {item.locked ? <Lock size={34} /> : item.media_kind === "video" ? <div className="video-thumb-placeholder"><Film size={34} /></div> : <img src={thumb} alt={item.title || ""} loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} />}
+          {item.locked ? <Lock size={34} /> : item.media_kind === "video" ? (
+            thumb ? <img className="video-thumb blurred-video-thumb" src={thumb} alt="" loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} /> : <div className="video-thumb-placeholder"><Film size={34} /></div>
+          ) : <img className={isGifMedia(item) ? "gif-thumb" : ""} src={thumb} alt={item.title || ""} loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} />}
           <span className="kind-badge">{item.media_kind === "video" ? <Film size={14} /> : <ImageIcon size={14} />}{item.media_kind || "image"}</span>
         </div>
         <div className="media-copy">
@@ -123,7 +125,7 @@ export function StudioItem({ ctx, item, onChanged, onRemoved }) {
 
   return (
     <article className="studio-item">
-      <Link to={`/media/${item.id}`} className="studio-thumb">{item.media_kind === "video" ? <div className="video-thumb-placeholder"><Film size={26} /></div> : <img src={thumbUrl(item)} alt="" loading="lazy" decoding="async" />}</Link>
+      <Link to={`/media/${item.id}`} className="studio-thumb">{item.media_kind === "video" ? <img className="blurred-video-thumb" src={thumbUrl(item, 420)} alt="" loading="lazy" decoding="async" /> : <img src={thumbUrl(item)} alt="" loading="lazy" decoding="async" />}</Link>
       <div>
         <h3>{item.title || "Untitled"}</h3>
         <p>{item.visibility || "public"} / {formatBytes(item.file_size)} / {formatDate(item.created_at || item.uploaded_at)}</p>

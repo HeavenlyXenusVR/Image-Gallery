@@ -3,7 +3,10 @@ import { Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, Settin
 import { Avatar } from "./ui.jsx";
 
 export function Shell({ ctx, children }) {
-  const liveOk = ctx.lookups.live?.ok ?? ctx.lookups.live?.checks?.database ?? ctx.lookups.live?.checks?.api;
+  const checks = Array.isArray(ctx.lookups.live?.checks) ? ctx.lookups.live.checks : [];
+  const telegram = checks.find((item) => item.id === "telegram");
+  const liveOk = ctx.lookups.live?.ok ?? ctx.lookups.live?.check_map?.db ?? ctx.lookups.live?.check_map?.api;
+  const healthText = telegram ? (telegram.ok ? "Telegram Live" : "Telegram Sync") : (liveOk ? "Live" : "Checking");
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -22,7 +25,7 @@ export function Shell({ ctx, children }) {
           {ctx.user ? <NavItem to="/upload" icon={Upload} label="Upload" accent /> : null}
         </nav>
         <div className="account-actions">
-          <span className={`health-pill ${liveOk ? "is-live" : ""}`}>{liveOk ? "Live" : "Checking"}</span>
+          <span className={`health-pill ${liveOk ? "is-live" : ""}`} title={telegram?.detail || ""}>{healthText}</span>
           {ctx.user ? (
             <>
               <Link className="avatar-link" to={`/users/${ctx.user.username}`} title="Profile">

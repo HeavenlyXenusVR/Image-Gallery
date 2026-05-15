@@ -40,10 +40,45 @@ function pumpPreloadQueue() {
 
 export function thumbUrl(item, width = defaultThumbWidth()) {
   if (!item || item.locked) return "";
+  if (isGifMedia(item)) return item.url || item.preview_url || "";
   if (item.thumb_url) return item.thumb_url;
   if (item.media_kind === "image" && item.preview_url) return item.preview_url;
   if (item.media_kind === "image" && item.id) return `/api/media/${item.id}/thumb?w=${width}`;
+  if (item.media_kind === "video" && item.id) return `/api/media/${item.id}/thumb?w=${width}`;
   return "";
+}
+
+export function isGifMedia(item) {
+  const mime = String(item?.mime_type || "").toLowerCase();
+  const name = String(item?.original_filename || item?.storage_path || item?.url || "").toLowerCase();
+  return mime === "image/gif" || name.endsWith(".gif");
+}
+
+function withQuery(url, params) {
+  if (!url) return "";
+  try {
+    const absolute = /^https?:\/\//i.test(url);
+    const parsed = new URL(url, window.location.origin);
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== "") parsed.searchParams.set(key, String(value));
+    });
+    return absolute ? parsed.toString() : parsed.pathname + parsed.search + parsed.hash;
+  } catch (_error) {
+    const separator = url.includes("?") ? "&" : "?";
+    return `${url}${separator}${new URLSearchParams(params).toString()}`;
+  }
+}
+
+export function imageQualityUrl(item, quality = "medium") {
+  if (!item || item.locked) return "";
+  if (isGifMedia(item)) return item.url || item.preview_url || "";
+  if (quality === "high") return item.url || item.preview_url || "";
+  if (quality === "low") return withQuery(item.preview_url || thumbUrl(item, 520), { size: "card" });
+  return withQuery(item.preview_url || thumbUrl(item, 1280), { size: "detail" });
+}
+
+export function videoQualityUrl(item, _quality = "high") {
+  return item?.url || "";
 }
 
 export function replaceMedia(rows, updated) {
