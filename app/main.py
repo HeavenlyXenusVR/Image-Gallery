@@ -1056,6 +1056,67 @@ async def _read_validated_upload(upload: UploadFile, max_bytes: int, *, image_on
     }
 
 
+def _filesystem_media_storage_path(sha256: str, filename: str, mime_type: str) -> str:
+    ext = _safe_extension(filename, mime_type)
+    digest = re.sub(r"[^a-f0-9]", "", str(sha256).lower())[:64]
+    if len(digest) < 16:
+        digest = hashlib.sha256(str(sha256 or filename).encode("utf-8")).hexdigest()
+    return f"media/{digest[:2]}/{digest}{ext}"
+
+
+def _write_filesystem_media(storage_path: str, content: bytes) -> None:
+    target = (settings.uploads_dir / storage_path).resolve()
+    uploads_root = settings.uploads_dir.resolve()
+    if uploads_root not in target.parents:
+        raise HTTPException(status_code=400, detail="Invalid media storage path.")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and target.stat().st_size == len(content):
+        return
+    tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+    tmp.write_bytes(content)
+    tmp.replace(target)
+
+
+async def _store_uploaded_media(user_id: int, uploaded: dict[str, Any], stored_filename: str) -> dict[str, Any]:
+    if settings.storage_backend == "database":
+        packet_limit = await db.get_max_allowed_packet()
+        chunk_budget = int(getattr(db, "media_chunk_bytes", 8 * 1024 * 1024)) + (2 * 1024 * 1024)
+        if packet_limit and chunk_budget > packet_limit:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"MariaDB max_allowed_packet is only {packet_limit // (1024 * 1024)}MB. "
+                    f"The gallery writes files in {db.media_chunk_bytes // (1024 * 1024)}MB chunks, so raise "
+                    "max_allowed_packet or lower GALLERY_DB_BLOB_CHUNK_BYTES."
+                ),
+            )
+        try:
+            media_file = await db.save_media_file(
+                user_id=user_id,
+                content=uploaded["content"],
+                sha256=uploaded["sha256"],
+                mime_type=uploaded["mime_type"],
+                original_filename=stored_filename,
+                media_kind=uploaded["media_kind"],
+                file_size=uploaded["file_size"],
+            )
+        except Exception as exc:
+            if "Packet sequence number wrong" in str(exc):
+                try:
+                    await db.reconnect()
+                except Exception:
+                    pass
+                raise HTTPException(status_code=503, detail="Database connection reset during upload. Restart the gallery backend so chunked media storage is active, then try again.") from None
+            raise
+        if media_file["sha256"] != uploaded["sha256"]:
+            raise HTTPException(status_code=500, detail="Stored file hash verification failed.")
+        return {"storage_path": f"db://media/{media_file['id']}", "media_file_id": int(media_file["id"])}
+
+    storage_path = _filesystem_media_storage_path(uploaded["sha256"], stored_filename, uploaded["mime_type"])
+    await asyncio.to_thread(_write_filesystem_media, storage_path, uploaded["content"])
+    return {"storage_path": storage_path, "media_file_id": None}
+
+
 def _telegram_command_parts(text: str) -> tuple[str, str]:
     cleaned = str(text or "").strip()
     if not cleaned:
@@ -1249,7 +1310,13 @@ async def serve_legacy_upload(path: str) -> FileResponse:
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
-    return {"ok": True, "schema": settings.db_schema, "max_upload_bytes": settings.max_upload_bytes, "server_time": datetime.utcnow().isoformat() + "Z"}
+    return {
+        "ok": True,
+        "schema": settings.db_schema,
+        "storage_backend": settings.storage_backend,
+        "max_upload_bytes": settings.max_upload_bytes,
+        "server_time": datetime.utcnow().isoformat() + "Z",
+    }
 
 
 @app.get("/api/live/checks")
@@ -1939,30 +2006,8 @@ async def upload_media(
         mime_type=uploaded["mime_type"],
         user_marked_adult=bool(is_adult or analysis.is_adult),
     )
-    packet_limit = await db.get_max_allowed_packet()
-    chunk_budget = int(getattr(db, "media_chunk_bytes", 8 * 1024 * 1024)) + (2 * 1024 * 1024)
-    if packet_limit and chunk_budget > packet_limit:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"MariaDB max_allowed_packet is only {packet_limit // (1024 * 1024)}MB. "
-                f"The gallery writes files in {db.media_chunk_bytes // (1024 * 1024)}MB chunks, so raise "
-                "max_allowed_packet or lower GALLERY_DB_BLOB_CHUNK_BYTES."
-            ),
-        )
     media_kind = uploaded["media_kind"]
-    try:
-        media_file = await db.save_media_file(user_id=int(auth["id"]), content=uploaded["content"], sha256=uploaded["sha256"], mime_type=uploaded["mime_type"], original_filename=stored_filename, media_kind=uploaded["media_kind"])
-    except Exception as exc:
-        if "Packet sequence number wrong" in str(exc):
-            try:
-                await db.reconnect()
-            except Exception:
-                pass
-            raise HTTPException(status_code=503, detail="Database connection reset during upload. The gallery now stores media in chunks; restart the gallery backend so the chunked schema is active, then try again.") from None
-        raise
-    if media_file["sha256"] != uploaded["sha256"]:
-        raise HTTPException(status_code=500, detail="Stored file hash verification failed.")
+    storage_info = await _store_uploaded_media(int(auth["id"]), uploaded, stored_filename)
     item = await db.add_media(
         {
             "user_id": int(auth["id"]),
@@ -1974,8 +2019,8 @@ async def upload_media(
             "media_kind": media_kind,
             "mime_type": uploaded["mime_type"],
             "original_filename": stored_filename,
-            "storage_path": f"db://media/{media_file['id']}",
-            "media_file_id": int(media_file["id"]),
+            "storage_path": storage_info["storage_path"],
+            "media_file_id": storage_info["media_file_id"],
             "content_sha256": uploaded["sha256"],
             "file_size": uploaded["file_size"],
             "visibility": visibility,

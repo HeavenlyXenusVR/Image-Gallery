@@ -1,4 +1,5 @@
 import os
+import secrets
 import socket
 from dataclasses import dataclass
 from pathlib import Path
@@ -84,6 +85,7 @@ class Settings:
     trusted_hosts: list[str]
     pages_public_url: str
     uploads_dir: Path
+    storage_backend: str
     max_upload_bytes: int
     required_db_packet_bytes: int
     db_blob_chunk_bytes: int
@@ -120,23 +122,34 @@ def load_settings() -> Settings:
     ai_provider = _ai_provider(ai_api_key)
     ai_enabled_default = "true" if (ai_api_key or ai_provider == "ollama" or _env("GALLERY_OLLAMA_MODEL")) else "false"
     ai_enabled_raw = _env("GALLERY_AI_ENABLED", ai_enabled_default)
+    require_strong_secrets = _env_bool("GALLERY_REQUIRE_STRONG_SECRETS") or _env("GALLERY_ENV").lower() == "production"
+    session_secret = _env("GALLERY_SESSION_SECRET")
+    if require_strong_secrets and not session_secret:
+        raise RuntimeError("GALLERY_SESSION_SECRET is required when GALLERY_ENV=production or GALLERY_REQUIRE_STRONG_SECRETS=true.")
+    db_password = _env("GALLERY_DB_PASSWORD") or _env("DB_PASSWORD") or _env("MYSQL_PASSWORD")
+    if require_strong_secrets and not db_password:
+        raise RuntimeError("GALLERY_DB_PASSWORD, DB_PASSWORD, or MYSQL_PASSWORD is required in hardened mode.")
+    storage_backend = _env("GALLERY_STORAGE_BACKEND", "filesystem").lower()
+    if storage_backend not in {"filesystem", "database"}:
+        storage_backend = "filesystem"
     return Settings(
         db_host=_db_host(),
         db_port=int(_env("GALLERY_DB_PORT", "3306")),
         db_user=_env("GALLERY_DB_USER") or _env("DB_USER") or _env("MYSQL_USER") or "botuser",
-        db_password=_env("GALLERY_DB_PASSWORD") or _env("DB_PASSWORD") or _env("MYSQL_PASSWORD") or "bot_logins",
+        db_password=db_password or "bot_logins",
         db_schema=_env("GALLERY_DB_SCHEMA", "image_gallery"),
         db_pool_min_size=max(1, int(_env("GALLERY_DB_POOL_MIN_SIZE", "1"))),
         db_pool_max_size=max(2, int(_env("GALLERY_DB_POOL_MAX_SIZE", "8"))),
         db_pool_recycle_seconds=max(30, int(_env("GALLERY_DB_POOL_RECYCLE_SECONDS", "180"))),
         db_connect_timeout_seconds=max(3, int(_env("GALLERY_DB_CONNECT_TIMEOUT_SECONDS", "10"))),
         db_query_timeout_seconds=max(5, int(_env("GALLERY_DB_QUERY_TIMEOUT_SECONDS", "45"))),
-        session_secret=_env("GALLERY_SESSION_SECRET", "change-this-gallery-secret"),
+        session_secret=session_secret or secrets.token_urlsafe(32),
         api_token_ttl_seconds=int(_env("GALLERY_API_TOKEN_TTL_SECONDS", "1209600")),
         cors_allowed_origins=_env_csv("GALLERY_CORS_ALLOWED_ORIGINS"),
         trusted_hosts=_env_csv("GALLERY_TRUSTED_HOSTS"),
         pages_public_url=pages_url,
         uploads_dir=Path(_env("GALLERY_UPLOADS_DIR", str(ROOT_DIR / "uploads"))),
+        storage_backend=storage_backend,
         max_upload_bytes=int(_env("GALLERY_MAX_UPLOAD_BYTES", str(500 * 1024 * 1024))),
         required_db_packet_bytes=int(_env("GALLERY_REQUIRED_DB_PACKET_BYTES", str(512 * 1024 * 1024))),
         db_blob_chunk_bytes=int(_env("GALLERY_DB_BLOB_CHUNK_BYTES", str(8 * 1024 * 1024))),
