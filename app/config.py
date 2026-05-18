@@ -87,6 +87,11 @@ class Settings:
     uploads_dir: Path
     storage_backend: str
     max_upload_bytes: int
+    media_page_limit: int
+    max_tags_per_upload: int
+    max_tag_length: int
+    upload_rate_limit_per_hour: int
+    analyze_rate_limit_per_hour: int
     required_db_packet_bytes: int
     db_blob_chunk_bytes: int
     smtp_host: str
@@ -151,6 +156,11 @@ def load_settings() -> Settings:
         uploads_dir=Path(_env("GALLERY_UPLOADS_DIR", str(ROOT_DIR / "uploads"))),
         storage_backend=storage_backend,
         max_upload_bytes=int(_env("GALLERY_MAX_UPLOAD_BYTES", str(500 * 1024 * 1024))),
+        media_page_limit=max(1, min(200, int(_env("GALLERY_MEDIA_PAGE_LIMIT", "100")))),
+        max_tags_per_upload=max(1, min(50, int(_env("GALLERY_MAX_TAGS_PER_UPLOAD", "12")))),
+        max_tag_length=max(8, min(80, int(_env("GALLERY_MAX_TAG_LENGTH", "32")))),
+        upload_rate_limit_per_hour=max(1, int(_env("GALLERY_UPLOAD_RATE_LIMIT_PER_HOUR", "60"))),
+        analyze_rate_limit_per_hour=max(1, int(_env("GALLERY_ANALYZE_RATE_LIMIT_PER_HOUR", "120"))),
         required_db_packet_bytes=int(_env("GALLERY_REQUIRED_DB_PACKET_BYTES", str(512 * 1024 * 1024))),
         db_blob_chunk_bytes=int(_env("GALLERY_DB_BLOB_CHUNK_BYTES", str(8 * 1024 * 1024))),
         smtp_host=_env("GALLERY_SMTP_HOST") or _env("SMTP_HOST"),

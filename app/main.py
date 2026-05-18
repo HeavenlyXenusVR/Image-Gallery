@@ -3,7 +3,6 @@ import io
 import json
 import logging
 import mimetypes
-import io
 import html
 import os
 import re
@@ -60,6 +59,15 @@ API_CACHE_MAX_ITEMS = max(64, int(os.getenv("GALLERY_API_CACHE_MAX_ITEMS", "512"
 MEDIA_LIST_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_MEDIA_LIST_CACHE_SECONDS", "30") or "30"))
 LOOKUP_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_LOOKUP_CACHE_SECONDS", "300") or "300"))
 MAX_IMAGE_PIXELS = max(8_000_000, int(os.getenv("GALLERY_MAX_IMAGE_PIXELS", "80000000")))
+REQUEST_ID_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
+PERSONAL_API_PREFIXES = (
+    "/api/auth/",
+    "/api/me",
+    "/api/friends",
+    "/api/feed",
+    "/api/collections",
+)
+VALID_MEDIA_SORTS = {"new", "old", "popular", "views", "likes", "downloads", "random"}
 APP_SHELL_PATHS = {
     "/",
     "/collections",
@@ -799,13 +807,25 @@ def _with_collection_urls(request: Request, collection: dict[str, Any] | None, a
     return _jsonable(clone)
 
 
+def _normalize_upload_tag(value: Any) -> str:
+    cleaned = re.sub(r"\s+", "-", str(value or "").strip().lstrip("#"))
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "", cleaned)
+    return cleaned[:settings.max_tag_length]
+
+
 def _parse_tags(value: str | None) -> list[str]:
-    tags = []
-    for raw in re.split(r"[,#]", value or ""):
-        tag = re.sub(r"[^A-Za-z0-9_.-]+", "", raw.strip())[:32]
-        if tag and tag.lower() not in {existing.lower() for existing in tags}:
-            tags.append(tag)
-    return tags[:12]
+    tags: list[str] = []
+    seen: set[str] = set()
+    for raw in re.split(r"[,#\n\r\t]+", value or ""):
+        tag = _normalize_upload_tag(raw)
+        lowered = tag.lower()
+        if not tag or lowered in seen:
+            continue
+        seen.add(lowered)
+        tags.append(tag)
+        if len(tags) >= settings.max_tags_per_upload:
+            break
+    return tags
 
 
 def _optional_form_int(value: Any, field_name: str) -> int | None:
@@ -821,7 +841,7 @@ def _merge_upload_tags(primary: list[str], secondary: list[str]) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
     for raw in list(primary) + list(secondary):
-        tag = re.sub(r"[^A-Za-z0-9_.-]+", "", str(raw or "").strip())[:32]
+        tag = _normalize_upload_tag(raw)
         if not tag:
             continue
         lowered = tag.lower()
@@ -829,7 +849,7 @@ def _merge_upload_tags(primary: list[str], secondary: list[str]) -> list[str]:
             continue
         seen.add(lowered)
         merged.append(tag)
-        if len(merged) >= 12:
+        if len(merged) >= settings.max_tags_per_upload:
             break
     return merged
 
@@ -886,6 +906,42 @@ def _rate_limit(key: str, *, limit: int, window_seconds: int) -> None:
         raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
     bucket.append(now)
     RATE_BUCKETS[key] = bucket
+
+
+def _bounded_query_limit(value: Any, *, default: int = 60, max_limit: int | None = None) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    ceiling = max(1, int(max_limit or settings.media_page_limit))
+    return max(1, min(parsed, ceiling))
+
+
+def _bounded_query_offset(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _request_id_for(request: Request) -> str:
+    incoming = request.headers.get("x-request-id") or request.headers.get("x-correlation-id")
+    cleaned = REQUEST_ID_RE.sub("", str(incoming or ""))[:80]
+    return cleaned or secrets.token_hex(12)
+
+
+def _set_no_store_headers(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+
+
+def _should_no_store(path: str) -> bool:
+    return (
+        path in APP_SHELL_PATHS
+        or path.startswith(("/media/", "/users/"))
+        or any(path.startswith(prefix) for prefix in PERSONAL_API_PREFIXES)
+    )
 
 
 def _normalize_origin(value: str | None) -> str:
@@ -974,14 +1030,19 @@ def _security_headers(request: Request, response: Response) -> None:
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
+    response.headers.setdefault("Origin-Agent-Cluster", "?1")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if getattr(request.state, "request_id", None):
+        response.headers.setdefault("X-Request-ID", request.state.request_id)
     if request.url.scheme == "https":
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     if request.url.path.startswith(("/static/", "/app/static/")):
         response.headers.setdefault("Cache-Control", "public, max-age=86400")
-    if request.url.path in APP_SHELL_PATHS or request.url.path.startswith(("/media/", "/users/")) or request.url.path.startswith("/api/auth/"):
-        response.headers.setdefault("Cache-Control", "no-store")
+    if _should_no_store(request.url.path):
+        _set_no_store_headers(response)
 
 
 def _sniff_magic(data: bytes) -> tuple[str, str]:
@@ -1234,7 +1295,7 @@ app.add_middleware(
     allow_origin_regex=cors_origin_regex,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-Request-ID"],
 )
 app.mount("/static", StaticFiles(directory=ROOT_DIR / "app" / "static"), name="static")
 app.mount("/app/static", StaticFiles(directory=ROOT_DIR / "app" / "static"), name="app_static")
@@ -1242,12 +1303,17 @@ app.mount("/app/static", StaticFiles(directory=ROOT_DIR / "app" / "static"), nam
 
 @app.middleware("http")
 async def browser_origin_and_headers(request: Request, call_next):
+    started = time.perf_counter()
+    request.state.request_id = _request_id_for(request)
     try:
         if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
             _ensure_allowed_browser_origin(request)
         response = await call_next(request)
     except HTTPException as exc:
         response = Response(content=str(exc.detail or "Request blocked"), status_code=exc.status_code, media_type="text/plain")
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    response.headers.setdefault("X-Response-Time-ms", f"{elapsed_ms:.2f}")
+    response.headers.setdefault("Server-Timing", f"app;dur={elapsed_ms:.2f}")
     _security_headers(request, response)
     return response
 
@@ -1309,12 +1375,15 @@ async def serve_legacy_upload(path: str) -> FileResponse:
 
 
 @app.get("/api/health")
-async def health() -> dict[str, Any]:
+async def health(request: Request) -> dict[str, Any]:
     return {
         "ok": True,
         "schema": settings.db_schema,
         "storage_backend": settings.storage_backend,
         "max_upload_bytes": settings.max_upload_bytes,
+        "media_page_limit": settings.media_page_limit,
+        "max_tags_per_upload": settings.max_tags_per_upload,
+        "request_id": getattr(request.state, "request_id", ""),
         "server_time": datetime.utcnow().isoformat() + "Z",
     }
 
@@ -1637,8 +1706,10 @@ async def delete_account(payload: AccountDeleteRequest, request: Request) -> dic
 @app.get("/api/users/search")
 async def search_users(request: Request, q: str = "", limit: int = 30) -> dict[str, Any]:
     viewer_id = _user_id(_auth_optional(request))
+    limit = _bounded_query_limit(limit, default=30, max_limit=50)
+    q = " ".join(str(q or "").split())[:80]
     users = await db.search_users(q, viewer_id=viewer_id, limit=limit)
-    return {"users": [_with_user_urls(request, user) for user in users]}
+    return {"users": [_with_user_urls(request, user) for user in users], "limit": limit}
 
 
 @app.get("/api/users/{username}")
@@ -1729,6 +1800,8 @@ async def my_friends(request: Request) -> dict[str, Any]:
 async def following_feed(request: Request, limit: int = 60, offset: int = 0) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
     adult_allowed = await _viewer_can_open_adult(request)
+    limit = _bounded_query_limit(limit, default=60)
+    offset = _bounded_query_offset(offset)
     items = await db.following_feed(int(auth["id"]), limit=limit, offset=offset)
     return {"media": [_with_urls(request, item, adult_allowed) for item in items], "limit": limit, "offset": offset}
 
@@ -1737,6 +1810,8 @@ async def following_feed(request: Request, limit: int = 60, offset: int = 0) -> 
 async def my_likes(request: Request, limit: int = 80, offset: int = 0) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
     adult_allowed = await _viewer_can_open_adult(request)
+    limit = _bounded_query_limit(limit, default=80)
+    offset = _bounded_query_offset(offset)
     items = await db.list_liked_media(int(auth["id"]), limit=limit, offset=offset)
     return {"media": [_with_urls(request, item, adult_allowed) for item in items], "limit": limit, "offset": offset}
 
@@ -1805,6 +1880,9 @@ async def media(
     normalized_date_from = (date_from or "").strip()[:10] or None
     normalized_date_to = (date_to or "").strip()[:10] or None
     normalized_adult = adult if adult in {"show", "hide", "only"} else None
+    normalized_sort = sort if sort in VALID_MEDIA_SORTS else "new"
+    limit = _bounded_query_limit(limit, default=60)
+    offset = _bounded_query_offset(offset)
     cache_key = _api_cache_key(
         "media",
         request,
@@ -1820,7 +1898,7 @@ async def media(
         normalized_date_from or "",
         normalized_date_to or "",
         normalized_adult or "",
-        sort or "new",
+        normalized_sort,
         limit,
         offset,
     )
@@ -1839,11 +1917,16 @@ async def media(
         date_from=normalized_date_from,
         date_to=normalized_date_to,
         adult=normalized_adult,
-        sort=sort,
+        sort=normalized_sort,
         limit=limit,
         offset=offset,
     )
-    return _store_api_cache_response(request, cache_key, {"media": [_with_urls(request, item, adult_allowed) for item in items]}, MEDIA_LIST_CACHE_SECONDS)
+    return _store_api_cache_response(
+        request,
+        cache_key,
+        {"media": [_with_urls(request, item, adult_allowed) for item in items], "limit": limit, "offset": offset, "sort": normalized_sort},
+        MEDIA_LIST_CACHE_SECONDS,
+    )
 
 
 @app.get("/api/media/random")
@@ -1960,7 +2043,7 @@ async def upload_media(
     visibility = str(visibility or "public").lower()
     if visibility not in {"public", "unlisted", "private"}:
         raise HTTPException(status_code=400, detail="Visibility must be public, unlisted, or private.")
-    _rate_limit(f"upload:{auth['id']}", limit=60, window_seconds=3600)
+    _rate_limit(f"upload:{auth['id']}", limit=settings.upload_rate_limit_per_hour, window_seconds=3600)
     uploaded = await _read_validated_upload(file, settings.max_upload_bytes)
     analysis = await _analyze_media_safely(
         content=uploaded["content"],
@@ -2044,7 +2127,7 @@ async def analyze_media_upload(
     tags: str = Form(""),
 ) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
-    _rate_limit(f"analyze:{auth['id']}", limit=120, window_seconds=3600)
+    _rate_limit(f"analyze:{auth['id']}", limit=settings.analyze_rate_limit_per_hour, window_seconds=3600)
     uploaded = await _read_validated_upload(file, settings.max_upload_bytes)
     analysis = await _analyze_media_safely(
         content=uploaded["content"],
