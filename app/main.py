@@ -1208,6 +1208,15 @@ async def favicon() -> Response:
     return Response(content=svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=604800"})
 
 
+@app.get("/robots.txt", include_in_schema=False)
+async def robots_txt() -> Response:
+    return Response(
+        content="User-agent: *\nAllow: /\n",
+        media_type="text/plain",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 @app.get("/collections")
 @app.get("/following")
 @app.get("/liked")
