@@ -1197,15 +1197,12 @@ async def index() -> FileResponse:
 
 
 @app.get("/favicon.ico", include_in_schema=False)
-async def favicon() -> Response:
-    svg = (
-        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
-        "<rect width='64' height='64' rx='14' fill='#10161d'/>"
-        "<path d='M13 43l12-14 9 10 7-8 10 12H13z' fill='#37c9a7'/>"
-        "<circle cx='43' cy='22' r='7' fill='#6ec7ff'/>"
-        "</svg>"
+async def favicon() -> FileResponse:
+    return FileResponse(
+        ROOT_DIR / "app" / "static" / "favicon.ico",
+        media_type="image/vnd.microsoft.icon",
+        headers={"Cache-Control": "public, max-age=604800"},
     )
-    return Response(content=svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.get("/robots.txt", include_in_schema=False)

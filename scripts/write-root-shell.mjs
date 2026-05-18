@@ -16,7 +16,6 @@ const shell = `<!doctype html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#101318" />
     <meta name="description" content="Image Gallery media dashboard for browsing, uploading, collecting, and managing media." />
-    <link rel="icon" href="/favicon.ico" />
     <title>Image Gallery</title>
     <script>
       (function () {
@@ -25,6 +24,7 @@ const shell = `<!doctype html>
         window.IMAGE_GALLERY_REMOTE_MODE = isPages;
         window.IMAGE_GALLERY_BASENAME = base;
         window.IMAGE_GALLERY_CONFIG_URL = base ? base + "/live-config.json" : "live-config.json";
+        document.write('<link rel="icon" href="' + (base || "") + '/favicon.ico">');
         var assets = base + "/app/static/react/assets";
         document.write('<link rel="stylesheet" crossorigin href="' + assets + '/${styleMatch[1]}">');
         document.write('<script type="module" crossorigin src="' + assets + '/${scriptMatch[1]}"></scr' + 'ipt>');
