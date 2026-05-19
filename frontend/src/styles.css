@@ -131,6 +131,47 @@ video {
 
 .app-shell {
   min-height: 100vh;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 320px),
+    var(--bg);
+  color: var(--text);
+}
+
+.gallery-theme-light {
+  color-scheme: light;
+  --bg: #f7f9fc;
+  --panel: #ffffff;
+  --panel-2: #eef3f8;
+  --panel-3: #e4ebf3;
+  --line: #c8d4df;
+  --line-strong: #9dadbd;
+  --text: #101923;
+  --muted: #526171;
+  --muted-2: #748394;
+  --shadow: 0 14px 42px rgba(39, 55, 75, 0.14);
+}
+
+@media (prefers-color-scheme: light) {
+  .gallery-theme-system {
+    color-scheme: light;
+    --bg: #f7f9fc;
+    --panel: #ffffff;
+    --panel-2: #eef3f8;
+    --panel-3: #e4ebf3;
+    --line: #c8d4df;
+    --line-strong: #9dadbd;
+    --text: #101923;
+    --muted: #526171;
+    --muted-2: #748394;
+    --shadow: 0 14px 42px rgba(39, 55, 75, 0.14);
+  }
+}
+
+.gallery-motion-reduced *,
+.gallery-motion-reduced *::before,
+.gallery-motion-reduced *::after {
+  animation-duration: 1ms !important;
+  transition-duration: 1ms !important;
 }
 
 .topbar {
@@ -145,6 +186,16 @@ video {
   border-bottom: 1px solid rgba(77, 95, 116, 0.44);
   background: rgba(14, 18, 23, 0.9);
   backdrop-filter: blur(18px);
+}
+
+.gallery-theme-light .topbar {
+  background: rgba(247, 249, 252, 0.9);
+}
+
+@media (prefers-color-scheme: light) {
+  .gallery-theme-system .topbar {
+    background: rgba(247, 249, 252, 0.9);
+  }
 }
 
 .brand {
@@ -387,6 +438,96 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(110, 199, 255, 0.12);
 }
 
+.gallery-theme-light button,
+.gallery-theme-light .button-link,
+.gallery-theme-light .auth-link,
+.gallery-theme-light .nav-item,
+.gallery-theme-light .icon-button,
+.gallery-theme-light input,
+.gallery-theme-light select,
+.gallery-theme-light textarea {
+  background: #ffffff;
+  color: var(--text);
+}
+
+.gallery-theme-light .filter-rail,
+.gallery-theme-light .list-panel,
+.gallery-theme-light .detail-panel,
+.gallery-theme-light .content-panel,
+.gallery-theme-light .side-box,
+.gallery-theme-light .auth-card,
+.gallery-theme-light .create-box,
+.gallery-theme-light .comments-panel,
+.gallery-theme-light .media-stage,
+.gallery-theme-light .detail-side,
+.gallery-theme-light .upload-drop,
+.gallery-theme-light .stacked-form,
+.gallery-theme-light .profile-hero,
+.gallery-theme-light .media-card,
+.gallery-theme-light .user-card,
+.gallery-theme-light .studio-item,
+.gallery-theme-light .friend-request,
+.gallery-theme-light .comment,
+.gallery-theme-light .metric,
+.gallery-theme-light .notice,
+.gallery-theme-light .empty-state {
+  background: #ffffff;
+}
+
+.gallery-theme-light .chip-row span,
+.gallery-theme-light .thumb-frame,
+.gallery-theme-light .video-thumb-placeholder,
+.gallery-theme-light .segmented,
+.gallery-theme-light .collection-row.active {
+  background: #f5f8fc;
+}
+
+@media (prefers-color-scheme: light) {
+  .gallery-theme-system button,
+  .gallery-theme-system .button-link,
+  .gallery-theme-system .auth-link,
+  .gallery-theme-system .nav-item,
+  .gallery-theme-system .icon-button,
+  .gallery-theme-system input,
+  .gallery-theme-system select,
+  .gallery-theme-system textarea {
+    background: #ffffff;
+    color: var(--text);
+  }
+
+  .gallery-theme-system .filter-rail,
+  .gallery-theme-system .list-panel,
+  .gallery-theme-system .detail-panel,
+  .gallery-theme-system .content-panel,
+  .gallery-theme-system .side-box,
+  .gallery-theme-system .auth-card,
+  .gallery-theme-system .create-box,
+  .gallery-theme-system .comments-panel,
+  .gallery-theme-system .media-stage,
+  .gallery-theme-system .detail-side,
+  .gallery-theme-system .upload-drop,
+  .gallery-theme-system .stacked-form,
+  .gallery-theme-system .profile-hero,
+  .gallery-theme-system .media-card,
+  .gallery-theme-system .user-card,
+  .gallery-theme-system .studio-item,
+  .gallery-theme-system .friend-request,
+  .gallery-theme-system .comment,
+  .gallery-theme-system .metric,
+  .gallery-theme-system .notice,
+  .gallery-theme-system .empty-state {
+    background: #ffffff;
+  }
+
+  .gallery-theme-system .chip-row span,
+  .gallery-theme-system .thumb-frame,
+  .gallery-theme-system .video-thumb-placeholder,
+  .gallery-theme-system .segmented,
+  .gallery-theme-system .collection-row.active {
+    background: #f5f8fc;
+  }
+}
+
 .input-with-icon {
   position: relative;
 }
@@ -482,9 +623,19 @@ textarea:focus {
 
 .media-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--media-grid-min, 230px), 1fr));
   gap: 14px;
   contain: layout paint;
+}
+
+.media-grid-compact,
+.gallery-grid-compact {
+  --media-grid-min: 188px;
+}
+
+.media-grid-wide,
+.gallery-grid-wide {
+  --media-grid-min: 300px;
 }
 
 .media-card,
@@ -835,6 +986,39 @@ textarea:focus {
   box-shadow: var(--shadow);
 }
 
+.profile-hero.profile-banner-mesh {
+  background:
+    linear-gradient(120deg, color-mix(in srgb, var(--accent) 18%, transparent), transparent 42%),
+    linear-gradient(28deg, transparent 46%, rgba(110, 199, 255, 0.12), transparent 74%),
+    var(--panel);
+}
+
+.profile-hero.profile-banner-frame {
+  background: var(--panel);
+  border-width: 2px;
+}
+
+.profile-hero.profile-banner-aurora {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 22%, transparent), transparent 44%),
+    linear-gradient(45deg, transparent 32%, rgba(126, 231, 135, 0.12), transparent 68%),
+    var(--panel);
+}
+
+.profile-hero.profile-banner-spotlight {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 24%, transparent), transparent 68%),
+    var(--panel);
+}
+
+.profile-hero.profile-banner-poster {
+  min-height: 280px;
+  align-items: end;
+  background:
+    linear-gradient(180deg, transparent, color-mix(in srgb, var(--bg) 72%, transparent)),
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 30%, #10161d), #10161d);
+}
+
 .profile-hero h2 {
   margin: 0;
   font-size: clamp(1.5rem, 2.3vw, 2.4rem);
@@ -847,6 +1031,23 @@ textarea:focus {
   flex-wrap: wrap;
 }
 
+.profile-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 8px 0;
+  color: var(--muted);
+}
+
+.profile-meta span,
+.profile-meta a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: inherit;
+  text-decoration: none;
+}
+
 .profile-stats span,
 .metric {
   padding: 8px 10px;
@@ -856,8 +1057,97 @@ textarea:focus {
   color: var(--muted);
 }
 
+.profile-stats strong {
+  display: block;
+  color: var(--text);
+}
+
+.profile-stat-ribbon .profile-stats span {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.profile-stat-minimal .profile-stats span {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
 .profile-sections {
   grid-template-columns: minmax(0, 1fr) 330px;
+}
+
+.profile-layout-magazine.profile-hero {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.profile-layout-magazine.profile-hero .profile-actions {
+  grid-column: 2;
+}
+
+.profile-layout-stack.profile-hero,
+.profile-layout-stack.profile-sections,
+.profile-layout-timeline.profile-sections {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.profile-layout-split.profile-hero {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.profile-layout-split.profile-hero .avatar {
+  order: 2;
+}
+
+.profile-layout-mosaic.profile-sections {
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.5fr);
+}
+
+.profile-align-start.profile-hero {
+  align-items: start;
+}
+
+.profile-align-center.profile-hero {
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  text-align: center;
+}
+
+.profile-align-center .profile-meta,
+.profile-align-center .profile-stats,
+.profile-align-center .chip-row,
+.profile-align-center .profile-actions {
+  justify-content: center;
+}
+
+.profile-card-solid .side-box,
+.profile-card-solid .media-card {
+  background: var(--panel);
+}
+
+.profile-card-outline .side-box,
+.profile-card-outline .media-card {
+  background: transparent;
+  box-shadow: none;
+}
+
+.profile-card-elevated .side-box,
+.profile-card-elevated .media-card {
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.34);
+}
+
+.profile-card-edge .side-box,
+.profile-card-edge .media-card {
+  border-radius: 4px;
+}
+
+.profile-focus-gallery .profile-posts {
+  order: 1;
+}
+
+.profile-focus-social .profile-rail,
+.profile-focus-collections .profile-rail {
+  order: -1;
 }
 
 .profile-rail {

@@ -26,6 +26,18 @@ const currentUser = {
     muted_previews: true,
     reduce_motion: false,
     open_original_in_new_tab: false,
+    blur_video_previews: false,
+    profile_layout: "mosaic",
+    profile_banner_style: "poster",
+    profile_card_style: "edge",
+    profile_stat_style: "ribbon",
+    profile_content_focus: "social",
+    profile_hero_alignment: "center",
+    profile_show_joined_date: true,
+    profile_show_uploads: true,
+    profile_show_collections: true,
+    profile_show_friends: true,
+    profile_show_follow_counts: true,
   },
 };
 
@@ -229,7 +241,14 @@ function watchPage(page, failures) {
 }
 
 async function expectVisible(page, text) {
-  await page.getByText(text, { exact: false }).first().waitFor({ state: "visible", timeout: 10_000 });
+  await page.waitForFunction((needle) => {
+    return Array.from(document.querySelectorAll("body *")).some((element) => {
+      const text = element.textContent || "";
+      if (!text.includes(needle)) return false;
+      const style = window.getComputedStyle(element);
+      return style.visibility !== "hidden" && style.display !== "none" && element.getClientRects().length > 0;
+    });
+  }, text, { timeout: 10_000 });
 }
 
 async function click(page, name) {

@@ -5,6 +5,7 @@ import { Shell } from "./components/Shell.jsx";
 import { NotFound } from "./components/ui.jsx";
 import { DEFAULT_SETTINGS } from "./config.js";
 import { useLiveRefresh } from "./hooks/useLiveRefresh.js";
+import { galleryClassName, galleryStyle } from "./utils/appearance.js";
 import { AuthPage } from "./pages/AuthPage.jsx";
 import { CollectionsPage } from "./pages/CollectionsPage.jsx";
 import { DiscoverPage } from "./pages/DiscoverPage.jsx";
@@ -108,7 +109,7 @@ function App() {
   }), [loginWith, logout, lookups, refreshLookups, refreshMe, setSessionUser, showToast, token, user]);
 
   return (
-    <Shell ctx={ctx}>
+    <Shell ctx={ctx} className={galleryClassName(ctx.settings)} style={galleryStyle(ctx.settings)}>
       <Routes>
         <Route path="/" element={<DiscoverPage ctx={ctx} />} />
         <Route path="/following" element={<FeedPage ctx={ctx} mode="following" />} />

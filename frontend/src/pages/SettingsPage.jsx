@@ -1,28 +1,39 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, KeyRound, Mail, Palette, Save, ShieldCheck, UserRound } from "lucide-react";
 import { apiFetch } from "../api.js";
 import { Page, RequireLogin } from "../components/ui.jsx";
 
+function profileFromUser(user, settings) {
+  return {
+    display_name: user?.display_name || user?.username || "",
+    bio: user?.bio || "",
+    website_url: user?.website_url || "",
+    location_label: user?.location_label || "",
+    profile_headline: user?.profile_headline || "",
+    featured_tags: (user?.featured_tags || []).join(", "),
+    profile_color: user?.profile_color || settings.accent_color || "#37c9a7",
+    public_profile: user?.public_profile !== false,
+    show_liked_count: user?.show_liked_count !== false,
+    show_collections: user?.show_collections !== false,
+    show_recent_uploads: user?.show_recent_uploads !== false,
+    show_friends: user?.show_friends !== false,
+  };
+}
+
 export function SettingsPage({ ctx }) {
-  const [profile, setProfile] = useState(() => ({
-    display_name: ctx.user?.display_name || ctx.user?.username || "",
-    bio: ctx.user?.bio || "",
-    website_url: ctx.user?.website_url || "",
-    location_label: ctx.user?.location_label || "",
-    profile_headline: ctx.user?.profile_headline || "",
-    featured_tags: (ctx.user?.featured_tags || []).join(", "),
-    profile_color: ctx.user?.profile_color || ctx.settings.accent_color || "#37c9a7",
-    public_profile: ctx.user?.public_profile !== false,
-    show_liked_count: ctx.user?.show_liked_count !== false,
-    show_collections: ctx.user?.show_collections !== false,
-    show_recent_uploads: ctx.user?.show_recent_uploads !== false,
-    show_friends: ctx.user?.show_friends !== false,
-  }));
+  const [profile, setProfile] = useState(() => profileFromUser(ctx.user, ctx.settings));
   const [prefs, setPrefs] = useState(ctx.settings);
   const [email, setEmail] = useState(ctx.user?.email || "");
   const [emailCode, setEmailCode] = useState("");
   const [age, setAge] = useState({ birthdate: "", confirm_over_18: false });
   const [password, setPassword] = useState({ old_password: "", new_password: "" });
+
+  useEffect(() => {
+    if (!ctx.user) return;
+    setProfile(profileFromUser(ctx.user, ctx.settings));
+    setPrefs(ctx.settings);
+    setEmail(ctx.user.email || "");
+  }, [ctx.user]);
 
   if (!ctx.user) return <RequireLogin />;
 
@@ -125,6 +136,7 @@ export function SettingsPage({ ctx }) {
           <label className="field color-field"><span>Color</span><input value={profile.profile_color} onChange={(event) => updateProfile("profile_color", event.target.value)} type="color" /></label>
           <div className="check-stack">
             <label className="check-row"><input checked={profile.public_profile} onChange={(event) => updateProfile("public_profile", event.target.checked)} type="checkbox" />Public profile</label>
+            <label className="check-row"><input checked={profile.show_liked_count} onChange={(event) => updateProfile("show_liked_count", event.target.checked)} type="checkbox" />Liked count</label>
             <label className="check-row"><input checked={profile.show_collections} onChange={(event) => updateProfile("show_collections", event.target.checked)} type="checkbox" />Collections</label>
             <label className="check-row"><input checked={profile.show_recent_uploads} onChange={(event) => updateProfile("show_recent_uploads", event.target.checked)} type="checkbox" />Uploads</label>
             <label className="check-row"><input checked={profile.show_friends} onChange={(event) => updateProfile("show_friends", event.target.checked)} type="checkbox" />Friends</label>
@@ -135,15 +147,36 @@ export function SettingsPage({ ctx }) {
           <h2><Palette size={18} /> Preferences</h2>
           <div className="two-col">
             <label className="field"><span>Theme</span><select value={prefs.theme_mode} onChange={(event) => updatePrefs("theme_mode", event.target.value)}><option value="system">System</option><option value="dark">Dark</option><option value="light">Light</option></select></label>
-            <label className="field"><span>Grid</span><select value={prefs.grid_density} onChange={(event) => updatePrefs("grid_density", event.target.value)}><option value="compact">Compact</option><option value="comfortable">Comfortable</option><option value="large">Large</option></select></label>
+            <label className="field color-field"><span>Accent</span><input value={prefs.accent_color || "#37c9a7"} onChange={(event) => updatePrefs("accent_color", event.target.value)} type="color" /></label>
           </div>
           <div className="two-col">
-            <label className="field"><span>Sort</span><select value={prefs.default_sort} onChange={(event) => updatePrefs("default_sort", event.target.value)}><option value="new">Newest</option><option value="popular">Popular</option><option value="views">Views</option><option value="downloads">Downloads</option></select></label>
+            <label className="field"><span>Grid</span><select value={prefs.grid_density} onChange={(event) => updatePrefs("grid_density", event.target.value)}><option value="compact">Compact</option><option value="comfortable">Comfortable</option><option value="wide">Wide</option></select></label>
+            <label className="field"><span>Sort</span><select value={prefs.default_sort} onChange={(event) => updatePrefs("default_sort", event.target.value)}><option value="new">Newest</option><option value="popular">Popular</option><option value="views">Views</option><option value="downloads">Downloads</option><option value="old">Oldest</option></select></label>
+          </div>
+          <div className="two-col">
             <label className="field"><span>Items</span><input type="number" min="12" max="60" value={prefs.items_per_page} onChange={(event) => updatePrefs("items_per_page", Number(event.target.value))} /></label>
+            <label className="field"><span>Profile layout</span><select value={prefs.profile_layout} onChange={(event) => updatePrefs("profile_layout", event.target.value)}><option value="spotlight">Spotlight</option><option value="magazine">Magazine</option><option value="stack">Stack</option><option value="split">Split</option><option value="mosaic">Mosaic</option><option value="timeline">Timeline</option></select></label>
+          </div>
+          <div className="two-col">
+            <label className="field"><span>Banner</span><select value={prefs.profile_banner_style} onChange={(event) => updatePrefs("profile_banner_style", event.target.value)}><option value="gradient">Gradient</option><option value="mesh">Mesh</option><option value="frame">Frame</option><option value="aurora">Aurora</option><option value="spotlight">Spotlight</option><option value="poster">Poster</option></select></label>
+            <label className="field"><span>Cards</span><select value={prefs.profile_card_style} onChange={(event) => updatePrefs("profile_card_style", event.target.value)}><option value="glass">Glass</option><option value="solid">Solid</option><option value="outline">Outline</option><option value="elevated">Elevated</option><option value="soft">Soft</option><option value="edge">Edge</option></select></label>
+          </div>
+          <div className="two-col">
+            <label className="field"><span>Stats</span><select value={prefs.profile_stat_style} onChange={(event) => updatePrefs("profile_stat_style", event.target.value)}><option value="tiles">Tiles</option><option value="ribbon">Ribbon</option><option value="minimal">Minimal</option></select></label>
+            <label className="field"><span>Focus</span><select value={prefs.profile_content_focus} onChange={(event) => updatePrefs("profile_content_focus", event.target.value)}><option value="balanced">Balanced</option><option value="gallery">Gallery</option><option value="collections">Collections</option><option value="social">Social</option></select></label>
+          </div>
+          <label className="field"><span>Hero alignment</span><select value={prefs.profile_hero_alignment} onChange={(event) => updatePrefs("profile_hero_alignment", event.target.value)}><option value="split">Split</option><option value="start">Start</option><option value="center">Center</option></select></label>
+          <div className="check-stack">
+            <label className="check-row"><input checked={prefs.profile_show_joined_date} onChange={(event) => updatePrefs("profile_show_joined_date", event.target.checked)} type="checkbox" />Joined date</label>
+            <label className="check-row"><input checked={prefs.profile_show_uploads} onChange={(event) => updatePrefs("profile_show_uploads", event.target.checked)} type="checkbox" />Profile uploads</label>
+            <label className="check-row"><input checked={prefs.profile_show_collections} onChange={(event) => updatePrefs("profile_show_collections", event.target.checked)} type="checkbox" />Profile collections</label>
+            <label className="check-row"><input checked={prefs.profile_show_friends} onChange={(event) => updatePrefs("profile_show_friends", event.target.checked)} type="checkbox" />Profile friends</label>
+            <label className="check-row"><input checked={prefs.profile_show_follow_counts} onChange={(event) => updatePrefs("profile_show_follow_counts", event.target.checked)} type="checkbox" />Follow counts</label>
           </div>
           <div className="check-stack">
             <label className="check-row"><input checked={prefs.autoplay_previews} onChange={(event) => updatePrefs("autoplay_previews", event.target.checked)} type="checkbox" />Autoplay</label>
             <label className="check-row"><input checked={prefs.muted_previews} onChange={(event) => updatePrefs("muted_previews", event.target.checked)} type="checkbox" />Muted previews</label>
+            <label className="check-row"><input checked={prefs.blur_video_previews} onChange={(event) => updatePrefs("blur_video_previews", event.target.checked)} type="checkbox" />Blur video previews</label>
             <label className="check-row"><input checked={prefs.reduce_motion} onChange={(event) => updatePrefs("reduce_motion", event.target.checked)} type="checkbox" />Reduced motion</label>
             <label className="check-row"><input checked={prefs.open_original_in_new_tab} onChange={(event) => updatePrefs("open_original_in_new_tab", event.target.checked)} type="checkbox" />Originals in new tab</label>
           </div>

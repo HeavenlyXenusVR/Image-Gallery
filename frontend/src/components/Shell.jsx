@@ -2,13 +2,13 @@ import { Link, NavLink } from "react-router-dom";
 import { Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Settings, Sparkles, Upload, UserPlus, Users } from "lucide-react";
 import { Avatar } from "./ui.jsx";
 
-export function Shell({ ctx, children }) {
+export function Shell({ ctx, children, className = "", style }) {
   const checks = Array.isArray(ctx.lookups.live?.checks) ? ctx.lookups.live.checks : [];
   const telegram = checks.find((item) => item.id === "telegram");
   const liveOk = ctx.lookups.live?.ok ?? ctx.lookups.live?.check_map?.db ?? ctx.lookups.live?.check_map?.api;
   const healthText = telegram ? (telegram.ok ? "Telegram Live" : "Telegram Sync") : (liveOk ? "Live" : "Checking");
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${className}`.trim()} style={style}>
       <header className="topbar">
         <Link className="brand" to="/">
           <span className="brand-mark"><ImageIcon size={18} /></span>
