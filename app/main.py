@@ -11,6 +11,8 @@ import hashlib
 import hmac
 import random
 import struct
+import subprocess
+import tempfile
 import time
 from urllib.parse import quote, urlparse
 from collections import OrderedDict
@@ -75,6 +77,7 @@ APP_SHELL_PATHS = {
     "/liked",
     "/users",
     "/friends",
+    "/messages",
     "/studio",
     "/profile",
     "/upload",
@@ -140,6 +143,10 @@ class LikeRequest(BaseModel):
 
 
 class CommentRequest(BaseModel):
+    body: str
+
+
+class DirectMessageRequest(BaseModel):
     body: str
 
 
@@ -1224,11 +1231,49 @@ async def _handle_telegram_command(message: dict[str, Any]) -> str:
     return "Unknown command. Use /help for Image Gallery Telegram commands."
 
 
+TELEGRAM_HEALTH_INTERVAL_SECONDS = max(60.0, float(os.getenv("GALLERY_TELEGRAM_HEALTH_INTERVAL_SECONDS", "300") or "300"))
+TELEGRAM_ALERT_COOLDOWN_SECONDS = max(300.0, float(os.getenv("GALLERY_TELEGRAM_ALERT_COOLDOWN_SECONDS", "900") or "900"))
+_telegram_alert_last: dict[str, float] = {}
+
+
+async def _send_telegram_alert(key: str, title: str, detail: str) -> None:
+    if not telegram_service or not settings.telegram_allowed_chat_ids:
+        return
+    now = time.monotonic()
+    if now - _telegram_alert_last.get(key, 0.0) < TELEGRAM_ALERT_COOLDOWN_SECONDS:
+        return
+    _telegram_alert_last[key] = now
+    message = f"{title}\n{str(detail or '').strip()[:1200]}"
+    for chat_id in sorted(settings.telegram_allowed_chat_ids):
+        try:
+            await telegram_service.send_message(chat_id, message)
+        except Exception:
+            logger.exception("Image Gallery Telegram alert delivery failed for chat %s.", chat_id)
+
+
+async def _telegram_health_watch_loop() -> None:
+    await asyncio.sleep(20)
+    while True:
+        try:
+            await db.site_checks()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Image Gallery database health check failed.")
+            await _send_telegram_alert("db", "Image Gallery database problem", str(exc))
+            try:
+                await db.reconnect()
+            except Exception:
+                logger.exception("Image Gallery database reconnect failed after health alert.")
+        await asyncio.sleep(TELEGRAM_HEALTH_INTERVAL_SECONDS)
+
+
 async def lifespan(app: FastAPI):
     global telegram_service
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
     await db.connect()
     migration_task = asyncio.create_task(_auto_migrate_legacy_uploads())
+    health_task = asyncio.create_task(_telegram_health_watch_loop())
     telegram_service = TelegramPollingService(
         token=settings.telegram_bot_token,
         name="Image Gallery",
@@ -1254,6 +1299,13 @@ async def lifespan(app: FastAPI):
         pass
     except Exception as exc:
         logger.warning("Legacy migration task ended during shutdown: %s", exc)
+    health_task.cancel()
+    try:
+        await health_task
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.warning("Telegram health watch task ended during shutdown: %s", exc)
     await db.close()
 
 
@@ -1346,6 +1398,7 @@ async def robots_txt() -> Response:
 @app.get("/liked")
 @app.get("/users")
 @app.get("/friends")
+@app.get("/messages")
 @app.get("/studio")
 @app.get("/profile")
 @app.get("/upload")
@@ -1794,6 +1847,33 @@ async def my_friends(request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
     friends = await db.list_friends(int(auth["id"]), viewer_id=int(auth["id"]))
     return {"friends": [_with_user_urls(request, user) for user in friends]}
+
+
+@app.get("/api/messages/threads")
+async def message_threads(request: Request) -> dict[str, Any]:
+    auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+    threads = await db.list_message_threads(int(auth["id"]))
+    return {"threads": [_with_user_urls(request, thread) for thread in threads]}
+
+
+@app.get("/api/messages/{user_id}")
+async def direct_messages(user_id: int, request: Request, limit: int = 80) -> dict[str, Any]:
+    auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+    try:
+        messages = await db.list_direct_messages(int(auth["id"]), user_id, limit=limit)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"messages": [_jsonable(message) for message in messages]}
+
+
+@app.post("/api/messages/{user_id}")
+async def send_direct_message(user_id: int, payload: DirectMessageRequest, request: Request) -> dict[str, Any]:
+    auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+    try:
+        message = await db.send_direct_message(int(auth["id"]), user_id, payload.body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"message": _jsonable(message)}
 
 
 @app.get("/api/feed/following")
@@ -2320,7 +2400,83 @@ def _parse_range_header(range_header: str | None, file_size: int) -> tuple[int, 
     return start, min(end, file_size - 1)
 
 
-async def _serve_media_content(media_id: int, request: Request, *, access: str | None, as_download: bool) -> Response:
+def _normalize_video_quality(value: str | None) -> str:
+    quality = str(value or "high").strip().lower()
+    return quality if quality in {"high", "original", "medium", "low"} else "high"
+
+
+def _transcode_video_variant(source_path: Path, cache_path: Path, profile: dict[str, Any]) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = cache_path.with_suffix(".tmp.mp4")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    scale_filter = f"scale='min({int(profile['max_width'])},iw)':-2"
+    command = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(source_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-vf",
+        scale_filter,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        str(int(profile["crf"])),
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        str(profile["audio_bitrate"]),
+        "-movflags",
+        "+faststart",
+        str(tmp_path),
+    ]
+    subprocess.run(command, check=True, timeout=900)
+    tmp_path.replace(cache_path)
+
+
+async def _video_variant_response(media_id: int, item: dict[str, Any], file_info: dict[str, Any] | None, legacy: Path | None, quality: str) -> Response | None:
+    profile = VIDEO_QUALITY_PROFILES.get(_normalize_video_quality(quality))
+    if not profile or item.get("media_kind") != "video":
+        return None
+    digest = str((file_info or {}).get("sha256") or item.get("content_sha256") or item.get("updated_at") or item.get("created_at") or media_id)
+    cache_file = VIDEO_CACHE_DIR / f"{int(media_id)}_{quality}_{hashlib.sha256(digest.encode('utf-8')).hexdigest()[:16]}.mp4"
+    if not cache_file.exists() or cache_file.stat().st_size <= 0:
+        if file_info:
+            file_row = await db.get_media_file(media_id)
+            if not file_row:
+                return None
+            with tempfile.TemporaryDirectory(prefix="gallery-video-") as tmp_dir:
+                safe_name = Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
+                source_path = Path(tmp_dir) / safe_name
+                source_path.write_bytes(file_row["content"])
+                await asyncio.to_thread(_transcode_video_variant, source_path, cache_file, profile)
+        elif legacy:
+            await asyncio.to_thread(_transcode_video_variant, legacy, cache_file, profile)
+        else:
+            return None
+    return FileResponse(
+        cache_file,
+        media_type="video/mp4",
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "X-Video-Quality": quality,
+            "X-Video-Codec": "h264/aac",
+        },
+    )
+
+
+async def _serve_media_content(media_id: int, request: Request, *, access: str | None, as_download: bool, quality: str | None = None) -> Response:
     auth = _auth_optional(request)
     viewer_id = _user_id(auth)
     item = await db.get_media(media_id, viewer_id)
@@ -2336,8 +2492,12 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
         if not adult_ok:
             raise HTTPException(status_code=403, detail="Age verification required for this 18+ post.")
 
+    requested_quality = _normalize_video_quality(quality)
     file_info = await db.get_media_file_info(media_id)
     if file_info:
+        variant = None if as_download else await _video_variant_response(media_id, item, file_info, None, requested_quality)
+        if variant:
+            return variant
         file_size = int(file_info.get("file_size") or 0)
         requested_range = None if as_download else _parse_range_header(request.headers.get("range"), file_size)
         headers = {
@@ -2370,6 +2530,9 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
 
     legacy = _legacy_upload_path(item.get("storage_path"))
     if legacy:
+        variant = None if as_download else await _video_variant_response(media_id, item, None, legacy, requested_quality)
+        if variant:
+            return variant
         if as_download:
             await db.increment_counter(media_id, "downloads")
         return FileResponse(
@@ -2394,6 +2557,12 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
 # XENUS_THUMB_CACHE_V1
 THUMB_CACHE_DIR = settings.uploads_dir / "_thumb_cache"
 THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+VIDEO_CACHE_DIR = settings.uploads_dir / "_video_cache"
+VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+VIDEO_QUALITY_PROFILES = {
+    "medium": {"max_width": 1280, "crf": 23, "audio_bitrate": "160k"},
+    "low": {"max_width": 854, "crf": 28, "audio_bitrate": "96k"},
+}
 
 def _thumb_file_response(request: Request, cache_file: Path, headers: dict[str, str]) -> Response | None:
     if not cache_file.exists() or cache_file.stat().st_size <= 0:
@@ -2481,8 +2650,8 @@ async def serve_media_thumb(media_id: int, request: Request, access: str | None 
 
 
 @app.get("/api/media/{media_id}/file", name="serve_media_file")
-async def serve_media_file(media_id: int, request: Request, access: str | None = None) -> Response:
-    return await _serve_media_content(media_id, request, access=access, as_download=False)
+async def serve_media_file(media_id: int, request: Request, access: str | None = None, quality: str | None = None) -> Response:
+    return await _serve_media_content(media_id, request, access=access, as_download=False, quality=quality)
 
 
 @app.get("/api/media/{media_id}/preview", name="serve_media_preview")
@@ -2498,7 +2667,7 @@ async def serve_media_preview(media_id: int, request: Request, access: str | Non
     if item.get("is_adult") and not await _adult_file_allowed(request, media_id, access):
         raise HTTPException(status_code=403, detail="Age verification required for this 18+ post.")
     if item.get("media_kind") != "image":
-        return await _serve_media_content(media_id, request, access=access, as_download=False)
+        return await _serve_media_content(media_id, request, access=access, as_download=False, quality=size)
 
     file_row = await db.get_media_file(media_id)
     if file_row:

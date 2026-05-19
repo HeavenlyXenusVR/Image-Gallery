@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Heart, LogIn, UserPlus } from "lucide-react";
+import { Heart, LogIn, MessageCircle, UserPlus } from "lucide-react";
 import { apiFetch, clearApiCache } from "../api.js";
 import { friendLabel } from "../utils/format.js";
 import { Avatar, EmptyState, UserMini } from "./ui.jsx";
@@ -31,6 +31,7 @@ export function ProfileActions({ ctx, user, onChanged }) {
     <div className="profile-actions">
       <button type="button" onClick={follow}><Heart size={16} />{user.following_by_me ? "Unfollow" : "Follow"}</button>
       <button type="button" onClick={friend} disabled={["friends", "pending_out", "self"].includes(user.friend_status)}><UserPlus size={16} />{friendLabel(user.friend_status)}</button>
+      {user.friend_status !== "self" ? <Link className="button-link" to="/messages" state={{ user }}><MessageCircle size={16} />Message</Link> : null}
     </div>
   );
 }

@@ -77,8 +77,10 @@ export function imageQualityUrl(item, quality = "medium") {
   return withQuery(item.preview_url || thumbUrl(item, 1280), { size: "detail" });
 }
 
-export function videoQualityUrl(item, _quality = "high") {
-  return item?.url || "";
+export function videoQualityUrl(item, quality = "high") {
+  if (!item || item.locked) return "";
+  if (quality === "high" || quality === "original") return item.url || "";
+  return withQuery(item.url || "", { quality });
 }
 
 export function replaceMedia(rows, updated) {

@@ -11,6 +11,7 @@ import { DiscoverPage } from "./pages/DiscoverPage.jsx";
 import { FeedPage } from "./pages/FeedPage.jsx";
 import { FriendsPage } from "./pages/FriendsPage.jsx";
 import { MediaDetailPage } from "./pages/MediaDetailPage.jsx";
+import { MessagesPage } from "./pages/MessagesPage.jsx";
 import { ProfilePage } from "./pages/ProfilePage.jsx";
 import { SettingsPage } from "./pages/SettingsPage.jsx";
 import { StudioPage } from "./pages/StudioPage.jsx";
@@ -117,6 +118,7 @@ function App() {
         <Route path="/users" element={<UsersPage ctx={ctx} />} />
         <Route path="/users/:username" element={<ProfilePage ctx={ctx} />} />
         <Route path="/friends" element={<FriendsPage ctx={ctx} />} />
+        <Route path="/messages" element={<MessagesPage ctx={ctx} />} />
         <Route path="/studio" element={<StudioPage ctx={ctx} />} />
         <Route path="/profile" element={ctx.user ? <Navigate to={`/users/${ctx.user.username}`} replace /> : <Navigate to="/login" replace />} />
         <Route path="/upload" element={<UploadPage ctx={ctx} />} />

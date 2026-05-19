@@ -1,5 +1,5 @@
 import { Link, NavLink } from "react-router-dom";
-import { Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, Settings, Sparkles, Upload, UserPlus, Users } from "lucide-react";
+import { Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Settings, Sparkles, Upload, UserPlus, Users } from "lucide-react";
 import { Avatar } from "./ui.jsx";
 
 export function Shell({ ctx, children }) {
@@ -21,6 +21,7 @@ export function Shell({ ctx, children }) {
           <NavItem to="/following" icon={Sparkles} label="Following" />
           <NavItem to="/liked" icon={Heart} label="Liked" />
           {ctx.user ? <NavItem to="/friends" icon={UserPlus} label="Friends" /> : null}
+          {ctx.user ? <NavItem to="/messages" icon={MessageCircle} label="Messages" /> : null}
           {ctx.user ? <NavItem to="/studio" icon={Grid3X3} label="Studio" /> : null}
           {ctx.user ? <NavItem to="/upload" icon={Upload} label="Upload" accent /> : null}
         </nav>
