@@ -62,6 +62,7 @@ PREVIEW_CACHE_MAX_ITEMS = 256
 API_CACHE_MAX_ITEMS = max(64, int(os.getenv("GALLERY_API_CACHE_MAX_ITEMS", "512")))
 MEDIA_LIST_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_MEDIA_LIST_CACHE_SECONDS", "30") or "30"))
 LOOKUP_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_LOOKUP_CACHE_SECONDS", "300") or "300"))
+PRESENCE_TOUCH_INTERVAL_SECONDS = max(15, int(os.getenv("GALLERY_PRESENCE_TOUCH_INTERVAL_SECONDS", "30") or "30"))
 MAX_IMAGE_PIXELS = max(8_000_000, int(os.getenv("GALLERY_MAX_IMAGE_PIXELS", "80000000")))
 REQUEST_ID_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 PERSONAL_API_PREFIXES = (
@@ -338,6 +339,31 @@ def _user_id(auth: dict[str, Any] | None) -> int | None:
         return int(auth.get("id"))
     except (TypeError, ValueError):
         return None
+
+
+def _should_touch_presence(request: Request) -> bool:
+    path = request.url.path
+    if request.method.upper() not in {"GET", "HEAD", "POST", "PATCH", "PUT", "DELETE"}:
+        return False
+    if not path.startswith("/api/"):
+        return False
+    if path.startswith("/api/uploads/"):
+        return False
+    if path.startswith("/api/media/") and path.endswith(("/thumb", "/file", "/preview", "/download")):
+        return False
+    return True
+
+
+async def _touch_request_presence(request: Request) -> None:
+    if not _should_touch_presence(request):
+        return
+    viewer_id = _user_id(_auth_optional(request))
+    if not viewer_id:
+        return
+    try:
+        await db.touch_user_seen(viewer_id, min_interval_seconds=PRESENCE_TOUCH_INTERVAL_SECONDS)
+    except Exception:
+        logger.debug("Unable to refresh Image Gallery presence for user_id=%s on %s.", viewer_id, request.url.path, exc_info=True)
 
 
 def _is_age_verified(user: dict[str, Any] | None) -> bool:
@@ -1481,6 +1507,7 @@ async def browser_origin_and_headers(request: Request, call_next):
     try:
         if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
             _ensure_allowed_browser_origin(request)
+        await _touch_request_presence(request)
         response = await call_next(request)
     except HTTPException as exc:
         response = Response(content=str(exc.detail or "Request blocked"), status_code=exc.status_code, media_type="text/plain")
@@ -1770,7 +1797,6 @@ async def login(payload: LoginRequest, request: Request) -> dict[str, Any]:
 @app.get("/api/me")
 async def me(request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
-    await db.touch_user_seen(int(auth["id"]))
     user = await db.get_user(int(auth["id"]))
     if not user:
         raise HTTPException(status_code=401, detail="Account no longer exists.")

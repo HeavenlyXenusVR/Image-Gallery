@@ -13,7 +13,11 @@ export function UsersPage({ ctx }) {
   const loadUsers = useCallback(async ({ background = false } = {}) => {
     if (!background) setLoading(true);
     try {
-      const data = await cachedApiFetch(`/api/users/search${toQuery({ q: query, limit: 42 })}`, { ttl: background ? 8_000 : 20_000 });
+      const data = await cachedApiFetch(`/api/users/search${toQuery({ q: query, limit: 42 })}`, {
+        ttl: background ? 8_000 : 20_000,
+        staleTtl: 30_000,
+        allowStale: !background,
+      });
       setUsers(data.users || []);
     } catch (error) {
       if (!background) ctx.showToast(error.message, "error");

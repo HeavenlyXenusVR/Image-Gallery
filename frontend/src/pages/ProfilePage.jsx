@@ -5,6 +5,7 @@ import { cachedApiFetch } from "../api.js";
 import { MediaGrid } from "../components/media.jsx";
 import { ProfileActions } from "../components/social.jsx";
 import { Avatar, ChipRow, CollectionMini, Notice, NotFound, Page, PresencePill, SkeletonGrid, UserMini } from "../components/ui.jsx";
+import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { formatDate, numberish, safeColor } from "../utils/format.js";
 import { profileClassName, profileStyle } from "../utils/appearance.js";
 import { preloadMediaAssets } from "../utils/media.js";
@@ -16,18 +17,24 @@ export function ProfilePage({ ctx }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const loadProfile = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  const loadProfile = useCallback(async ({ background = false } = {}) => {
+    if (!background) {
+      setLoading(true);
+      setError("");
+    }
     try {
-      const payload = await cachedApiFetch(`/api/users/${encodeURIComponent(username)}/profile`, { ttl: 20_000, staleTtl: 5 * 60_000 });
+      const payload = await cachedApiFetch(`/api/users/${encodeURIComponent(username)}/profile`, {
+        ttl: background ? 8_000 : 20_000,
+        staleTtl: 30_000,
+        allowStale: false,
+      });
       setData(payload);
       preloadMediaAssets(payload.media || [], { limit: 6 });
       if (payload.user?.id) {
         const [followers, following, friends] = await Promise.allSettled([
-          cachedApiFetch(`/api/users/${payload.user.id}/followers`, { ttl: 20_000, staleTtl: 3 * 60_000 }),
-          cachedApiFetch(`/api/users/${payload.user.id}/following`, { ttl: 20_000, staleTtl: 3 * 60_000 }),
-          cachedApiFetch(`/api/users/${payload.user.id}/friends`, { ttl: 20_000, staleTtl: 3 * 60_000 }),
+          cachedApiFetch(`/api/users/${payload.user.id}/followers`, { ttl: background ? 8_000 : 20_000, staleTtl: 30_000, allowStale: false }),
+          cachedApiFetch(`/api/users/${payload.user.id}/following`, { ttl: background ? 8_000 : 20_000, staleTtl: 30_000, allowStale: false }),
+          cachedApiFetch(`/api/users/${payload.user.id}/friends`, { ttl: background ? 8_000 : 20_000, staleTtl: 30_000, allowStale: false }),
         ]);
         setSocial({
           followers: followers.status === "fulfilled" ? followers.value.users || [] : [],
@@ -36,15 +43,17 @@ export function ProfilePage({ ctx }) {
         });
       }
     } catch (fetchError) {
-      setError(fetchError.message);
+      if (!background) setError(fetchError.message);
     } finally {
-      setLoading(false);
+      if (!background) setLoading(false);
     }
   }, [username]);
 
   useEffect(() => {
     loadProfile();
   }, [loadProfile]);
+
+  useLiveRefresh(() => loadProfile({ background: true }), { enabled: Boolean(username), interval: 20_000 });
 
   if (loading) return <Page title="Profile" eyebrow="Loading"><SkeletonGrid count={4} /></Page>;
   if (error) return <Page title="Profile" eyebrow="Error"><Notice kind="error">{error}</Notice></Page>;

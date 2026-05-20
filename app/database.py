@@ -168,6 +168,7 @@ class GalleryDatabase:
                 password=self.settings.db_password,
                 db=self.settings.db_schema,
                 autocommit=True,
+                init_command="SET time_zone = '+00:00'",
                 minsize=int(getattr(self.settings, "db_pool_min_size", 1) or 1),
                 maxsize=int(getattr(self.settings, "db_pool_max_size", 8) or 8),
                 pool_recycle=int(getattr(self.settings, "db_pool_recycle_seconds", 180) or 180),
@@ -798,10 +799,22 @@ class GalleryDatabase:
                 await cur.execute("UPDATE users SET last_login_at=CURRENT_TIMESTAMP, last_seen_at=CURRENT_TIMESTAMP WHERE id=%s", (user["id"],))
                 return await self.get_user(user["id"])
 
-    async def touch_user_seen(self, user_id: int) -> None:
+    async def touch_user_seen(self, user_id: int, min_interval_seconds: int = 30) -> None:
+        min_interval = max(0, int(min_interval_seconds or 0))
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cur:
-                await cur.execute("UPDATE users SET last_seen_at=CURRENT_TIMESTAMP WHERE id=%s", (user_id,))
+                if min_interval:
+                    await cur.execute(
+                        """
+                        UPDATE users
+                        SET last_seen_at=CURRENT_TIMESTAMP
+                        WHERE id=%s
+                          AND (last_seen_at IS NULL OR last_seen_at < TIMESTAMPADD(SECOND, -%s, CURRENT_TIMESTAMP))
+                        """,
+                        (user_id, min_interval),
+                    )
+                else:
+                    await cur.execute("UPDATE users SET last_seen_at=CURRENT_TIMESTAMP WHERE id=%s", (user_id,))
 
     async def get_user(self, user_id: int) -> dict[str, Any] | None:
         async with self.pool.acquire() as conn:
