@@ -9,7 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 import app.main as main
 
@@ -49,6 +51,9 @@ def main_test() -> None:
     finally:
         main.settings = original_settings
 
+    assert main._sniff_magic(b"\x00\x00\x00 ftypavif\x00\x00\x00\x00avifmif1") == ("image/avif", "image")
+    assert main._sniff_magic(b"\x00\x00\x00 ftypisom\x00\x00\x00\x00isommp42") == ("video/mp4", "video")
+
     with tempfile.TemporaryDirectory() as tmp:
         main.settings = replace(original_settings, uploads_dir=Path(tmp), storage_backend="filesystem")
         try:
@@ -71,6 +76,35 @@ def main_test() -> None:
         assert storage_path == "media/aa/" + ("a" * 64) + ".png"
         assert stored["media_file_id"] is None
         assert (Path(tmp) / storage_path).read_bytes() == b"route-test-image-bytes"
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/",
+        "headers": [],
+        "scheme": "http",
+        "server": ("127.0.0.1", 8788),
+        "client": ("127.0.0.1", 0),
+        "root_path": "",
+        "app": main.app,
+    })
+    collection = main._with_collection_urls(
+        request,
+        {"id": 7, "is_public": True, "cover_path": "db://media/44", "cover_media_id": 44, "cover_is_adult": False},
+    )
+    assert collection["cover_url"].endswith("/api/media/44/file")
+    broken_cover = main._with_collection_urls(
+        request,
+        {"id": 8, "is_public": True, "cover_path": "db://media/45", "cover_is_adult": False},
+    )
+    assert broken_cover["cover_url"] is None
+
+    try:
+        main._ensure_media_visible_to_viewer({"id": 2, "user_id": 99, "visibility": "private"}, viewer_id=1)
+    except HTTPException as exc:
+        assert exc.status_code == 403
+    else:
+        raise AssertionError("private media should not be visible to a non-owner")
 
     print("image_gallery_api_routes=passed")
 

@@ -1,0 +1,320 @@
+--- image_gallery_orig_subset/app/database.py	2026-05-20 18:10:46.241862237 +0000
++++ "image_gallery_extract/Image Gallery/app/database.py"	2026-05-20 18:11:57.209393293 +0000
+@@ -19,7 +19,15 @@
+ USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,40}$")
+ EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+ MEDIA_KINDS = {"image", "video", "mixed"}
++DB_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_$]+$")
+ log = logging.getLogger(__name__)
++
++
++def quote_identifier(value: str) -> str:
++    name = str(value or "").strip()
++    if not DB_IDENTIFIER_RE.fullmatch(name):
++        raise RuntimeError(f"Unsafe database identifier: {name!r}")
++    return f"`{name}`"
+ DEFAULT_USER_SETTINGS = {
+     "theme_mode": "system",
+     "accent_color": "#37c9a7",
+@@ -226,7 +234,7 @@
+                 )
+                 if not await cur.fetchone():
+                     await cur.execute(
+-                        f"CREATE DATABASE `{self.settings.db_schema}` "
++                        f"CREATE DATABASE {quote_identifier(self.settings.db_schema)} "
+                         "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                     )
+         finally:
+@@ -1772,28 +1780,32 @@
+                 return await self.get_collection(cur.lastrowid, user_id)
+ 
+     async def list_collections(self, viewer_id: int | None = None, mine: bool = False) -> list[dict[str, Any]]:
++        viewer = int(viewer_id or 0)
+         clauses = []
+-        params: list[Any] = []
++        params: list[Any] = [viewer, viewer]
+         if mine:
+             clauses.append("mc.user_id=%s")
+-            params.append(viewer_id or 0)
++            params.append(viewer)
+         else:
+             clauses.append("(mc.is_public=1 OR mc.user_id=%s)")
+-            params.append(viewer_id or 0)
++            params.append(viewer)
+         where = f"WHERE {' AND '.join(clauses)}"
+         async with self.pool.acquire() as conn:
+             async with conn.cursor(aiomysql.DictCursor) as cur:
+                 await cur.execute(
+                     f"""
+                     SELECT mc.*, u.username, u.display_name, u.avatar_path AS user_avatar_path,
+-                           COUNT(mci.media_id) AS item_count,
++                           COUNT(mi.id) AS item_count,
+                            MAX(mi.storage_path) AS cover_path,
+                            MAX(mi.media_kind) AS cover_media_kind,
++                           MAX(mi.id) AS cover_media_id,
+                            MAX(CASE WHEN mi.is_adult=1 THEN 1 ELSE 0 END) AS cover_is_adult
+                     FROM media_collections mc
+                     JOIN users u ON u.id = mc.user_id
+                     LEFT JOIN media_collection_items mci ON mci.collection_id = mc.id
+                     LEFT JOIN media_items mi ON mi.id = mci.media_id
++                     AND mi.deleted_at IS NULL
++                     AND (mi.visibility='public' OR mi.user_id=%s OR mc.user_id=%s)
+                     {where}
+                     GROUP BY mc.id
+                     ORDER BY mc.updated_at DESC, mc.created_at DESC
+@@ -1809,7 +1821,7 @@
+                 await cur.execute(
+                     """
+                     SELECT mc.*, u.username, u.display_name, u.avatar_path AS user_avatar_path,
+-                           COUNT(mci.media_id) AS item_count,
++                           COUNT(mi.id) AS item_count,
+                            MAX(mi.storage_path) AS cover_path,
+                            MAX(mi.media_kind) AS cover_media_kind,
+                            MAX(mi.id) AS cover_media_id,
+@@ -1817,13 +1829,15 @@
+                     FROM media_collections mc
+                     JOIN users u ON u.id = mc.user_id
+                     LEFT JOIN media_collection_items mci ON mci.collection_id = mc.id
+-                    LEFT JOIN media_items mi ON mi.id = mci.media_id AND mi.deleted_at IS NULL
++                    LEFT JOIN media_items mi ON mi.id = mci.media_id
++                     AND mi.deleted_at IS NULL
++                     AND (mi.visibility='public' OR mi.user_id=%s OR mc.user_id=%s)
+                     WHERE mc.user_id=%s AND (mc.is_public=1 OR mc.user_id=%s)
+                     GROUP BY mc.id
+                     ORDER BY mc.updated_at DESC, mc.created_at DESC
+                     LIMIT %s
+                     """,
+-                    (user_id, viewer_id or 0, max(1, min(limit, 60))),
++                    (viewer_id or 0, viewer_id or 0, user_id, viewer_id or 0, max(1, min(limit, 60))),
+                 )
+                 return [self._decode_collection(row) for row in await cur.fetchall()]
+ 
+@@ -1833,18 +1847,21 @@
+                 await cur.execute(
+                     """
+                     SELECT mc.*, u.username, u.display_name, u.avatar_path AS user_avatar_path,
+-                           COUNT(mci.media_id) AS item_count,
++                           COUNT(mi.id) AS item_count,
+                            MAX(mi.storage_path) AS cover_path,
+                            MAX(mi.media_kind) AS cover_media_kind,
++                           MAX(mi.id) AS cover_media_id,
+                            MAX(CASE WHEN mi.is_adult=1 THEN 1 ELSE 0 END) AS cover_is_adult
+                     FROM media_collections mc
+                     JOIN users u ON u.id = mc.user_id
+                     LEFT JOIN media_collection_items mci ON mci.collection_id = mc.id
+                     LEFT JOIN media_items mi ON mi.id = mci.media_id
++                     AND mi.deleted_at IS NULL
++                     AND (mi.visibility='public' OR mi.user_id=%s OR mc.user_id=%s)
+                     WHERE mc.id=%s AND (mc.is_public=1 OR mc.user_id=%s)
+                     GROUP BY mc.id
+                     """,
+-                    (collection_id, viewer_id or 0),
++                    (viewer_id or 0, viewer_id or 0, collection_id, viewer_id or 0),
+                 )
+                 row = await cur.fetchone()
+                 return self._decode_collection(row) if row else None
+@@ -1853,6 +1870,11 @@
+         collection = await self.get_collection(collection_id, user_id)
+         if not collection or int(collection["user_id"]) != int(user_id):
+             return None
++        media = await self.get_media(media_id, user_id)
++        if not media or media.get("deleted_at"):
++            return None
++        if media.get("visibility") == "private" and int(media.get("user_id") or 0) != int(user_id):
++            return None
+         async with self.pool.acquire() as conn:
+             async with conn.cursor() as cur:
+                 if saved:
+@@ -1896,11 +1918,13 @@
+                     LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id = %s
+                     LEFT JOIN media_comments cm ON cm.media_id = m.id
+                     WHERE mci.collection_id=%s
++                      AND m.deleted_at IS NULL
++                      AND (m.visibility='public' OR m.user_id=%s)
+                     GROUP BY m.id, mci.added_at
+                     ORDER BY mci.added_at DESC
+                     LIMIT 120
+                     """,
+-                    (viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, collection_id),
++                    (viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, collection_id, viewer_id or 0),
+                 )
+                 return [self._decode_media(row) for row in await cur.fetchall()]
+ 
+--- image_gallery_orig_subset/app/main.py	2026-05-20 18:10:46.243148818 +0000
++++ "image_gallery_extract/Image Gallery/app/main.py"	2026-05-20 18:14:34.263789374 +0000
+@@ -302,6 +302,14 @@
+     return _is_age_verified(await db.get_user(viewer_id))
+ 
+ 
++def _ensure_media_visible_to_viewer(item: dict[str, Any] | None, viewer_id: int | None) -> None:
++    if not item or item.get("deleted_at"):
++        raise HTTPException(status_code=404, detail="Media not found.")
++    owner = int(item.get("user_id") or 0) == int(viewer_id or 0)
++    if item.get("visibility") == "private" and not owner:
++        raise HTTPException(status_code=403, detail="This post is private.")
++
++
+ async def _require_site_owner(request: Request) -> dict[str, Any]:
+     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+     user = await db.get_user(int(auth["id"]))
+@@ -848,7 +856,11 @@
+         return None
+     clone = dict(collection)
+     if clone.get("cover_path") and (adult_allowed or not clone.get("cover_is_adult")):
+-        clone["cover_url"] = _public_url(request, clone["cover_path"], int(clone["cover_media_id"]) if clone.get("cover_media_id") else None)
++        cover_media_id = int(clone["cover_media_id"]) if clone.get("cover_media_id") else None
++        if str(clone.get("cover_path") or "").startswith("db://") and cover_media_id is None:
++            clone["cover_url"] = None
++        else:
++            clone["cover_url"] = _public_url(request, clone["cover_path"], cover_media_id)
+     elif clone.get("cover_is_adult"):
+         clone.pop("cover_path", None)
+         clone["cover_url"] = None
+@@ -1101,10 +1113,13 @@
+ 
+ 
+ def _sniff_magic(data: bytes) -> tuple[str, str]:
+-    head = data[:32]
++    head = data[:64]
+     if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+         return "image/webp", "image"
+     if len(head) >= 12 and head[4:8] == b"ftyp":
++        brands = head[8:32]
++        if brands[:4] in {b"avif", b"avis"} or b"avif" in brands or b"avis" in brands:
++            return "image/avif", "image"
+         return "video/mp4", "video"
+     for prefix, mime, kind in MAGIC_SIGNATURES:
+         if head.startswith(prefix):
+@@ -2286,10 +2301,7 @@
+     viewer_id = _user_id(_auth_optional(request))
+     adult_allowed = await _viewer_can_open_adult(request)
+     item = await db.get_media(media_id, viewer_id)
+-    if not item or item.get("deleted_at"):
+-        raise HTTPException(status_code=404, detail="Media not found.")
+-    if item.get("visibility") == "private" and int(item.get("user_id")) != int(viewer_id or 0):
+-        raise HTTPException(status_code=403, detail="This post is private.")
++    _ensure_media_visible_to_viewer(item, viewer_id)
+     if item.get("is_adult") and not adult_allowed:
+         raise HTTPException(status_code=403, detail="Age verification required for this 18+ post.")
+     await db.increment_counter(media_id, "views")
+@@ -2346,7 +2358,10 @@
+ @app.post("/api/media/{media_id}/like")
+ async def like_media(media_id: int, payload: LikeRequest, request: Request) -> dict[str, Any]:
+     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+-    item = await db.set_like(media_id, int(auth["id"]), payload.liked)
++    viewer_id = int(auth["id"])
++    existing = await db.get_media(media_id, viewer_id)
++    _ensure_media_visible_to_viewer(existing, viewer_id)
++    item = await db.set_like(media_id, viewer_id, payload.liked)
+     if not item:
+         raise HTTPException(status_code=404, detail="Media not found.")
+     adult_allowed = await _viewer_can_open_adult(request)
+@@ -2357,7 +2372,10 @@
+ @app.post("/api/media/{media_id}/bookmark")
+ async def bookmark_media(media_id: int, payload: BookmarkRequest, request: Request) -> dict[str, Any]:
+     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+-    item = await db.set_bookmark(media_id, int(auth["id"]), payload.bookmarked)
++    viewer_id = int(auth["id"])
++    existing = await db.get_media(media_id, viewer_id)
++    _ensure_media_visible_to_viewer(existing, viewer_id)
++    item = await db.set_bookmark(media_id, viewer_id, payload.bookmarked)
+     if not item:
+         raise HTTPException(status_code=404, detail="Media not found.")
+     adult_allowed = await _viewer_can_open_adult(request)
+@@ -2368,10 +2386,11 @@
+ @app.post("/api/media/{media_id}/comments")
+ async def add_comment(media_id: int, payload: CommentRequest, request: Request) -> dict[str, Any]:
+     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+-    if not await db.get_media(media_id, int(auth["id"])):
+-        raise HTTPException(status_code=404, detail="Media not found.")
++    viewer_id = int(auth["id"])
++    existing = await db.get_media(media_id, viewer_id)
++    _ensure_media_visible_to_viewer(existing, viewer_id)
+     try:
+-        comment = await db.add_comment(media_id, int(auth["id"]), payload.body)
++        comment = await db.add_comment(media_id, viewer_id, payload.body)
+     except PermissionError as exc:
+         raise HTTPException(status_code=403, detail=str(exc)) from None
+     except ValueError as exc:
+@@ -2396,10 +2415,11 @@
+ @app.post("/api/media/{media_id}/report")
+ async def report_media(media_id: int, payload: ReportRequest, request: Request) -> dict[str, Any]:
+     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+-    if not await db.get_media(media_id, int(auth["id"])):
+-        raise HTTPException(status_code=404, detail="Media not found.")
++    viewer_id = int(auth["id"])
++    existing = await db.get_media(media_id, viewer_id)
++    _ensure_media_visible_to_viewer(existing, viewer_id)
+     try:
+-        report = await db.report_media(media_id, int(auth["id"]), payload.reason, payload.details)
++        report = await db.report_media(media_id, viewer_id, payload.reason, payload.details)
+     except ValueError as exc:
+         raise HTTPException(status_code=400, detail=str(exc)) from None
+     _invalidate_api_cache("media")
+@@ -2542,7 +2562,7 @@
+     if as_download and not item.get("downloads_enabled", True) and not owner:
+         raise HTTPException(status_code=403, detail="Downloads are disabled for this post.")
+     if item.get("is_adult"):
+-        adult_ok = await _viewer_can_open_adult(request) if as_download else await _adult_file_allowed(request, media_id, access)
++        adult_ok = await _adult_file_allowed(request, media_id, access)
+         if not adult_ok:
+             raise HTTPException(status_code=403, detail="Age verification required for this 18+ post.")
+ 
+--- image_gallery_orig_subset/scripts/api_route_test.py	2026-05-20 18:10:46.259813256 +0000
++++ "image_gallery_extract/Image Gallery/scripts/api_route_test.py"	2026-05-20 18:14:34.264101355 +0000
+@@ -9,7 +9,9 @@
+ 
+ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ 
++from fastapi import HTTPException
+ from fastapi.testclient import TestClient
++from starlette.requests import Request
+ 
+ import app.main as main
+ 
+@@ -49,6 +51,9 @@
+     finally:
+         main.settings = original_settings
+ 
++    assert main._sniff_magic(b"\x00\x00\x00 ftypavif\x00\x00\x00\x00avifmif1") == ("image/avif", "image")
++    assert main._sniff_magic(b"\x00\x00\x00 ftypisom\x00\x00\x00\x00isommp42") == ("video/mp4", "video")
++
+     with tempfile.TemporaryDirectory() as tmp:
+         main.settings = replace(original_settings, uploads_dir=Path(tmp), storage_backend="filesystem")
+         try:
+@@ -72,6 +77,35 @@
+         assert stored["media_file_id"] is None
+         assert (Path(tmp) / storage_path).read_bytes() == b"route-test-image-bytes"
+ 
++    request = Request({
++        "type": "http",
++        "method": "GET",
++        "path": "/",
++        "headers": [],
++        "scheme": "http",
++        "server": ("127.0.0.1", 8788),
++        "client": ("127.0.0.1", 0),
++        "root_path": "",
++        "app": main.app,
++    })
++    collection = main._with_collection_urls(
++        request,
++        {"id": 7, "is_public": True, "cover_path": "db://media/44", "cover_media_id": 44, "cover_is_adult": False},
++    )
++    assert collection["cover_url"].endswith("/api/media/44/file")
++    broken_cover = main._with_collection_urls(
++        request,
++        {"id": 8, "is_public": True, "cover_path": "db://media/45", "cover_is_adult": False},
++    )
++    assert broken_cover["cover_url"] is None
++
++    try:
++        main._ensure_media_visible_to_viewer({"id": 2, "user_id": 99, "visibility": "private"}, viewer_id=1)
++    except HTTPException as exc:
++        assert exc.status_code == 403
++    else:
++        raise AssertionError("private media should not be visible to a non-owner")
++
+     print("image_gallery_api_routes=passed")
+ 
+ 

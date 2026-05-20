@@ -19,7 +19,15 @@ SLUG_RE = re.compile(r"[^a-z0-9]+")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,40}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 MEDIA_KINDS = {"image", "video", "mixed"}
+DB_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_$]+$")
 log = logging.getLogger(__name__)
+
+
+def quote_identifier(value: str) -> str:
+    name = str(value or "").strip()
+    if not DB_IDENTIFIER_RE.fullmatch(name):
+        raise RuntimeError(f"Unsafe database identifier: {name!r}")
+    return f"`{name}`"
 DEFAULT_USER_SETTINGS = {
     "theme_mode": "system",
     "accent_color": "#37c9a7",
@@ -226,7 +234,7 @@ class GalleryDatabase:
                 )
                 if not await cur.fetchone():
                     await cur.execute(
-                        f"CREATE DATABASE `{self.settings.db_schema}` "
+                        f"CREATE DATABASE {quote_identifier(self.settings.db_schema)} "
                         "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
                     )
         finally:
@@ -1772,28 +1780,32 @@ class GalleryDatabase:
                 return await self.get_collection(cur.lastrowid, user_id)
 
     async def list_collections(self, viewer_id: int | None = None, mine: bool = False) -> list[dict[str, Any]]:
+        viewer = int(viewer_id or 0)
         clauses = []
-        params: list[Any] = []
+        params: list[Any] = [viewer, viewer]
         if mine:
             clauses.append("mc.user_id=%s")
-            params.append(viewer_id or 0)
+            params.append(viewer)
         else:
             clauses.append("(mc.is_public=1 OR mc.user_id=%s)")
-            params.append(viewer_id or 0)
+            params.append(viewer)
         where = f"WHERE {' AND '.join(clauses)}"
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
                     f"""
                     SELECT mc.*, u.username, u.display_name, u.avatar_path AS user_avatar_path,
-                           COUNT(mci.media_id) AS item_count,
+                           COUNT(mi.id) AS item_count,
                            MAX(mi.storage_path) AS cover_path,
                            MAX(mi.media_kind) AS cover_media_kind,
+                           MAX(mi.id) AS cover_media_id,
                            MAX(CASE WHEN mi.is_adult=1 THEN 1 ELSE 0 END) AS cover_is_adult
                     FROM media_collections mc
                     JOIN users u ON u.id = mc.user_id
                     LEFT JOIN media_collection_items mci ON mci.collection_id = mc.id
                     LEFT JOIN media_items mi ON mi.id = mci.media_id
+                     AND mi.deleted_at IS NULL
+                     AND (mi.visibility='public' OR mi.user_id=%s OR mc.user_id=%s)
                     {where}
                     GROUP BY mc.id
                     ORDER BY mc.updated_at DESC, mc.created_at DESC
@@ -1809,7 +1821,7 @@ class GalleryDatabase:
                 await cur.execute(
                     """
                     SELECT mc.*, u.username, u.display_name, u.avatar_path AS user_avatar_path,
-                           COUNT(mci.media_id) AS item_count,
+                           COUNT(mi.id) AS item_count,
                            MAX(mi.storage_path) AS cover_path,
                            MAX(mi.media_kind) AS cover_media_kind,
                            MAX(mi.id) AS cover_media_id,
@@ -1817,13 +1829,15 @@ class GalleryDatabase:
                     FROM media_collections mc
                     JOIN users u ON u.id = mc.user_id
                     LEFT JOIN media_collection_items mci ON mci.collection_id = mc.id
-                    LEFT JOIN media_items mi ON mi.id = mci.media_id AND mi.deleted_at IS NULL
+                    LEFT JOIN media_items mi ON mi.id = mci.media_id
+                     AND mi.deleted_at IS NULL
+                     AND (mi.visibility='public' OR mi.user_id=%s OR mc.user_id=%s)
                     WHERE mc.user_id=%s AND (mc.is_public=1 OR mc.user_id=%s)
                     GROUP BY mc.id
                     ORDER BY mc.updated_at DESC, mc.created_at DESC
                     LIMIT %s
                     """,
-                    (user_id, viewer_id or 0, max(1, min(limit, 60))),
+                    (viewer_id or 0, viewer_id or 0, user_id, viewer_id or 0, max(1, min(limit, 60))),
                 )
                 return [self._decode_collection(row) for row in await cur.fetchall()]
 
@@ -1833,18 +1847,21 @@ class GalleryDatabase:
                 await cur.execute(
                     """
                     SELECT mc.*, u.username, u.display_name, u.avatar_path AS user_avatar_path,
-                           COUNT(mci.media_id) AS item_count,
+                           COUNT(mi.id) AS item_count,
                            MAX(mi.storage_path) AS cover_path,
                            MAX(mi.media_kind) AS cover_media_kind,
+                           MAX(mi.id) AS cover_media_id,
                            MAX(CASE WHEN mi.is_adult=1 THEN 1 ELSE 0 END) AS cover_is_adult
                     FROM media_collections mc
                     JOIN users u ON u.id = mc.user_id
                     LEFT JOIN media_collection_items mci ON mci.collection_id = mc.id
                     LEFT JOIN media_items mi ON mi.id = mci.media_id
+                     AND mi.deleted_at IS NULL
+                     AND (mi.visibility='public' OR mi.user_id=%s OR mc.user_id=%s)
                     WHERE mc.id=%s AND (mc.is_public=1 OR mc.user_id=%s)
                     GROUP BY mc.id
                     """,
-                    (collection_id, viewer_id or 0),
+                    (viewer_id or 0, viewer_id or 0, collection_id, viewer_id or 0),
                 )
                 row = await cur.fetchone()
                 return self._decode_collection(row) if row else None
@@ -1852,6 +1869,11 @@ class GalleryDatabase:
     async def set_collection_item(self, collection_id: int, media_id: int, user_id: int, saved: bool) -> dict[str, Any] | None:
         collection = await self.get_collection(collection_id, user_id)
         if not collection or int(collection["user_id"]) != int(user_id):
+            return None
+        media = await self.get_media(media_id, user_id)
+        if not media or media.get("deleted_at"):
+            return None
+        if media.get("visibility") == "private" and int(media.get("user_id") or 0) != int(user_id):
             return None
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cur:
@@ -1896,11 +1918,13 @@ class GalleryDatabase:
                     LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id = %s
                     LEFT JOIN media_comments cm ON cm.media_id = m.id
                     WHERE mci.collection_id=%s
+                      AND m.deleted_at IS NULL
+                      AND (m.visibility='public' OR m.user_id=%s)
                     GROUP BY m.id, mci.added_at
                     ORDER BY mci.added_at DESC
                     LIMIT 120
                     """,
-                    (viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, collection_id),
+                    (viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, collection_id, viewer_id or 0),
                 )
                 return [self._decode_media(row) for row in await cur.fetchall()]
 

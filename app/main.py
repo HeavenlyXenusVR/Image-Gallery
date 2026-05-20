@@ -302,6 +302,14 @@ async def _viewer_can_open_adult(request: Request) -> bool:
     return _is_age_verified(await db.get_user(viewer_id))
 
 
+def _ensure_media_visible_to_viewer(item: dict[str, Any] | None, viewer_id: int | None) -> None:
+    if not item or item.get("deleted_at"):
+        raise HTTPException(status_code=404, detail="Media not found.")
+    owner = int(item.get("user_id") or 0) == int(viewer_id or 0)
+    if item.get("visibility") == "private" and not owner:
+        raise HTTPException(status_code=403, detail="This post is private.")
+
+
 async def _require_site_owner(request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
     user = await db.get_user(int(auth["id"]))
@@ -848,7 +856,11 @@ def _with_collection_urls(request: Request, collection: dict[str, Any] | None, a
         return None
     clone = dict(collection)
     if clone.get("cover_path") and (adult_allowed or not clone.get("cover_is_adult")):
-        clone["cover_url"] = _public_url(request, clone["cover_path"], int(clone["cover_media_id"]) if clone.get("cover_media_id") else None)
+        cover_media_id = int(clone["cover_media_id"]) if clone.get("cover_media_id") else None
+        if str(clone.get("cover_path") or "").startswith("db://") and cover_media_id is None:
+            clone["cover_url"] = None
+        else:
+            clone["cover_url"] = _public_url(request, clone["cover_path"], cover_media_id)
     elif clone.get("cover_is_adult"):
         clone.pop("cover_path", None)
         clone["cover_url"] = None
@@ -1101,10 +1113,13 @@ def _security_headers(request: Request, response: Response) -> None:
 
 
 def _sniff_magic(data: bytes) -> tuple[str, str]:
-    head = data[:32]
+    head = data[:64]
     if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
         return "image/webp", "image"
     if len(head) >= 12 and head[4:8] == b"ftyp":
+        brands = head[8:32]
+        if brands[:4] in {b"avif", b"avis"} or b"avif" in brands or b"avis" in brands:
+            return "image/avif", "image"
         return "video/mp4", "video"
     for prefix, mime, kind in MAGIC_SIGNATURES:
         if head.startswith(prefix):
@@ -2286,10 +2301,7 @@ async def media_detail(media_id: int, request: Request) -> dict[str, Any]:
     viewer_id = _user_id(_auth_optional(request))
     adult_allowed = await _viewer_can_open_adult(request)
     item = await db.get_media(media_id, viewer_id)
-    if not item or item.get("deleted_at"):
-        raise HTTPException(status_code=404, detail="Media not found.")
-    if item.get("visibility") == "private" and int(item.get("user_id")) != int(viewer_id or 0):
-        raise HTTPException(status_code=403, detail="This post is private.")
+    _ensure_media_visible_to_viewer(item, viewer_id)
     if item.get("is_adult") and not adult_allowed:
         raise HTTPException(status_code=403, detail="Age verification required for this 18+ post.")
     await db.increment_counter(media_id, "views")
@@ -2346,7 +2358,10 @@ async def restore_media(media_id: int, request: Request) -> dict[str, Any]:
 @app.post("/api/media/{media_id}/like")
 async def like_media(media_id: int, payload: LikeRequest, request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
-    item = await db.set_like(media_id, int(auth["id"]), payload.liked)
+    viewer_id = int(auth["id"])
+    existing = await db.get_media(media_id, viewer_id)
+    _ensure_media_visible_to_viewer(existing, viewer_id)
+    item = await db.set_like(media_id, viewer_id, payload.liked)
     if not item:
         raise HTTPException(status_code=404, detail="Media not found.")
     adult_allowed = await _viewer_can_open_adult(request)
@@ -2357,7 +2372,10 @@ async def like_media(media_id: int, payload: LikeRequest, request: Request) -> d
 @app.post("/api/media/{media_id}/bookmark")
 async def bookmark_media(media_id: int, payload: BookmarkRequest, request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
-    item = await db.set_bookmark(media_id, int(auth["id"]), payload.bookmarked)
+    viewer_id = int(auth["id"])
+    existing = await db.get_media(media_id, viewer_id)
+    _ensure_media_visible_to_viewer(existing, viewer_id)
+    item = await db.set_bookmark(media_id, viewer_id, payload.bookmarked)
     if not item:
         raise HTTPException(status_code=404, detail="Media not found.")
     adult_allowed = await _viewer_can_open_adult(request)
@@ -2368,10 +2386,11 @@ async def bookmark_media(media_id: int, payload: BookmarkRequest, request: Reque
 @app.post("/api/media/{media_id}/comments")
 async def add_comment(media_id: int, payload: CommentRequest, request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
-    if not await db.get_media(media_id, int(auth["id"])):
-        raise HTTPException(status_code=404, detail="Media not found.")
+    viewer_id = int(auth["id"])
+    existing = await db.get_media(media_id, viewer_id)
+    _ensure_media_visible_to_viewer(existing, viewer_id)
     try:
-        comment = await db.add_comment(media_id, int(auth["id"]), payload.body)
+        comment = await db.add_comment(media_id, viewer_id, payload.body)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from None
     except ValueError as exc:
@@ -2396,10 +2415,11 @@ async def delete_comment(comment_id: int, request: Request) -> dict[str, Any]:
 @app.post("/api/media/{media_id}/report")
 async def report_media(media_id: int, payload: ReportRequest, request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
-    if not await db.get_media(media_id, int(auth["id"])):
-        raise HTTPException(status_code=404, detail="Media not found.")
+    viewer_id = int(auth["id"])
+    existing = await db.get_media(media_id, viewer_id)
+    _ensure_media_visible_to_viewer(existing, viewer_id)
     try:
-        report = await db.report_media(media_id, int(auth["id"]), payload.reason, payload.details)
+        report = await db.report_media(media_id, viewer_id, payload.reason, payload.details)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     _invalidate_api_cache("media")
@@ -2542,7 +2562,7 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
     if as_download and not item.get("downloads_enabled", True) and not owner:
         raise HTTPException(status_code=403, detail="Downloads are disabled for this post.")
     if item.get("is_adult"):
-        adult_ok = await _viewer_can_open_adult(request) if as_download else await _adult_file_allowed(request, media_id, access)
+        adult_ok = await _adult_file_allowed(request, media_id, access)
         if not adult_ok:
             raise HTTPException(status_code=403, detail="Age verification required for this 18+ post.")
 
