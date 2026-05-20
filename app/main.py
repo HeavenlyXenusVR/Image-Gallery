@@ -199,6 +199,13 @@ class SettingsUpdateRequest(BaseModel):
     profile_stat_style: str | None = None
     profile_content_focus: str | None = None
     profile_hero_alignment: str | None = None
+    profile_avatar_shape: str | None = None
+    profile_media_shape: str | None = None
+    profile_surface_style: str | None = None
+    profile_social_layout: str | None = None
+    profile_featured_panel: str | None = None
+    profile_backdrop_image_url: str | None = None
+    profile_backdrop_strength: float | None = None
     autoplay_previews: bool | None = None
     muted_previews: bool | None = None
     reduce_motion: bool | None = None

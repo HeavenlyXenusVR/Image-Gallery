@@ -41,6 +41,13 @@ DEFAULT_USER_SETTINGS = {
     "profile_stat_style": "tiles",
     "profile_content_focus": "balanced",
     "profile_hero_alignment": "split",
+    "profile_avatar_shape": "circle",
+    "profile_media_shape": "soft",
+    "profile_surface_style": "standard",
+    "profile_social_layout": "rail",
+    "profile_featured_panel": "uploads",
+    "profile_backdrop_image_url": "",
+    "profile_backdrop_strength": 0.18,
     "profile_show_joined_date": True,
 }
 USER_COLUMNS = (
@@ -811,6 +818,11 @@ class GalleryDatabase:
             "profile_stat_style": {"tiles", "ribbon", "minimal"},
             "profile_content_focus": {"balanced", "gallery", "collections", "social"},
             "profile_hero_alignment": {"split", "start", "center"},
+            "profile_avatar_shape": {"circle", "rounded", "square"},
+            "profile_media_shape": {"soft", "crisp", "poster"},
+            "profile_surface_style": {"standard", "quiet", "contrast", "editorial"},
+            "profile_social_layout": {"rail", "cards", "compact"},
+            "profile_featured_panel": {"uploads", "collections", "friends"},
         }
         for key in DEFAULT_USER_SETTINGS:
             if key not in payload:
@@ -824,6 +836,13 @@ class GalleryDatabase:
                 settings[key] = self._clean_color(value)
             elif key == "items_per_page":
                 settings[key] = max(15, min(int(value or 15), 60))
+            elif key == "profile_backdrop_image_url":
+                settings[key] = self._clean_optional_url(value, max_length=500) or ""
+            elif key == "profile_backdrop_strength":
+                try:
+                    settings[key] = max(0.0, min(float(value if value is not None else 0.18), 0.55))
+                except (TypeError, ValueError):
+                    raise ValueError("Backdrop strength must be a number.") from None
             else:
                 settings[key] = bool(value)
         async with self.pool.acquire() as conn:
@@ -2560,6 +2579,14 @@ class GalleryDatabase:
         if not re.fullmatch(r"#[0-9A-Fa-f]{6}", color):
             raise ValueError("Color must be a hex value like #37c9a7.")
         return color.lower()
+
+    def _clean_optional_url(self, value: Any, max_length: int = 300) -> str | None:
+        text = self._clean_text(value, max_length)
+        if not text:
+            return None
+        if not text.startswith(("http://", "https://")):
+            raise ValueError("URL must start with http:// or https://.")
+        return text
 
     def _clean_tags(self, values: list[Any]) -> list[str]:
         clean = []

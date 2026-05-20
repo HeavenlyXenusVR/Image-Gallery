@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { Check, KeyRound, Mail, Palette, Save, ShieldCheck, UserRound } from "lucide-react";
+import { Check, Eye, KeyRound, Mail, Palette, Save, ShieldCheck, UserRound } from "lucide-react";
 import { apiFetch } from "../api.js";
-import { Page, RequireLogin } from "../components/ui.jsx";
+import { Avatar, ChipRow, Page, RequireLogin } from "../components/ui.jsx";
+import { profileClassName, profileStyle } from "../utils/appearance.js";
 
 function profileFromUser(user, settings) {
   return {
@@ -123,6 +124,22 @@ export function SettingsPage({ ctx }) {
   return (
     <Page title="Settings" eyebrow="Account">
       <section className="settings-grid">
+        <aside className={`side-box profile-settings-preview ${profileClassName(prefs)}`} style={profileStyle(prefs)}>
+          <div className="section-head"><h2><Eye size={18} /> Profile Preview</h2></div>
+          <div className="profile-preview-hero">
+            <Avatar user={{ ...ctx.user, ...profile, featured_tags: undefined }} large />
+            <div>
+              <strong>{profile.profile_headline || profile.display_name || ctx.user.username}</strong>
+              <p>{profile.bio || "No bio yet."}</p>
+              <ChipRow values={profile.featured_tags.split(",").map((tag) => tag.trim()).filter(Boolean)} />
+            </div>
+          </div>
+          <div className="profile-social-preview">
+            <div><strong>{prefs.profile_layout}</strong><span>Layout</span></div>
+            <div><strong>{prefs.profile_banner_style}</strong><span>Banner</span></div>
+            <div><strong>{prefs.profile_featured_panel}</strong><span>Feature</span></div>
+          </div>
+        </aside>
         <form className="stacked-form side-box" onSubmit={saveProfile}>
           <h2><UserRound size={18} /> Profile</h2>
           <label className="field"><span>Display name</span><input value={profile.display_name} onChange={(event) => updateProfile("display_name", event.target.value)} required /></label>
@@ -166,6 +183,19 @@ export function SettingsPage({ ctx }) {
             <label className="field"><span>Focus</span><select value={prefs.profile_content_focus} onChange={(event) => updatePrefs("profile_content_focus", event.target.value)}><option value="balanced">Balanced</option><option value="gallery">Gallery</option><option value="collections">Collections</option><option value="social">Social</option></select></label>
           </div>
           <label className="field"><span>Hero alignment</span><select value={prefs.profile_hero_alignment} onChange={(event) => updatePrefs("profile_hero_alignment", event.target.value)}><option value="split">Split</option><option value="start">Start</option><option value="center">Center</option></select></label>
+          <div className="two-col">
+            <label className="field"><span>Avatar shape</span><select value={prefs.profile_avatar_shape} onChange={(event) => updatePrefs("profile_avatar_shape", event.target.value)}><option value="circle">Circle</option><option value="rounded">Rounded</option><option value="square">Square</option></select></label>
+            <label className="field"><span>Media shape</span><select value={prefs.profile_media_shape} onChange={(event) => updatePrefs("profile_media_shape", event.target.value)}><option value="soft">Soft</option><option value="crisp">Crisp</option><option value="poster">Poster</option></select></label>
+          </div>
+          <div className="two-col">
+            <label className="field"><span>Surface</span><select value={prefs.profile_surface_style} onChange={(event) => updatePrefs("profile_surface_style", event.target.value)}><option value="standard">Standard</option><option value="quiet">Quiet</option><option value="contrast">Contrast</option><option value="editorial">Editorial</option></select></label>
+            <label className="field"><span>Social layout</span><select value={prefs.profile_social_layout} onChange={(event) => updatePrefs("profile_social_layout", event.target.value)}><option value="rail">Rail</option><option value="cards">Cards</option><option value="compact">Compact</option></select></label>
+          </div>
+          <div className="two-col">
+            <label className="field"><span>Featured panel</span><select value={prefs.profile_featured_panel} onChange={(event) => updatePrefs("profile_featured_panel", event.target.value)}><option value="uploads">Uploads</option><option value="collections">Collections</option><option value="friends">Friends</option></select></label>
+            <label className="field"><span>Backdrop strength</span><input type="range" min="0" max="0.55" step="0.01" value={prefs.profile_backdrop_strength ?? 0.18} onChange={(event) => updatePrefs("profile_backdrop_strength", Number(event.target.value))} /></label>
+          </div>
+          <label className="field"><span>Backdrop image URL</span><input value={prefs.profile_backdrop_image_url || ""} onChange={(event) => updatePrefs("profile_backdrop_image_url", event.target.value)} placeholder="https://..." /></label>
           <div className="check-stack">
             <label className="check-row"><input checked={prefs.profile_show_joined_date} onChange={(event) => updatePrefs("profile_show_joined_date", event.target.checked)} type="checkbox" />Joined date</label>
             <label className="check-row"><input checked={prefs.profile_show_uploads} onChange={(event) => updatePrefs("profile_show_uploads", event.target.checked)} type="checkbox" />Profile uploads</label>

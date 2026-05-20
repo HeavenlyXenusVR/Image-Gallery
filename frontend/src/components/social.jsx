@@ -43,12 +43,15 @@ export function UserCard({ ctx, user, onChanged }) {
   }
   return (
     <article className="user-card">
-      <Avatar user={user} large />
+      <Link className="avatar-link" to={`/users/${user.username}`}><Avatar user={user} large /></Link>
       <div>
         <Link to={`/users/${user.username}`}><h3>{user.display_name || user.username}</h3></Link>
         <p>@{user.username}{user.profile_headline ? ` / ${user.profile_headline}` : ""}</p>
       </div>
-      <ProfileActions ctx={ctx} user={user} onChanged={refreshUserState} />
+      <div className="profile-actions user-card-actions">
+        <Link className="button-link" to={`/users/${user.username}`}>View Profile</Link>
+        <ProfileActions ctx={ctx} user={user} onChanged={refreshUserState} />
+      </div>
     </article>
   );
 }

@@ -9,6 +9,11 @@ const CHOICES = {
   profile_stat_style: new Set(["tiles", "ribbon", "minimal"]),
   profile_content_focus: new Set(["balanced", "gallery", "collections", "social"]),
   profile_hero_alignment: new Set(["split", "start", "center"]),
+  profile_avatar_shape: new Set(["circle", "rounded", "square"]),
+  profile_media_shape: new Set(["soft", "crisp", "poster"]),
+  profile_surface_style: new Set(["standard", "quiet", "contrast", "editorial"]),
+  profile_social_layout: new Set(["rail", "cards", "compact"]),
+  profile_featured_panel: new Set(["uploads", "collections", "friends"]),
 };
 
 function choice(settings, key, fallback) {
@@ -19,6 +24,26 @@ function choice(settings, key, fallback) {
 export function galleryStyle(settings) {
   return {
     "--accent": safeColor(settings?.accent_color || "#37c9a7"),
+  };
+}
+
+function safeImage(value) {
+  const text = String(value || "").trim();
+  if (!/^https?:\/\//i.test(text)) return "none";
+  return `url("${text.replace(/["\\]/g, "\\$&")}")`;
+}
+
+function clamp(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, number));
+}
+
+export function profileStyle(settings, fallbackAccent = "#37c9a7") {
+  return {
+    "--accent": safeColor(settings?.accent_color || fallbackAccent),
+    "--profile-backdrop": safeImage(settings?.profile_backdrop_image_url),
+    "--profile-backdrop-strength": `${Math.round(clamp(settings?.profile_backdrop_strength, 0.18, 0, 0.55) * 100)}%`,
   };
 }
 
@@ -38,5 +63,10 @@ export function profileClassName(settings) {
     `profile-stat-${choice(settings, "profile_stat_style", "tiles")}`,
     `profile-focus-${choice(settings, "profile_content_focus", "balanced")}`,
     `profile-align-${choice(settings, "profile_hero_alignment", "split")}`,
+    `profile-avatar-${choice(settings, "profile_avatar_shape", "circle")}`,
+    `profile-media-${choice(settings, "profile_media_shape", "soft")}`,
+    `profile-surface-${choice(settings, "profile_surface_style", "standard")}`,
+    `profile-social-${choice(settings, "profile_social_layout", "rail")}`,
+    `profile-feature-${choice(settings, "profile_featured_panel", "uploads")}`,
   ].join(" ");
 }
