@@ -117,7 +117,7 @@ export function MediaDetailPage({ ctx }) {
       <>
         <button type="button" onClick={() => actions.toggleLike(media)}><Heart size={16} />{media.liked_by_me ? "Unlike" : "Like"}</button>
         <button type="button" onClick={() => actions.toggleBookmark(media)}><Bookmark size={16} />{media.bookmarked_by_me ? "Saved" : "Save"}</button>
-        <button type="button" onClick={() => actions.copyAddress(media)}><Copy size={16} />Copy Address</button>
+        <button type="button" onClick={() => actions.copyAddress(media)}><Copy size={16} />Copy URL</button>
         <button type="button" onClick={() => actions.copyPageLink(media)}><LinkIcon size={16} />Copy Link</button>
         <button type="button" onClick={() => actions.download(media)}><Download size={16} />Download</button>
       </>

@@ -25,7 +25,7 @@ DEFAULT_USER_SETTINGS = {
     "accent_color": "#37c9a7",
     "grid_density": "comfortable",
     "default_sort": "new",
-    "items_per_page": 15,
+    "items_per_page": 24,
     "autoplay_previews": False,
     "muted_previews": True,
     "reduce_motion": False,
@@ -842,7 +842,7 @@ class GalleryDatabase:
             elif key == "accent_color":
                 settings[key] = self._clean_color(value)
             elif key == "items_per_page":
-                settings[key] = max(15, min(int(value or 15), 60))
+                settings[key] = max(12, min(int(value or 24), 60))
             elif key == "profile_backdrop_image_url":
                 settings[key] = self._clean_optional_url(value, max_length=500) or ""
             elif key == "profile_backdrop_strength":

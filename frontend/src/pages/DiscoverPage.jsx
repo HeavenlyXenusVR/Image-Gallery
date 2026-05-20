@@ -8,6 +8,12 @@ import { MediaGrid } from "../components/media.jsx";
 import { Notice, Page, Pager, TagCloud } from "../components/ui.jsx";
 import { preloadMediaAssets, replaceMedia } from "../utils/media.js";
 
+function pageSizeFor(settings) {
+  const parsed = Number(settings?.items_per_page);
+  if (!Number.isFinite(parsed)) return PAGE_SIZE;
+  return Math.min(60, Math.max(12, Math.round(parsed)));
+}
+
 export function DiscoverPage({ ctx }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -34,6 +40,7 @@ export function DiscoverPage({ ctx }) {
     return ctx.lookups.categories.find((category) => String(category.id) === String(filters.category_id));
   }, [ctx.lookups.categories, filters.category_id]);
   const subcategories = selectedCategory?.subcategories || selectedCategory?.children || [];
+  const pageSize = pageSizeFor(ctx.settings);
 
   const loadMedia = useCallback(async ({ background = false } = {}) => {
     if (!background) {
@@ -54,8 +61,8 @@ export function DiscoverPage({ ctx }) {
         date_to: filters.date_to,
         adult: filters.adult,
         sort: filters.sort,
-        limit: PAGE_SIZE + 1,
-        offset: (page - 1) * PAGE_SIZE,
+        limit: pageSize + 1,
+        offset: (page - 1) * pageSize,
       };
       const query = toQuery(queryParams);
       const path = `/api/media${query}`;
@@ -63,11 +70,11 @@ export function DiscoverPage({ ctx }) {
         ? await apiFetch(path)
         : await cachedApiFetch(path, { ttl: 20_000, staleTtl: 5 * 60_000, storage: "session" });
       const rows = data.media || [];
-      setItems(rows.slice(0, PAGE_SIZE));
-      setHasNext(rows.length > PAGE_SIZE);
+      setItems(rows.slice(0, pageSize));
+      setHasNext(rows.length > pageSize);
       preloadMediaAssets(rows, { limit: 6 });
-      if (rows.length > PAGE_SIZE) {
-        prefetchApi(`/api/media${toQuery({ ...queryParams, offset: page * PAGE_SIZE })}`, { ttl: 30_000, staleTtl: 5 * 60_000, storage: "session" });
+      if (rows.length > pageSize) {
+        prefetchApi(`/api/media${toQuery({ ...queryParams, offset: page * pageSize })}`, { ttl: 30_000, staleTtl: 5 * 60_000, storage: "session" });
       }
     } catch (fetchError) {
       if (!background) {
@@ -78,7 +85,7 @@ export function DiscoverPage({ ctx }) {
     } finally {
       if (!background) setLoading(false);
     }
-  }, [filters]);
+  }, [filters, pageSize]);
 
   useEffect(() => {
     const next = { ...filters };

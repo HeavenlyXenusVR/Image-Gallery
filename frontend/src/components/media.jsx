@@ -4,7 +4,7 @@ import { Bookmark, Copy, Download, ExternalLink, Film, Heart, Image as ImageIcon
 import { apiFetch, clearApiCache } from "../api.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
 import { formatBytes, formatDate, numberish } from "../utils/format.js";
-import { isGifMedia, isPerfLiteRuntime, thumbUrl } from "../utils/media.js";
+import { isGifMedia, isPerfLiteRuntime, thumbUrl, videoQualityUrl } from "../utils/media.js";
 import { Avatar, EmptyState, SkeletonGrid, StatsRow } from "./ui.jsx";
 
 export function MediaGrid({ ctx, items, loading = false, emptyTitle = "No media", onItemUpdated }) {
@@ -21,12 +21,26 @@ export function MediaGrid({ ctx, items, loading = false, emptyTitle = "No media"
 export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onItemUpdated }) {
   const actions = useMediaActions(ctx, onItemUpdated);
   const thumb = thumbUrl(item);
+  const mutedPreview = ctx.settings.muted_previews !== false;
+  const liveVideoPreview = item.media_kind === "video" && ctx.settings.autoplay_previews && item.url && !isPerfLiteRuntime();
   return (
     <article className={`media-card ${item.locked ? "is-locked" : ""}`}>
       <Link className="media-link" to={`/media/${item.id}`} aria-label={item.title || `Open media ${item.id}`}>
         <div className="thumb-frame">
           {item.locked ? <Lock size={34} /> : item.media_kind === "video" ? (
-            thumb ? <img className={`video-thumb ${ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""}`} src={thumb} alt="" loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} /> : <div className="video-thumb-placeholder"><Film size={34} /></div>
+            liveVideoPreview ? (
+              <video
+                className={`video-thumb ${ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""}`}
+                src={videoQualityUrl(item, "medium")}
+                poster={thumb}
+                muted={mutedPreview}
+                autoPlay={mutedPreview}
+                controls={!mutedPreview}
+                loop
+                playsInline
+                preload="metadata"
+              />
+            ) : thumb ? <img className={`video-thumb ${ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""}`} src={thumb} alt="" loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} /> : <div className="video-thumb-placeholder"><Film size={34} /></div>
           ) : <img className={isGifMedia(item) ? "gif-thumb" : ""} src={thumb} alt={item.title || ""} loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} />}
           <span className="kind-badge">{item.media_kind === "video" ? <Film size={14} /> : <ImageIcon size={14} />}{item.media_kind || "image"}</span>
         </div>
@@ -42,8 +56,8 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
       <div className="card-actions">
         <button type="button" onClick={() => actions.toggleLike(item)} title={item.liked_by_me ? "Unlike" : "Like"}><Heart size={16} className={item.liked_by_me ? "filled" : ""} />{numberish(item.likes || item.like_count)}</button>
         <button type="button" onClick={() => actions.toggleBookmark(item)} title={item.bookmarked_by_me ? "Remove bookmark" : "Bookmark"}><Bookmark size={16} className={item.bookmarked_by_me ? "filled" : ""} /></button>
-        <button type="button" onClick={() => actions.copyAddress(item)} title="Copy media address"><Copy size={16} /></button>
         <button type="button" onClick={() => actions.download(item)} title="Download"><Download size={16} /></button>
+        <button type="button" onClick={() => actions.copyAddress(item)} title="Copy media URL"><Copy size={16} /></button>
       </div>
     </article>
   );
@@ -118,10 +132,10 @@ export function MediaActionPanel({ ctx, media, actions }) {
   return (
     <section className="side-box media-action-panel">
       <h3>Post Actions</h3>
-      <button type="button" onClick={() => actions.copyAddress(media)}><Copy size={16} />Copy Media Address</button>
-      <button type="button" onClick={() => actions.copyPageLink(media)}><LinkIcon size={16} />Copy Post Link</button>
+      <button type="button" onClick={() => actions.copyAddress(media)}><Copy size={16} />Copy Media URL</button>
+      <button type="button" onClick={() => actions.copyPageLink(media)}><LinkIcon size={16} />Copy Page Link</button>
       <button type="button" onClick={() => actions.openOriginal(media)}><ExternalLink size={16} />Open Original</button>
-      <button type="button" onClick={() => actions.download(media)}><Download size={16} />Download</button>
+      <button type="button" onClick={() => actions.download(media)}><Download size={16} />Save File</button>
     </section>
   );
 }

@@ -6,6 +6,12 @@ import { MediaGrid } from "../components/media.jsx";
 import { Notice, Page, Pager, RequireLogin } from "../components/ui.jsx";
 import { preloadMediaAssets, replaceMedia } from "../utils/media.js";
 
+function pageSizeFor(settings) {
+  const parsed = Number(settings?.items_per_page);
+  if (!Number.isFinite(parsed)) return PAGE_SIZE;
+  return Math.min(60, Math.max(12, Math.round(parsed)));
+}
+
 export function FeedPage({ ctx, mode }) {
   const [page, setPage] = useState(1);
   const [items, setItems] = useState([]);
@@ -14,6 +20,7 @@ export function FeedPage({ ctx, mode }) {
   const [error, setError] = useState("");
   const title = mode === "liked" ? "Liked" : "Following";
   const endpoint = mode === "liked" ? "/api/me/likes" : "/api/feed/following";
+  const pageSize = pageSizeFor(ctx.settings);
 
   const loadFeed = useCallback(({ background = false } = {}) => {
     if (!ctx.user) return Promise.resolve();
@@ -21,16 +28,16 @@ export function FeedPage({ ctx, mode }) {
       if (!background) setLoading(true);
       if (!background) setError("");
       try {
-        const path = `${endpoint}${toQuery({ limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE })}`;
+        const path = `${endpoint}${toQuery({ limit: pageSize + 1, offset: (page - 1) * pageSize })}`;
         const data = background
           ? await apiFetch(path)
           : await cachedApiFetch(path, { ttl: 20_000, staleTtl: 3 * 60_000 });
         const rows = data.media || [];
-        setItems(rows.slice(0, PAGE_SIZE));
-        setHasNext(rows.length > PAGE_SIZE);
+        setItems(rows.slice(0, pageSize));
+        setHasNext(rows.length > pageSize);
         preloadMediaAssets(rows, { limit: 6 });
-        if (rows.length > PAGE_SIZE) {
-          prefetchApi(`${endpoint}${toQuery({ limit: PAGE_SIZE + 1, offset: page * PAGE_SIZE })}`, { ttl: 30_000, staleTtl: 3 * 60_000 });
+        if (rows.length > pageSize) {
+          prefetchApi(`${endpoint}${toQuery({ limit: pageSize + 1, offset: page * pageSize })}`, { ttl: 30_000, staleTtl: 3 * 60_000 });
         }
       } catch (fetchError) {
         if (!background) setError(fetchError.message);
@@ -38,7 +45,7 @@ export function FeedPage({ ctx, mode }) {
         if (!background) setLoading(false);
       }
     })();
-  }, [ctx.user, endpoint, page]);
+  }, [ctx.user, endpoint, page, pageSize]);
 
   useEffect(() => {
     loadFeed();
