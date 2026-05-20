@@ -32,7 +32,12 @@ export function UsersPage({ ctx }) {
   useLiveRefresh(() => loadUsers({ background: true }), { interval: 25_000 });
 
   return (
-    <Page title="Users" eyebrow="People">
+    <Page
+      title="Users"
+      eyebrow="People"
+      lede="Browse creators, profile identities, and social connections across the gallery."
+      className="page-users"
+    >
       <div className="toolbar">
         <div className="input-with-icon wide"><Search size={16} /><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search users" /></div>
       </div>

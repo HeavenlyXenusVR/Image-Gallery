@@ -120,12 +120,18 @@ export function DiscoverPage({ ctx }) {
   }
 
   return (
-    <Page title="Discover" eyebrow="Gallery" actions={(
+    <Page
+      title="Discover"
+      eyebrow="Gallery"
+      lede="Search the archive, narrow by category or uploader, and scan the latest posts without losing your place."
+      className="page-discover"
+      actions={(
       <>
         <button type="button" onClick={openRandom}><Sparkles size={16} />Surprise</button>
         <button type="button" onClick={() => { clearApiCache("/api/media"); loadMedia(); }}><RefreshCw size={16} />Refresh</button>
       </>
-    )}>
+      )}
+    >
       <section className="workspace">
         <aside className="filter-rail">
           <label className="field">

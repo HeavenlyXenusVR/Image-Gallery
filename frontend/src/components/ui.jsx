@@ -1,14 +1,16 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Download, Eye, Folder, Heart, Lock, LogIn, MessageCircle, Sparkles } from "lucide-react";
 import { formatDate, initials, numberish } from "../utils/format.js";
 
-export function Page({ title, eyebrow, actions, children }) {
+export function Page({ title, eyebrow, lede = "", actions, className = "", children }) {
   return (
-    <div className="page">
+    <div className={`page ${className}`.trim()}>
       <header className="page-head">
         <div>
           <p>{eyebrow}</p>
           <h1>{title}</h1>
+          {lede ? <span className="page-lede">{lede}</span> : null}
         </div>
         {actions ? <div className="page-actions">{actions}</div> : null}
       </header>
@@ -54,9 +56,10 @@ export function Avatar({ user, compact = false, large = false }) {
   const src = user?.avatar_url || user?.user_avatar_url;
   const label = initials(user?.display_name || user?.username || "IG");
   const knownPresence = typeof user?.is_online === "boolean";
+  const [failed, setFailed] = useState(false);
   return (
     <span className={`avatar ${compact ? "compact" : ""} ${large ? "large" : ""}`}>
-      {src ? <img src={src} alt="" loading="lazy" decoding="async" /> : label}
+      {src && !failed ? <img src={src} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} /> : label}
       {knownPresence ? <span className={`presence-dot ${user.is_online ? "online" : "inactive"}`} /> : null}
     </span>
   );
@@ -94,7 +97,8 @@ export function ChipRow({ values }) {
 }
 
 export function CollectionCover({ collection }) {
-  return <span className="collection-cover">{collection.cover_url ? <img src={collection.cover_url} alt="" loading="lazy" decoding="async" /> : <Folder size={20} />}</span>;
+  const [failed, setFailed] = useState(false);
+  return <span className="collection-cover">{collection.cover_url && !failed ? <img src={collection.cover_url} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} /> : <Folder size={20} />}</span>;
 }
 
 export function CollectionMini({ collection }) {

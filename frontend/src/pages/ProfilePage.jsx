@@ -70,12 +70,21 @@ export function ProfilePage({ ctx }) {
   const featuredItems = featuredPanel === "collections" ? (data.collections || []) : featuredPanel === "friends" ? (data.friends || []) : (data.media || []);
 
   return (
-    <Page title={profile.display_name || profile.username} eyebrow={`@${profile.username}`} actions={isOwner ? <Link className="button-link" to="/settings"><Settings size={16} />Settings</Link> : null}>
+    <Page
+      title={profile.display_name || profile.username}
+      eyebrow={`@${profile.username}`}
+      lede={isOwner ? "Your public gallery identity, featured work, and social surfaces." : "Public gallery identity, featured work, and social surfaces."}
+      className="page-profile"
+      actions={isOwner ? <Link className="button-link" to="/settings"><Settings size={16} />Settings</Link> : null}
+    >
       <section className={`profile-hero ${profileClasses}`} style={heroStyle}>
-        <Avatar user={profile} large />
-        <div>
+        <div className="profile-hero-main">
+          <span className="profile-kicker">@{profile.username}</span>
           <h2>{profile.profile_headline || profile.display_name || profile.username}</h2>
-          <PresencePill user={profile} />
+          <div className="profile-hero-status">
+            <PresencePill user={profile} />
+            {isOwner ? <span className="profile-owner-pill">Owner View</span> : null}
+          </div>
           {profile.bio ? <p>{profile.bio}</p> : null}
           <div className="profile-meta">
             {profile.location_label ? <span><MapPin size={14} />{profile.location_label}</span> : null}
@@ -83,11 +92,25 @@ export function ProfilePage({ ctx }) {
             {profileSettings.profile_show_joined_date !== false && profile.created_at ? <span><CalendarDays size={14} />{formatDate(profile.created_at)}</span> : null}
           </div>
           <ChipRow values={profile.featured_tags || []} />
-          <div className="profile-stats">
-            {stats.map(([label, value]) => <span key={label}><strong>{numberish(value)}</strong>{label}</span>)}
+          {!isOwner ? <ProfileActions ctx={ctx} user={profile} onChanged={loadProfile} /> : null}
+        </div>
+        <div className="profile-hero-side">
+          <div className="profile-avatar-card">
+            <Avatar user={profile} large />
+            <div>
+              <strong>{profile.display_name || profile.username}</strong>
+              <small>{profile.profile_headline || "Gallery identity"}</small>
+            </div>
+          </div>
+          <div className="profile-stat-grid">
+            {stats.map(([label, value]) => (
+              <article className="profile-stat-card" key={label}>
+                <strong>{numberish(value)}</strong>
+                <span>{label}</span>
+              </article>
+            ))}
           </div>
         </div>
-        {!isOwner ? <ProfileActions ctx={ctx} user={profile} onChanged={loadProfile} /> : null}
       </section>
       <section className={`profile-showcase ${profileClasses}`} style={{ "--accent": safeColor(profile.profile_color || ctx.settings.accent_color) }}>
         <article className="profile-feature-card">

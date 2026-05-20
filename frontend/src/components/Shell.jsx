@@ -7,12 +7,16 @@ export function Shell({ ctx, children, className = "", style }) {
   const telegram = checks.find((item) => item.id === "telegram");
   const liveOk = ctx.lookups.live?.ok ?? ctx.lookups.live?.check_map?.db ?? ctx.lookups.live?.check_map?.api;
   const healthText = liveOk ? "Live" : "Checking";
+  const username = ctx.user?.username || "guest";
   return (
     <div className={`app-shell ${className}`.trim()} style={style}>
       <header className="topbar">
         <Link className="brand" to="/">
           <span className="brand-mark"><ImageIcon size={18} /></span>
-          <span>Image Gallery</span>
+          <span className="brand-copy">
+            <strong>Image Gallery</strong>
+            <small>Curated Media Deck</small>
+          </span>
         </Link>
         <nav className="primary-nav" aria-label="Main">
           <NavItem to="/" icon={Home} label="Discover" />
@@ -29,6 +33,10 @@ export function Shell({ ctx, children, className = "", style }) {
           <span className={`health-pill ${liveOk ? "is-live" : ""}`} title={telegram?.detail || ""}>{healthText}</span>
           {ctx.user ? (
             <>
+              <Link className="account-badge" to={`/users/${ctx.user.username}`} title="Profile">
+                <span className="account-badge-kicker">@{username}</span>
+                <strong>{ctx.user.display_name || ctx.user.username}</strong>
+              </Link>
               <Link className="avatar-link" to={`/users/${ctx.user.username}`} title="Profile">
                 <Avatar user={ctx.user} />
               </Link>
@@ -48,7 +56,7 @@ export function Shell({ ctx, children, className = "", style }) {
       </header>
       <main className="main-stage">{children}</main>
       <footer className="site-footer">
-        <span>Copyright © HeavenlyXenusVR</span>
+        <span>Image Gallery // HeavenlyXenusVR</span>
         <a href="https://discord.com/users/1304564041863266347" target="_blank" rel="noreferrer">Discord</a>
       </footer>
     </div>
