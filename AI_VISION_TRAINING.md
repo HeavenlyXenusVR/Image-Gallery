@@ -71,3 +71,37 @@ Content-Type: application/json
 ## Best results
 
 The training memory is strongest when filenames, tags, descriptions, or previous corrections include meaningful words like character/franchise names. For purely visual recognition, use a real vision provider such as Ollama with a VLM or a cloud vision model; this patch feeds your gallery-specific corrections into those prompts too.
+
+## Training from an image-only ZIP/folder
+
+If you have a compressed character/reference dataset, seed visual exemplars like this:
+
+```bash
+cd "$HOME/Documents/Discord Bots/Image Gallery"
+source .venv/bin/activate
+
+python3 scripts/seed_ai_vision_training_from_image_zip.py \
+  "$HOME/Pictures/iCloud_Photos_AI_TRAINING_UNDER_512MB.zip" \
+  --username HeavenlyXenusVR \
+  --review-jsonl "$HOME/Pictures/icloud_ai_training_review.jsonl" \
+  --dry-run
+```
+
+Review the JSONL if desired. Then insert the clean, high-confidence rows:
+
+```bash
+python3 scripts/seed_ai_vision_training_from_image_zip.py \
+  "$HOME/Pictures/iCloud_Photos_AI_TRAINING_UNDER_512MB.zip" \
+  --username HeavenlyXenusVR \
+  --review-jsonl "$HOME/Pictures/icloud_ai_training_review.jsonl"
+```
+
+This does not fake a model fine-tune. It stores visual fingerprints plus corrected character/franchise metadata in `ai_vision_training_examples`. During future analysis, the gallery first checks whether a new image visually matches a learned exemplar, then uses Ollama/Gemini/OpenAI if configured, and only falls back to local filename/dimension heuristics last.
+
+Useful test:
+
+```bash
+python3 scripts/test_ai_vision_model.py --no-ai --training-jsonl "$HOME/Pictures/icloud_ai_training_review.jsonl" /path/to/test-image.png
+```
+
+If `source` says `visual-training`, the dataset memory is working. If it says `heuristic`, there was no close visual match and the backend should use a real vision model such as Ollama/Gemini/OpenAI.

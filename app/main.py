@@ -15,6 +15,8 @@ import subprocess
 import tempfile
 import time
 from urllib.parse import quote, urlparse
+import urllib.request
+import urllib.error
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from datetime import date, datetime
@@ -2216,6 +2218,45 @@ async def save_collection_item(collection_id: int, payload: CollectionItemReques
     adult_allowed = await _viewer_can_open_adult(request)
     return {"collection": _with_collection_urls(request, collection, adult_allowed)}
 
+
+
+
+@app.get("/api/ai/vision/status")
+async def ai_vision_status(request: Request) -> dict[str, Any]:
+    auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+    provider = str(os.getenv("GALLERY_AI_PROVIDER", "") or "").strip().lower()
+    if not provider:
+        if os.getenv("GALLERY_OLLAMA_MODEL") or os.getenv("GALLERY_OLLAMA_BASE_URL"):
+            provider = "ollama"
+        elif os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+            provider = "google-gemini"
+        elif os.getenv("GALLERY_AI_API_KEY") or os.getenv("OPENAI_API_KEY"):
+            provider = "openai"
+        else:
+            provider = "heuristic-only"
+    training_count = 0
+    try:
+        training_count = len(await db.list_ai_vision_training_examples(int(auth["id"]), limit=1000))
+    except Exception:
+        training_count = -1
+    status: dict[str, Any] = {
+        "provider": provider,
+        "ai_enabled": bool(settings.ai_enabled),
+        "training_examples_loaded_limit": int(getattr(settings, "ai_training_examples_limit", 0) or 0),
+        "training_examples_available": training_count,
+        "active_model": settings.active_ai_model,
+        "active_base_url": settings.active_ai_base_url if provider == "ollama" else None,
+    }
+    if provider == "ollama":
+        base_url = str(os.getenv("GALLERY_OLLAMA_BASE_URL") or settings.active_ai_base_url or "http://127.0.0.1:11434").rstrip("/")
+        try:
+            with urllib.request.urlopen(f"{base_url}/api/tags", timeout=3) as response:
+                payload = json.loads(response.read().decode("utf-8") or "{}")
+            models = [str(item.get("name") or "") for item in payload.get("models", []) if item.get("name")]
+            status.update({"reachable": True, "models": models[:50]})
+        except Exception as exc:
+            status.update({"reachable": False, "reason": str(exc)[:240]})
+    return {"vision": status}
 
 @app.post("/api/media")
 async def upload_media(

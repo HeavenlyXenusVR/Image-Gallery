@@ -102,6 +102,15 @@ MEDIA_COLUMNS = (
     ("moderation_reason", "VARCHAR(300) NULL"),
     ("moderated_at", "TIMESTAMP NULL DEFAULT NULL"),
 )
+
+AI_TRAINING_COLUMNS = (
+    ("image_phash", "CHAR(16) NULL"),
+    ("image_dhash", "CHAR(16) NULL"),
+    ("image_width", "INT UNSIGNED NULL"),
+    ("image_height", "INT UNSIGNED NULL"),
+    ("training_origin", "VARCHAR(80) NULL"),
+    ("training_confidence", "FLOAT NOT NULL DEFAULT 0.72"),
+)
 MEDIA_CATEGORY_SELECT = (
     "c.name AS category_name, c.slug AS category_slug, "
     "sc.name AS subcategory_name, sc.slug AS subcategory_slug,"
@@ -535,8 +544,15 @@ class GalleryDatabase:
                       corrected_tags JSON NULL,
                       corrected_is_adult TINYINT(1) NOT NULL DEFAULT 0,
                       notes VARCHAR(500) NULL,
+                      image_phash CHAR(16) NULL,
+                      image_dhash CHAR(16) NULL,
+                      image_width INT UNSIGNED NULL,
+                      image_height INT UNSIGNED NULL,
+                      training_origin VARCHAR(80) NULL,
+                      training_confidence FLOAT NOT NULL DEFAULT 0.72,
                       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                       KEY idx_ai_training_user_time (user_id, created_at),
+                      KEY idx_ai_training_phash (image_phash),
                       KEY idx_ai_training_media (media_id),
                       CONSTRAINT fk_ai_training_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                       CONSTRAINT fk_ai_training_media FOREIGN KEY (media_id) REFERENCES media_items(id) ON DELETE SET NULL
@@ -546,6 +562,7 @@ class GalleryDatabase:
         await self.ensure_user_columns()
         await self.ensure_subcategory_tables()
         await self.ensure_media_columns()
+        await self.ensure_ai_training_columns()
         await self.seed_default_categories()
 
     async def ensure_user_columns(self) -> None:
@@ -638,6 +655,26 @@ class GalleryDatabase:
                         FOREIGN KEY (subcategory_id) REFERENCES subcategories(id) ON DELETE SET NULL
                         """
                     )
+
+    async def ensure_ai_training_columns(self) -> None:
+        """Add visual-fingerprint training columns to existing installations."""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA=%s AND TABLE_NAME='ai_vision_training_examples'
+                    """,
+                    (self.settings.db_schema,),
+                )
+                existing = {row["COLUMN_NAME"] for row in await cur.fetchall()}
+                for name, definition in AI_TRAINING_COLUMNS:
+                    if name not in existing:
+                        await cur.execute(f"ALTER TABLE ai_vision_training_examples ADD COLUMN {name} {definition}")
+                try:
+                    await cur.execute("CREATE INDEX idx_ai_training_phash ON ai_vision_training_examples (image_phash)")
+                except Exception:
+                    pass
 
     async def seed_default_categories(self) -> None:
         defaults = [
@@ -2468,8 +2505,8 @@ class GalleryDatabase:
                     INSERT INTO ai_vision_training_examples
                     (user_id, media_id, original_filename, source_title, source_category_name, source_subcategory_name,
                      source_tags, corrected_title, corrected_category_name, corrected_subcategory_name, corrected_tags,
-                     corrected_is_adult, notes)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     corrected_is_adult, notes, image_phash, image_dhash, image_width, image_height, training_origin, training_confidence)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         user_id,
@@ -2485,6 +2522,12 @@ class GalleryDatabase:
                         json.dumps(corrected_tags),
                         1 if bool(corrected.get("is_adult") or corrected.get("corrected_is_adult")) else 0,
                         self._clean_text(notes, 500),
+                        self._clean_text(source.get("image_phash") or source.get("source_image_phash"), 16),
+                        self._clean_text(source.get("image_dhash") or source.get("source_image_dhash"), 16),
+                        int(source.get("image_width") or 0) or None,
+                        int(source.get("image_height") or 0) or None,
+                        self._clean_text(source.get("training_origin") or source.get("origin"), 80),
+                        max(0.0, min(float(source.get("training_confidence") or corrected.get("training_confidence") or 0.72), 1.0)),
                     ),
                 )
                 await cur.execute("SELECT * FROM ai_vision_training_examples WHERE id=%s", (cur.lastrowid,))

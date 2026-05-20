@@ -24,6 +24,7 @@ STOP_TAGS = {
     "standard", "lite", "upscayl", "wallpaper", "desktop", "phone",
     "background", "backgrounds", "version", "text", "movie", "poster", "upload",
     "artwork", "fanart", "pic", "photo", "picture",
+    "by", "artist", "source", "ai", "enhanced", "upscaled", "upscale", "compressed", "icloud",
 }
 LOW_SIGNAL_RE = re.compile(
     r"^(?:img|dsc|pxl|mvimg|screenshot|image|photo|video|scan|untitled|temp|"
@@ -79,6 +80,34 @@ CHARACTER_RECOGNITION_GUIDE = {
     "KPOP Demon Hunters": ["Huntrix", "Mira", "Zoey", "Rumi"],
 }
 VISION_BACKOFF: dict[str, float] = {}
+
+VISUAL_HASH_BITS = 64
+VISUAL_PHASH_MAX_DISTANCE = int(os.getenv("GALLERY_VISUAL_PHASH_MAX_DISTANCE", "10") or 10)
+VISUAL_DHASH_MAX_DISTANCE = int(os.getenv("GALLERY_VISUAL_DHASH_MAX_DISTANCE", "14") or 14)
+
+DOMAIN_CHARACTER_ALIASES: dict[str, tuple[str, str, str, list[str]]] = {
+    "dazzlings": ("The Dazzlings", "My Little Pony", "Equestria Girls", ["dazzlings", "mlp", "equestria girls"]),
+    "aria blaze": ("Aria Blaze", "My Little Pony", "Equestria Girls", ["aria blaze", "dazzlings", "mlp", "equestria girls"]),
+    "adagio dazzle": ("Adagio Dazzle", "My Little Pony", "Equestria Girls", ["adagio dazzle", "dazzlings", "mlp", "equestria girls"]),
+    "sonata dusk": ("Sonata Dusk", "My Little Pony", "Equestria Girls", ["sonata dusk", "dazzlings", "mlp", "equestria girls"]),
+    "sunset shimmer": ("Sunset Shimmer", "My Little Pony", "Equestria Girls", ["sunset shimmer", "mlp", "equestria girls"]),
+    "twilight sparkle": ("Twilight Sparkle", "My Little Pony", "Equestria Girls", ["twilight sparkle", "mlp", "equestria girls"]),
+    "rainbow dash": ("Rainbow Dash", "My Little Pony", "Mane Six", ["rainbow dash", "mlp", "mane six"]),
+    "pinkie pie": ("Pinkie Pie", "My Little Pony", "Mane Six", ["pinkie pie", "mlp", "mane six"]),
+    "fluttershy": ("Fluttershy", "My Little Pony", "Mane Six", ["fluttershy", "mlp", "mane six"]),
+    "applejack": ("Applejack", "My Little Pony", "Mane Six", ["applejack", "mlp", "mane six"]),
+    "rarity": ("Rarity", "My Little Pony", "Mane Six", ["rarity", "mlp", "mane six"]),
+    "spike": ("Spike", "My Little Pony", "Mane Six", ["spike", "mlp"]),
+    "starlight glimmer": ("Starlight Glimmer", "My Little Pony", "Equestria Girls", ["starlight glimmer", "mlp"]),
+    "trixie": ("Trixie", "My Little Pony", "Equestria Girls", ["trixie", "mlp"]),
+    "derpy": ("Derpy", "My Little Pony", "Mane Six", ["derpy", "mlp"]),
+    "huntrix": ("Huntrix", "KPOP Demon Hunters", "Huntrix", ["huntrix", "kpop demon hunters"]),
+    "rumi": ("Rumi", "KPOP Demon Hunters", "Huntrix", ["rumi", "huntrix", "kpop demon hunters"]),
+    "mira": ("Mira", "KPOP Demon Hunters", "Huntrix", ["mira", "huntrix", "kpop demon hunters"]),
+    "zoey": ("Zoey", "KPOP Demon Hunters", "Huntrix", ["zoey", "huntrix", "kpop demon hunters"]),
+    "saja boys": ("Saja Boys", "KPOP Demon Hunters", "Saja Boys", ["saja boys", "kpop demon hunters"]),
+}
+
 
 
 def _local_vision_command() -> Path | None:
@@ -180,6 +209,7 @@ def analyze_media_bytes(
         tags_hint=tags_hint or [],
         size=size,
     )
+    image_fingerprint = _image_fingerprint(content, filename, mime_type, media_kind)
     training_result = _training_lookup_analysis(
         training_examples or [],
         filename=filename,
@@ -187,7 +217,17 @@ def analyze_media_bytes(
         description_hint=description_hint,
         tags_hint=tags_hint or [],
         fallback=fallback,
+        image_fingerprint=image_fingerprint,
     )
+    domain_hint_result = _domain_hint_analysis_from_text(
+        filename=filename,
+        title_hint=title_hint,
+        description_hint=description_hint,
+        tags_hint=tags_hint or [],
+        fallback=fallback,
+    )
+    if domain_hint_result and (not training_result or _clamp_float(training_result.get("confidence"), 0.0, 1.0, 0.0) < 0.72):
+        training_result = domain_hint_result
 
     local_classifier = _local_vision_command()
     provider = str(os.getenv("GALLERY_AI_PROVIDER", "")).strip().lower()
@@ -475,9 +515,20 @@ def _training_lookup_analysis(
     description_hint: str,
     tags_hint: list[str],
     fallback: SmartMediaAnalysis,
+    image_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Use prior user corrections as a cautious local memory, not a blind override."""
-    query_tokens = set(clean_tokens(filename, title_hint, description_hint, " ".join(tags_hint or [])))
+    """Use prior user corrections as a cautious local memory, not a blind override.
+
+    Exact text matching is weak for image galleries because filenames are often hashes,
+    artist credits, or phone-camera IDs.  Visual fingerprint matching lets the gallery
+    learn from compressed/resized examples without needing a full model fine-tune.
+    """
+    visual_match = _visual_training_match(training_examples, image_fingerprint, fallback=fallback)
+    if visual_match:
+        return visual_match
+
+    query_text = " ".join([_filename_subject_text(filename), title_hint or "", description_hint or "", " ".join(tags_hint or [])])
+    query_tokens = set(clean_tokens(query_text))
     query_tokens = {token for token in query_tokens if token not in STOP_TAGS and not _is_noise_token(token)}
     if not query_tokens:
         return None
@@ -528,6 +579,210 @@ def _training_lookup_analysis(
         "reason": "Learned from prior gallery correction with matching metadata hints.",
         "source": "gallery-training",
     }
+
+
+def _visual_training_match(
+    training_examples: list[dict[str, Any]],
+    image_fingerprint: dict[str, Any] | None,
+    *,
+    fallback: SmartMediaAnalysis,
+) -> dict[str, Any] | None:
+    if not image_fingerprint:
+        return None
+    current_phash = str(image_fingerprint.get("image_phash") or "")
+    current_dhash = str(image_fingerprint.get("image_dhash") or "")
+    if not current_phash and not current_dhash:
+        return None
+
+    best: tuple[float, dict[str, Any], int | None, int | None] | None = None
+    for example in training_examples or []:
+        example_phash = str(example.get("image_phash") or example.get("source_image_phash") or "")
+        example_dhash = str(example.get("image_dhash") or example.get("source_image_dhash") or "")
+        if not example_phash and not example_dhash:
+            continue
+        pdist = _hex_hamming_distance(current_phash, example_phash) if current_phash and example_phash else None
+        ddist = _hex_hamming_distance(current_dhash, example_dhash) if current_dhash and example_dhash else None
+        if pdist is None and ddist is None:
+            continue
+        if pdist is not None and pdist > VISUAL_PHASH_MAX_DISTANCE:
+            continue
+        if ddist is not None and ddist > VISUAL_DHASH_MAX_DISTANCE:
+            continue
+        components = []
+        if pdist is not None:
+            components.append(max(0.0, 1.0 - (pdist / max(1, VISUAL_PHASH_MAX_DISTANCE))))
+        if ddist is not None:
+            components.append(max(0.0, 1.0 - (ddist / max(1, VISUAL_DHASH_MAX_DISTANCE))))
+        similarity = sum(components) / len(components)
+        source_conf = _clamp_float(example.get("training_confidence"), 0.0, 1.0, 0.72)
+        score = max(0.62, min(0.96, 0.62 + (similarity * 0.30) + (source_conf * 0.08)))
+        if not best or score > best[0]:
+            best = (score, example, pdist, ddist)
+
+    if not best:
+        return None
+    score, example, pdist, ddist = best
+    title = _clean_title(example.get("corrected_title")) or fallback.title
+    category = _clean_label(example.get("corrected_category_name")) or fallback.category_name or ""
+    subcategory = _clean_label(example.get("corrected_subcategory_name")) or fallback.subcategory_name or ""
+    tags = _normalize_tags(example.get("corrected_tags") or [])
+    reason_bits = []
+    if pdist is not None:
+        reason_bits.append(f"pHash distance {pdist}")
+    if ddist is not None:
+        reason_bits.append(f"dHash distance {ddist}")
+    return {
+        "title": title,
+        "suggested_filename_base": "",
+        "tags": _merge_tags(tags, fallback.tags),
+        "category_name": category,
+        "subcategory_name": subcategory,
+        "is_adult": bool(example.get("corrected_is_adult")) or fallback.is_adult,
+        "confidence": score,
+        "reason": "Visually matched a learned training image (" + ", ".join(reason_bits) + ").",
+        "source": "visual-training",
+    }
+
+
+def _domain_hint_analysis_from_text(
+    *,
+    filename: str,
+    title_hint: str,
+    description_hint: str,
+    tags_hint: list[str],
+    fallback: SmartMediaAnalysis,
+) -> dict[str, Any] | None:
+    text = " ".join([_filename_subject_text(filename), title_hint or "", description_hint or "", " ".join(tags_hint or [])]).lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    if not text.strip():
+        return None
+
+    matches: list[tuple[str, str, str, list[str]]] = []
+    for alias, payload in DOMAIN_CHARACTER_ALIASES.items():
+        alias_text = alias.lower().replace("_", " ").replace("-", " ")
+        if re.search(rf"\b{re.escape(alias_text)}\b", text):
+            matches.append(payload)
+
+    # Composite shorthand used in filenames.
+    if re.search(r"\baria\b", text) and "dazzlings" in text:
+        matches.append(DOMAIN_CHARACTER_ALIASES["aria blaze"])
+    if re.search(r"\badagio\b", text) and "dazzlings" in text:
+        matches.append(DOMAIN_CHARACTER_ALIASES["adagio dazzle"])
+    if re.search(r"\bsonata\b", text) and "dazzlings" in text:
+        matches.append(DOMAIN_CHARACTER_ALIASES["sonata dusk"])
+    if re.search(r"\bdashie\b", text):
+        matches.append(DOMAIN_CHARACTER_ALIASES["rainbow dash"])
+    if "kpop demon hunters" in text or "k pop demon hunters" in text:
+        matches.append(("KPop Demon Hunters", "KPOP Demon Hunters", "Huntrix", ["kpop demon hunters", "huntrix"]))
+
+    if not matches:
+        return None
+    # Preserve order but drop duplicate visible names.
+    unique: list[tuple[str, str, str, list[str]]] = []
+    seen_names: set[str] = set()
+    for match in matches:
+        if match[0].lower() in seen_names:
+            continue
+        seen_names.add(match[0].lower())
+        unique.append(match)
+    names = [match[0] for match in unique[:4]]
+    category = unique[0][1]
+    subcategory = unique[0][2]
+    if {"Aria Blaze", "Adagio Dazzle", "Sonata Dusk"}.issubset(set(names)) or any(name == "The Dazzlings" for name in names):
+        title = "The Dazzlings"
+        tags = ["the dazzlings", "aria blaze", "adagio dazzle", "sonata dusk", "mlp", "equestria girls"]
+        subcategory = "Equestria Girls"
+    elif len(names) > 2:
+        title = f"{names[0]}, {names[1]}, and {len(names) - 2} more"
+        tags = []
+        for _, _, _, match_tags in unique[:6]:
+            tags.extend(match_tags)
+    elif len(names) == 2:
+        title = f"{names[0]} and {names[1]}"
+        tags = [tag for _, _, _, match_tags in unique[:4] for tag in match_tags]
+    else:
+        title = names[0]
+        tags = list(unique[0][3])
+    return {
+        "title": title,
+        "suggested_filename_base": "",
+        "tags": tags,
+        "category_name": category,
+        "subcategory_name": subcategory,
+        "is_adult": fallback.is_adult,
+        "confidence": 0.66,
+        "reason": "Matched a known franchise/character alias from user-provided metadata hints.",
+        "source": "domain-hint",
+    }
+
+
+def _image_fingerprint(content: bytes, filename: str, mime_type: str, media_kind: str) -> dict[str, Any] | None:
+    if media_kind != "image":
+        return None
+    try:
+        from PIL import Image, ImageOps
+        Image.MAX_IMAGE_PIXELS = None
+        with Image.open(io.BytesIO(content)) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            width, height = image.size
+            return {
+                "image_phash": _average_hash(image, hash_size=8),
+                "image_dhash": _difference_hash(image, hash_size=8),
+                "image_width": int(width),
+                "image_height": int(height),
+            }
+    except Exception:
+        return None
+
+
+def _average_hash(image: Any, *, hash_size: int = 8) -> str:
+    gray = image.convert("L").resize((hash_size, hash_size))
+    pixels = list(gray.getdata())
+    avg = sum(pixels) / max(1, len(pixels))
+    bits = 0
+    for value in pixels:
+        bits = (bits << 1) | (1 if value >= avg else 0)
+    return f"{bits:0{(hash_size * hash_size) // 4}x}"
+
+
+def _difference_hash(image: Any, *, hash_size: int = 8) -> str:
+    gray = image.convert("L").resize((hash_size + 1, hash_size))
+    pixels = list(gray.getdata())
+    bits = 0
+    for row in range(hash_size):
+        offset = row * (hash_size + 1)
+        for col in range(hash_size):
+            bits = (bits << 1) | (1 if pixels[offset + col] > pixels[offset + col + 1] else 0)
+    return f"{bits:0{(hash_size * hash_size) // 4}x}"
+
+
+def _hex_hamming_distance(a: str, b: str) -> int | None:
+    a = str(a or "").strip().lower()
+    b = str(b or "").strip().lower()
+    if not a or not b or len(a) != len(b):
+        return None
+    try:
+        return (int(a, 16) ^ int(b, 16)).bit_count()
+    except ValueError:
+        return None
+
+
+def _filename_subject_text(filename: str) -> str:
+    stem = Path(filename or "").stem
+    if not stem:
+        return ""
+    stem = re.sub(r"__[0-9a-f]{8,}$", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"\b(?:ai[_ -]?enhanced|upscayl|upscaled|compressed|final|fullview)\b", " ", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"\b(?:\d{3,4}x\d{3,4}|\d{3,4}p|4k|8k|uhd|fhd|qhd)\b", " ", stem, flags=re.IGNORECASE)
+    # Keep the actual title before common artist/source separators, but discard the credit tail.
+    stem = re.split(r"(?:_by_|-by-|\s+by\s+)", stem, maxsplit=1, flags=re.IGNORECASE)[0]
+    stem = re.sub(r"[0-9a-f]{8,}(?:[-_][0-9a-f]{4,}){1,}", " ", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"\b[0-9a-f]{10,}\b", " ", stem, flags=re.IGNORECASE)
+    cleaned = re.sub(r"[^a-zA-Z0-9]+", " ", stem).strip()
+    compact = re.sub(r"[^a-z0-9]+", "", cleaned.lower())
+    if not cleaned or _looks_low_signal_name(cleaned) or (re.fullmatch(r"[a-f0-9]{8,}", compact or "") is not None):
+        return ""
+    return cleaned
 
 def is_low_signal_filename(filename: str) -> bool:
     return _looks_low_signal_name(filename)
@@ -1168,7 +1423,7 @@ def _build_tags(*, filename: str, title: str, description: str, category_name: s
             tags.append("1440p")
         elif width >= 1920 or height >= 1080:
             tags.append("1080p")
-    for value in [title, description, Path(filename).stem]:
+    for value in [title, description, _filename_subject_text(filename)]:
         tags.extend(_normalize_tokens(value))
     tags.extend(_normalize_tags(tags_hint))
     return _merge_tags(tags, [])
@@ -1205,7 +1460,8 @@ def _normalize_tags(values: Any) -> list[str]:
     normalized: list[str] = []
     seen: set[str] = set()
     for raw in candidates:
-        tag = re.sub(r"[^a-z0-9_.-]+", "", str(raw or "").strip().lower())[:32]
+        raw_tag = re.sub(r"\s+", "-", str(raw or "").strip().lower())
+        tag = re.sub(r"[^a-z0-9_.-]+", "", raw_tag)[:32]
         if not tag or tag in STOP_TAGS or len(tag) < 2 or tag in seen or _is_noise_token(tag):
             continue
         seen.add(tag)
@@ -1277,6 +1533,8 @@ def _is_noise_token(value: str | None) -> bool:
     compact = re.sub(r"[^a-z0-9]+", "", token)
     if compact.isdigit() and len(compact) >= 2:
         return True
+    if re.fullmatch(r"[a-f0-9]{4,}", compact) and any(ch.isdigit() for ch in compact):
+        return True
     if NOISE_TOKEN_RE.fullmatch(token) or NOISE_TOKEN_RE.fullmatch(compact):
         return True
     return False
@@ -1338,7 +1596,15 @@ def _is_generic_title(value: str | None) -> bool:
         return True
     parts = [p for p in re.split(r"\s+", lowered) if p]
     meaningful = [p for p in parts if p not in STOP_TAGS and not _is_noise_token(p)]
-    return len(meaningful) <= 1
+    if not meaningful:
+        return True
+    generic_subject_words = {
+        "media", "upload", "background", "backgrounds", "wallpaper", "wallpapers",
+        "image", "images", "photo", "photos", "picture", "pictures", "profile",
+        "art", "artwork", "render", "renders", "edit", "edits", "graphic", "graphics",
+        "illustration", "portrait", "landscape", "desktop", "phone", "uncategorized",
+    }
+    return len(meaningful) == 1 and meaningful[0] in generic_subject_words
 
 
 def _category_suffix(category_name: str | None, media_kind: str) -> str:
@@ -1348,6 +1614,8 @@ def _category_suffix(category_name: str | None, media_kind: str) -> str:
         return "Desktop Background"
     if category_name == "Wallpapers":
         return "Wallpaper"
+    if category_name == "Profile Pictures":
+        return "Profile Picture"
     if media_kind == "video":
         return "Video"
     return "Artwork"
@@ -1372,8 +1640,11 @@ def _compose_specific_title(*, title: str, filename: str, category_name: str | N
         return base[:160]
 
     preferred_tags: list[str] = []
+    generic_title_tags = {"landscape", "portrait", "square", "1080p", "1440p", "4k", "video", "gif", "profile", "profiles", "picture", "pictures", "desktop", "phone", "background", "backgrounds", "wallpaper", "wallpapers"}
+    generic_title_tags.update(_normalize_tokens(category_name or ""))
+    generic_title_tags.update(_normalize_tokens(subcategory_name or ""))
     for tag in tags:
-        if tag in {"landscape", "portrait", "square", "1080p", "1440p", "4k", "video", "gif"}:
+        if tag in generic_title_tags:
             continue
         pretty = _pretty_tag(tag)
         if not pretty:
