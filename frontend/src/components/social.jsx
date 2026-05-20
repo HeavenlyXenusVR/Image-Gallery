@@ -5,13 +5,17 @@ import { friendLabel } from "../utils/format.js";
 import { Avatar, EmptyState, PresencePill, UserMini } from "./ui.jsx";
 
 export function ProfileActions({ ctx, user, onChanged }) {
+  const followed = Boolean(user.followed_by_me);
+
   async function follow() {
     try {
       await apiFetch(`/api/users/${user.id}/follow`, {
         method: "POST",
-        body: JSON.stringify({ following: !user.following_by_me }),
+        body: JSON.stringify({ following: !followed }),
       });
-      onChanged();
+      clearApiCache("/api/users");
+      clearApiCache("/api/feed");
+      onChanged?.();
     } catch (error) {
       ctx.showToast(error.message, "error");
     }
@@ -20,7 +24,9 @@ export function ProfileActions({ ctx, user, onChanged }) {
   async function friend() {
     try {
       await apiFetch(`/api/users/${user.id}/friend-request`, { method: "POST" });
-      onChanged();
+      clearApiCache("/api/users");
+      clearApiCache("/api/friends");
+      onChanged?.();
     } catch (error) {
       ctx.showToast(error.message, "error");
     }
@@ -29,7 +35,7 @@ export function ProfileActions({ ctx, user, onChanged }) {
   if (!ctx.user) return <Link className="button-link" to="/login"><LogIn size={16} />Login</Link>;
   return (
     <div className="profile-actions">
-      <button type="button" onClick={follow}><Heart size={16} />{user.following_by_me ? "Unfollow" : "Follow"}</button>
+      <button type="button" onClick={follow}><Heart size={16} />{followed ? "Unfollow" : "Follow"}</button>
       <button type="button" onClick={friend} disabled={["friends", "pending_out", "self"].includes(user.friend_status)}><UserPlus size={16} />{friendLabel(user.friend_status)}</button>
       {user.friend_status !== "self" ? <Link className="button-link" to="/messages" state={{ user }}><MessageCircle size={16} />Message</Link> : null}
     </div>

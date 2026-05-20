@@ -92,7 +92,7 @@ const friendUser = {
   display_name: "Mock Friend",
   profile_headline: "Friendship route",
   profile_color: "#89b4fa",
-  following_by_me: false,
+  followed_by_me: false,
   friend_status: "none",
   media_count: 1,
   follower_count: 2,
@@ -202,10 +202,10 @@ async function installMocks(context, options = {}) {
       return route.fulfill(json({ user, media: [mediaItem(41, { user_id: user.id, username: user.username, display_name: user.display_name })], collections, friends: [currentUser] }));
     }
     if (/^\/api\/users\/\d+\/followers$/.test(path) && method === "GET") {
-      return route.fulfill(json({ users: [{ ...currentUser, following_by_me: true }, { ...friendUser, id: 5, username: "mock-follower", display_name: "Mock Follower" }] }));
+      return route.fulfill(json({ users: [{ ...currentUser, followed_by_me: true }, { ...friendUser, id: 5, username: "mock-follower", display_name: "Mock Follower" }] }));
     }
     if (/^\/api\/users\/\d+\/following$/.test(path) && method === "GET") {
-      return route.fulfill(json({ users: [{ ...friendUser, following_by_me: true }, { ...currentUser, friend_status: "self" }] }));
+      return route.fulfill(json({ users: [{ ...friendUser, followed_by_me: true }, { ...currentUser, friend_status: "self" }] }));
     }
     if (/^\/api\/users\/\d+\/friends$/.test(path) && method === "GET") {
       return route.fulfill(json({ friends: [{ ...friendUser, id: 4, username: "actual-friend", display_name: "Actual Friend" }] }));

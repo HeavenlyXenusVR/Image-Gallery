@@ -1675,7 +1675,7 @@ class GalleryDatabase:
                            CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
                            CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS bio,
                            CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
-                           u.profile_color, u.public_profile, f.created_at AS followed_at,
+                           u.profile_color, u.public_profile, u.last_seen_at, f.created_at AS followed_at,
                            MAX(CASE WHEN mine.follower_id IS NULL THEN 0 ELSE 1 END) AS followed_by_me
                     FROM user_follows f
                     JOIN users u ON u.id=f.{join_col}
@@ -2104,7 +2104,7 @@ class GalleryDatabase:
                 await cur.execute(
                     f"""
                     SELECT fr.*, u.id AS user_id, u.username, u.display_name, u.bio, u.avatar_path,
-                           u.profile_color, u.public_profile
+                           u.profile_color, u.public_profile, u.last_seen_at
                     FROM friend_requests fr
                     JOIN users u ON u.id=fr.{other_col}
                     WHERE fr.{own_col}=%s AND fr.status='pending'
@@ -2125,7 +2125,7 @@ class GalleryDatabase:
                            CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
                            CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS bio,
                            CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
-                           u.profile_color, u.public_profile, fr.responded_at AS friended_at
+                           u.profile_color, u.public_profile, u.last_seen_at, fr.responded_at AS friended_at
                     FROM friend_requests fr
                     JOIN users u ON u.id = CASE WHEN fr.requester_id=%s THEN fr.addressee_id ELSE fr.requester_id END
                     WHERE fr.status='accepted' AND (fr.requester_id=%s OR fr.addressee_id=%s)
@@ -2216,7 +2216,7 @@ class GalleryDatabase:
                 message_id = cur.lastrowid
                 await cur.execute(
                     """
-                    SELECT msg.*, u.username, u.display_name, u.avatar_path, u.profile_color, u.public_profile
+                    SELECT msg.*, u.username, u.display_name, u.avatar_path, u.profile_color, u.public_profile, u.last_seen_at
                     FROM user_messages msg
                     JOIN users u ON u.id=msg.sender_id
                     WHERE msg.id=%s
@@ -2238,6 +2238,7 @@ class GalleryDatabase:
                       CASE WHEN other_user.public_profile=1 THEN other_user.avatar_path ELSE NULL END AS avatar_path,
                       other_user.profile_color,
                       other_user.public_profile,
+                      other_user.last_seen_at,
                       latest.id AS last_message_id,
                       latest.body AS last_message,
                       latest.created_at AS last_message_at,
@@ -2284,7 +2285,7 @@ class GalleryDatabase:
                 )
                 await cur.execute(
                     """
-                    SELECT msg.*, u.username, u.display_name, u.avatar_path, u.profile_color, u.public_profile
+                    SELECT msg.*, u.username, u.display_name, u.avatar_path, u.profile_color, u.public_profile, u.last_seen_at
                     FROM user_messages msg
                     JOIN users u ON u.id=msg.sender_id
                     WHERE (msg.sender_id=%s AND msg.recipient_id=%s)
@@ -2307,6 +2308,8 @@ class GalleryDatabase:
             if hasattr(value, "isoformat"):
                 item[key] = value.isoformat()
         item["public_profile"] = bool(item.get("public_profile"))
+        if "last_seen_at" in item:
+            item["is_online"] = self._is_recently_seen(item.get("last_seen_at"))
         return item
 
     def _decode_message_thread(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -2314,6 +2317,8 @@ class GalleryDatabase:
         if hasattr(item.get("last_message_at"), "isoformat"):
             item["last_message_at"] = item["last_message_at"].isoformat()
         item["public_profile"] = bool(item.get("public_profile"))
+        if "last_seen_at" in item:
+            item["is_online"] = self._is_recently_seen(item.get("last_seen_at"))
         item["unread_count"] = int(item.get("unread_count") or 0)
         return item
 
@@ -2583,6 +2588,7 @@ class GalleryDatabase:
             "avatar_path": row.get("avatar_path") if row.get("public_profile") else None,
             "profile_color": row.get("profile_color"),
             "public_profile": row.get("public_profile"),
+            "last_seen_at": row.get("last_seen_at"),
         }
         return {
             "id": row.get("id"),
