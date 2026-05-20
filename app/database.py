@@ -517,6 +517,32 @@ class GalleryDatabase:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                     """,
                 )
+                await ensure_table(
+                    "ai_vision_training_examples",
+                    """
+                    CREATE TABLE ai_vision_training_examples (
+                      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                      user_id BIGINT UNSIGNED NOT NULL,
+                      media_id BIGINT UNSIGNED NULL,
+                      original_filename VARCHAR(255) NULL,
+                      source_title VARCHAR(160) NULL,
+                      source_category_name VARCHAR(80) NULL,
+                      source_subcategory_name VARCHAR(80) NULL,
+                      source_tags JSON NULL,
+                      corrected_title VARCHAR(160) NOT NULL,
+                      corrected_category_name VARCHAR(80) NULL,
+                      corrected_subcategory_name VARCHAR(80) NULL,
+                      corrected_tags JSON NULL,
+                      corrected_is_adult TINYINT(1) NOT NULL DEFAULT 0,
+                      notes VARCHAR(500) NULL,
+                      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      KEY idx_ai_training_user_time (user_id, created_at),
+                      KEY idx_ai_training_media (media_id),
+                      CONSTRAINT fk_ai_training_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                      CONSTRAINT fk_ai_training_media FOREIGN KEY (media_id) REFERENCES media_items(id) ON DELETE SET NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
         await self.ensure_user_columns()
         await self.ensure_subcategory_tables()
         await self.ensure_media_columns()
@@ -2409,6 +2435,115 @@ class GalleryDatabase:
                 )
                 return await cur.fetchone()
 
+    async def record_ai_vision_training_example(
+        self,
+        *,
+        user_id: int,
+        media_id: int | None = None,
+        source: dict[str, Any] | None = None,
+        corrected: dict[str, Any] | None = None,
+        notes: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Store a user-approved correction as gallery-specific AI training data."""
+        corrected = dict(corrected or {})
+        source = dict(source or {})
+        title = self._clean_text(corrected.get("title") or corrected.get("corrected_title"), 160, required=True)
+        category_name = self._clean_text(corrected.get("category_name") or corrected.get("corrected_category_name"), 80)
+        subcategory_name = self._clean_text(corrected.get("subcategory_name") or corrected.get("corrected_subcategory_name"), 80)
+        corrected_tags = self._clean_tags(corrected.get("tags") or corrected.get("corrected_tags") or [])
+        source_tags = self._clean_tags(source.get("tags") or source.get("source_tags") or [])
+        if media_id is not None:
+            media_id = int(media_id)
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                if media_id is not None:
+                    await cur.execute("SELECT id, user_id FROM media_items WHERE id=%s AND deleted_at IS NULL", (media_id,))
+                    row = await cur.fetchone()
+                    if not row:
+                        return None
+                    if int(row["user_id"]) != int(user_id):
+                        raise PermissionError("You can only train AI using your own media.")
+                await cur.execute(
+                    """
+                    INSERT INTO ai_vision_training_examples
+                    (user_id, media_id, original_filename, source_title, source_category_name, source_subcategory_name,
+                     source_tags, corrected_title, corrected_category_name, corrected_subcategory_name, corrected_tags,
+                     corrected_is_adult, notes)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        user_id,
+                        media_id,
+                        self._clean_text(source.get("original_filename"), 255),
+                        self._clean_text(source.get("title"), 160),
+                        self._clean_text(source.get("category_name"), 80),
+                        self._clean_text(source.get("subcategory_name"), 80),
+                        json.dumps(source_tags),
+                        title,
+                        category_name,
+                        subcategory_name,
+                        json.dumps(corrected_tags),
+                        1 if bool(corrected.get("is_adult") or corrected.get("corrected_is_adult")) else 0,
+                        self._clean_text(notes, 500),
+                    ),
+                )
+                await cur.execute("SELECT * FROM ai_vision_training_examples WHERE id=%s", (cur.lastrowid,))
+                row = await cur.fetchone()
+                return self._decode_ai_training_example(row)
+
+    async def list_ai_vision_training_examples(self, user_id: int | None = None, limit: int = 24) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 24), 80))
+        where = ""
+        params: list[Any] = []
+        if user_id is not None:
+            where = "WHERE user_id=%s"
+            params.append(int(user_id))
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    f"""
+                    SELECT * FROM ai_vision_training_examples
+                    {where}
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (*params, limit),
+                )
+                return [self._decode_ai_training_example(row) for row in await cur.fetchall()]
+
+    async def export_ai_vision_training_examples(self, user_id: int, limit: int = 500) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 500), 5000))
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT t.*, m.media_kind, m.mime_type
+                    FROM ai_vision_training_examples t
+                    LEFT JOIN media_items m ON m.id=t.media_id
+                    WHERE t.user_id=%s
+                    ORDER BY t.created_at DESC
+                    LIMIT %s
+                    """,
+                    (int(user_id), limit),
+                )
+                return [self._decode_ai_training_example(row) for row in await cur.fetchall()]
+
+    def _decode_ai_training_example(self, row: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not row:
+            return None
+        item = dict(row)
+        for key in ("source_tags", "corrected_tags"):
+            value = item.get(key)
+            if isinstance(value, str):
+                try:
+                    item[key] = json.loads(value or "[]")
+                except json.JSONDecodeError:
+                    item[key] = []
+            elif value is None:
+                item[key] = []
+        item["corrected_is_adult"] = bool(item.get("corrected_is_adult"))
+        return item
+
     async def migrate_legacy_media_files(self, limit: int = 10) -> dict[str, Any]:
         """Copy old disk-backed uploads into media_files and link media_items safely."""
         migrated = 0
@@ -2646,9 +2781,13 @@ class GalleryDatabase:
             raise ValueError("URL must start with http:// or https://.")
         return text
 
-    def _clean_tags(self, values: list[Any]) -> list[str]:
+    def _clean_tags(self, values: Any) -> list[str]:
         clean = []
-        for raw in values:
+        if isinstance(values, str):
+            iterable = re.split(r"[,#\s]+", values)
+        else:
+            iterable = list(values or [])
+        for raw in iterable:
             tag = re.sub(r"[^A-Za-z0-9_.-]+", "", str(raw).strip())[:32]
             if tag and tag.lower() not in {existing.lower() for existing in clean}:
                 clean.append(tag)

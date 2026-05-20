@@ -108,6 +108,8 @@ class Settings:
     ollama_base_url: str
     ollama_model: str
     ai_timeout_seconds: int
+    ai_auto_train_on_edit: bool
+    ai_training_examples_limit: int
     telegram_bot_token: str
     telegram_allowed_chat_ids: set[int]
     telegram_polling_enabled: bool
@@ -177,6 +179,8 @@ def load_settings() -> Settings:
         ollama_base_url=(_env("GALLERY_OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/"),
         ollama_model=_env("GALLERY_OLLAMA_MODEL", "qwen2.5vl:7b"),
         ai_timeout_seconds=max(10, int(_env("GALLERY_AI_TIMEOUT_SECONDS", "45"))),
+        ai_auto_train_on_edit=_env_bool("GALLERY_AI_AUTO_TRAIN_ON_EDIT", True),
+        ai_training_examples_limit=max(0, min(80, int(_env("GALLERY_AI_TRAINING_EXAMPLES_LIMIT", "24")))),
         telegram_bot_token=_env("GALLERY_TELEGRAM_BOT_TOKEN") or _env("TELEGRAM_BOT_TOKEN"),
         telegram_allowed_chat_ids=_env_int_set("GALLERY_TELEGRAM_ALLOWED_CHAT_IDS") or _env_int_set("TELEGRAM_ALLOWED_CHAT_IDS"),
         telegram_polling_enabled=_env_bool("GALLERY_TELEGRAM_POLLING_ENABLED", bool(_env("GALLERY_TELEGRAM_BOT_TOKEN") or _env("TELEGRAM_BOT_TOKEN"))),

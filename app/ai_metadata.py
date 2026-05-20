@@ -134,6 +134,7 @@ def analyze_media_path(
     ai_base_url: str | None = None,
     ai_model: str | None = None,
     ai_timeout_seconds: int | None = None,
+    training_examples: list[dict[str, Any]] | None = None,
 ) -> SmartMediaAnalysis:
     content = path.read_bytes()
     return analyze_media_bytes(
@@ -149,6 +150,7 @@ def analyze_media_path(
         ai_base_url=ai_base_url,
         ai_model=ai_model,
         ai_timeout_seconds=ai_timeout_seconds,
+        training_examples=training_examples,
     )
 
 
@@ -166,6 +168,7 @@ def analyze_media_bytes(
     ai_base_url: str | None = None,
     ai_model: str | None = None,
     ai_timeout_seconds: int | None = None,
+    training_examples: list[dict[str, Any]] | None = None,
 ) -> SmartMediaAnalysis:
     size = _media_size(content, filename, mime_type, media_kind)
     fallback = _heuristic_analysis(
@@ -176,6 +179,14 @@ def analyze_media_bytes(
         description_hint=description_hint,
         tags_hint=tags_hint or [],
         size=size,
+    )
+    training_result = _training_lookup_analysis(
+        training_examples or [],
+        filename=filename,
+        title_hint=title_hint,
+        description_hint=description_hint,
+        tags_hint=tags_hint or [],
+        fallback=fallback,
     )
 
     local_classifier = _local_vision_command()
@@ -203,10 +214,26 @@ def analyze_media_bytes(
     )
     enabled = _resolve_bool(ai_enabled, env_name="GALLERY_AI_ENABLED", default=enabled_default)
     if not enabled:
+        if training_result:
+            return _merge_analysis(
+                ai_result=training_result,
+                fallback=fallback,
+                filename=filename,
+                mime_type=mime_type,
+                media_kind=media_kind,
+            )
         return fallback
 
     preview_image_b64 = _preview_base64(content, filename, mime_type, media_kind)
     if not preview_image_b64:
+        if training_result:
+            return _merge_analysis(
+                ai_result=training_result,
+                fallback=fallback,
+                filename=filename,
+                mime_type=mime_type,
+                media_kind=media_kind,
+            )
         return fallback
 
     timeout_seconds = max(10, int(ai_timeout_seconds or os.getenv("GALLERY_AI_TIMEOUT_SECONDS") or 45))
@@ -278,6 +305,15 @@ def analyze_media_bytes(
                 if api_key:
                     provider = "google" if (os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")) else "openai"
                 else:
+                    if training_result:
+                        training_result["reason"] = training_result.get("reason") or "Learned gallery correction used after local vision failed."
+                        return _merge_analysis(
+                            ai_result=training_result,
+                            fallback=fallback,
+                            filename=filename,
+                            mime_type=mime_type,
+                            media_kind=media_kind,
+                        )
                     fallback.reason = "Local vision classifier could not confidently identify this image."
                     return fallback
 
@@ -293,6 +329,7 @@ def analyze_media_bytes(
                 description_hint=description_hint,
                 tags_hint=tags_hint or [],
                 fallback=fallback,
+                training_examples=training_examples or [],
                 base_url=base_url,
                 model=model,
                 timeout_seconds=timeout_seconds,
@@ -301,6 +338,14 @@ def analyze_media_bytes(
         elif provider in {"google", "gemini"} or os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
             api_key = str(ai_api_key or os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "").strip()
             if not api_key:
+                if training_result:
+                    return _merge_analysis(
+                        ai_result=training_result,
+                        fallback=fallback,
+                        filename=filename,
+                        mime_type=mime_type,
+                        media_kind=media_kind,
+                    )
                 return fallback
             ai_result = _gemini_vision_analysis(
                 preview_image_b64=preview_image_b64,
@@ -311,6 +356,7 @@ def analyze_media_bytes(
                 description_hint=description_hint,
                 tags_hint=tags_hint or [],
                 fallback=fallback,
+                training_examples=training_examples or [],
                 api_key=api_key,
                 model=str(ai_model or os.getenv("GALLERY_GEMINI_MODEL") or os.getenv("GEMINI_MODEL") or "gemini-2.5-flash-lite").strip(),
                 timeout_seconds=timeout_seconds,
@@ -320,6 +366,14 @@ def analyze_media_bytes(
         else:
             api_key = str(ai_api_key or os.getenv("GALLERY_AI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
             if not api_key:
+                if training_result:
+                    return _merge_analysis(
+                        ai_result=training_result,
+                        fallback=fallback,
+                        filename=filename,
+                        mime_type=mime_type,
+                        media_kind=media_kind,
+                    )
                 return fallback
             preview_url = _preview_data_url(content, filename, mime_type, media_kind)
             if not preview_url:
@@ -333,6 +387,7 @@ def analyze_media_bytes(
                 description_hint=description_hint,
                 tags_hint=tags_hint or [],
                 fallback=fallback,
+                training_examples=training_examples or [],
                 api_key=api_key,
                 base_url=str(ai_base_url or os.getenv("GALLERY_AI_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/"),
                 model=str(ai_model or os.getenv("GALLERY_AI_MODEL") or "gpt-5.4-nano").strip(),
@@ -359,8 +414,20 @@ def analyze_media_bytes(
                 mime_type=mime_type,
                 media_kind=media_kind,
             )
+        if training_result:
+            training_result["reason"] = f"{training_result.get('reason') or 'Learned gallery correction used.'} Primary AI unavailable: {exc}"
+            return _merge_analysis(
+                ai_result=training_result,
+                fallback=fallback,
+                filename=filename,
+                mime_type=mime_type,
+                media_kind=media_kind,
+            )
         fallback.reason = f"AI suggestion unavailable, using local analyzer: {exc}"
         return fallback
+
+    if training_result and _clamp_float(ai_result.get("confidence"), 0.0, 1.0, 0.0) < 0.55:
+        ai_result = training_result
 
     return _merge_analysis(
         ai_result=ai_result,
@@ -370,6 +437,97 @@ def analyze_media_bytes(
         media_kind=media_kind,
     )
 
+
+def _training_guide_text(training_examples: list[dict[str, Any]] | None) -> str:
+    examples = list(training_examples or [])[:12]
+    if not examples:
+        return ""
+    lines = [
+        "Learn from these user-approved gallery corrections. Treat them as naming/category style and character/category aliases, but still require visual evidence:"
+    ]
+    for index, example in enumerate(examples, 1):
+        title = _clean_title(example.get("corrected_title") or example.get("title"))
+        category = _clean_label(example.get("corrected_category_name") or example.get("category_name")) or ""
+        subcategory = _clean_label(example.get("corrected_subcategory_name") or example.get("subcategory_name")) or ""
+        tags = ", ".join(_normalize_tags(example.get("corrected_tags") or example.get("tags") or [])[:8])
+        filename = _clean_title(example.get("original_filename") or "")
+        parts = []
+        if filename:
+            parts.append(f"file/name hint '{filename}'")
+        if title:
+            parts.append(f"title '{title}'")
+        if category:
+            parts.append(f"category '{category}'")
+        if subcategory:
+            parts.append(f"subcategory '{subcategory}'")
+        if tags:
+            parts.append(f"tags [{tags}]")
+        if parts:
+            lines.append(f"{index}. " + "; ".join(parts))
+    return "\n".join(lines) + "\n"
+
+
+def _training_lookup_analysis(
+    training_examples: list[dict[str, Any]],
+    *,
+    filename: str,
+    title_hint: str,
+    description_hint: str,
+    tags_hint: list[str],
+    fallback: SmartMediaAnalysis,
+) -> dict[str, Any] | None:
+    """Use prior user corrections as a cautious local memory, not a blind override."""
+    query_tokens = set(clean_tokens(filename, title_hint, description_hint, " ".join(tags_hint or [])))
+    query_tokens = {token for token in query_tokens if token not in STOP_TAGS and not _is_noise_token(token)}
+    if not query_tokens:
+        return None
+
+    best: tuple[float, dict[str, Any]] | None = None
+    for example in training_examples or []:
+        source_text = " ".join(
+            str(example.get(key) or "")
+            for key in (
+                "original_filename",
+                "source_title",
+                "source_category_name",
+                "source_subcategory_name",
+                "corrected_title",
+                "corrected_category_name",
+                "corrected_subcategory_name",
+                "notes",
+            )
+        )
+        example_tags = _normalize_tags(example.get("source_tags") or []) + _normalize_tags(example.get("corrected_tags") or [])
+        example_tokens = set(clean_tokens(source_text, " ".join(example_tags)))
+        example_tokens = {token for token in example_tokens if token not in STOP_TAGS and not _is_noise_token(token)}
+        overlap = query_tokens & example_tokens
+        if not overlap:
+            continue
+        rare_overlap = {token for token in overlap if len(token) >= 5}
+        if len(overlap) < 2 and not rare_overlap:
+            continue
+        score = min(0.88, 0.58 + (0.08 * len(overlap)) + (0.04 * len(rare_overlap)))
+        if not best or score > best[0]:
+            best = (score, example)
+
+    if not best:
+        return None
+    score, example = best
+    title = _clean_title(example.get("corrected_title")) or fallback.title
+    category = _clean_label(example.get("corrected_category_name")) or fallback.category_name or ""
+    subcategory = _clean_label(example.get("corrected_subcategory_name")) or fallback.subcategory_name or ""
+    tags = _normalize_tags(example.get("corrected_tags") or [])
+    return {
+        "title": title,
+        "suggested_filename_base": "",
+        "tags": _merge_tags(tags, fallback.tags),
+        "category_name": category,
+        "subcategory_name": subcategory,
+        "is_adult": bool(example.get("corrected_is_adult")) or fallback.is_adult,
+        "confidence": score,
+        "reason": "Learned from prior gallery correction with matching metadata hints.",
+        "source": "gallery-training",
+    }
 
 def is_low_signal_filename(filename: str) -> bool:
     return _looks_low_signal_name(filename)
@@ -495,7 +653,7 @@ def _merge_analysis(
         subcategory_name=subcategory_name,
         suggested_base=_clean_filename_base(ai_result.get("suggested_filename_base")),
     )
-    inferred_source = _clean_label(ai_result.get("source")).lower()
+    inferred_source = (_clean_label(ai_result.get("source")) or "").lower()
     if inferred_source and confidence >= 0.45:
         source = inferred_source
     elif (os.getenv("GALLERY_AI_PROVIDER", "").strip().lower() == "ollama" or os.getenv("GALLERY_OLLAMA_MODEL")) and confidence >= 0.45:
@@ -533,6 +691,7 @@ def _ollama_vision_analysis(
     description_hint: str,
     tags_hint: list[str],
     fallback: SmartMediaAnalysis,
+    training_examples: list[dict[str, Any]],
     base_url: str,
     model: str,
     timeout_seconds: int,
@@ -551,7 +710,8 @@ def _ollama_vision_analysis(
         "Only give a specific character or subcategory if the visual evidence is clear.\n"
         "Prefer these main categories when they fit: " + ", ".join(KNOWN_CATEGORIES) + ".\n"
         "Use this local recognition guide as hints, not proof: " + _character_guide_text() + ".\n"
-        "If it looks like a phone wallpaper use category 'Phone Backgrounds'. If it looks like a desktop wallpaper use 'Desktop Backgrounds'.\n"
+        + _training_guide_text(training_examples)
+        + "If it looks like a phone wallpaper use category 'Phone Backgrounds'. If it looks like a desktop wallpaper use 'Desktop Backgrounds'.\n"
         "If the image is NSFW, set is_adult true.\n"
         "Return exactly this JSON schema:"
         '{"title":"string","suggested_filename_base":"string","tags":["tag"],"category_name":"string","subcategory_name":"string","is_adult":false,"confidence":0.0,"reason":"string"}\n\n'
@@ -626,6 +786,7 @@ def _gemini_vision_analysis(
     description_hint: str,
     tags_hint: list[str],
     fallback: SmartMediaAnalysis,
+    training_examples: list[dict[str, Any]],
     api_key: str,
     model: str,
     timeout_seconds: int,
@@ -639,7 +800,8 @@ def _gemini_vision_analysis(
         "Use this local recognition guide as hints, not proof: "
         + _character_guide_text()
         + ". "
-        "Prefer these main categories when they fit: "
+        + _training_guide_text(training_examples)
+        + "Prefer these main categories when they fit: "
         + ", ".join(KNOWN_CATEGORIES)
         + ". If it looks like a phone wallpaper use Phone Backgrounds; desktop wallpaper use Desktop Backgrounds. "
         "Return exactly this JSON schema: "
@@ -703,6 +865,7 @@ def _openai_vision_analysis(
     description_hint: str,
     tags_hint: list[str],
     fallback: SmartMediaAnalysis,
+    training_examples: list[dict[str, Any]],
     api_key: str,
     base_url: str,
     model: str,
@@ -720,7 +883,8 @@ def _openai_vision_analysis(
         "Use this local recognition guide as hints, not proof: "
         + _character_guide_text()
         + ". "
-        "Prefer these main categories when they fit: "
+        + _training_guide_text(training_examples)
+        + "Prefer these main categories when they fit: "
         + ", ".join(KNOWN_CATEGORIES)
         + ". If nothing specific fits, use Wallpapers, Desktop Backgrounds, Phone Backgrounds, Videos, or Profile Pictures. "
         "Do not invent lore if the image is ambiguous."

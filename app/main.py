@@ -243,6 +243,15 @@ class ReportRequest(BaseModel):
     details: str | None = None
 
 
+class VisionTrainingRequest(BaseModel):
+    title: str
+    category_name: str | None = None
+    subcategory_name: str | None = None
+    tags: list[str] = []
+    is_adult: bool = False
+    notes: str | None = None
+
+
 async def _analyze_media_safely(**kwargs: Any):
     """Run the existing smart metadata analyzer outside the event loop.
 
@@ -257,6 +266,52 @@ async def _analyze_media_safely(**kwargs: Any):
         fallback_kwargs = dict(kwargs)
         fallback_kwargs["ai_enabled"] = False
         return await asyncio.to_thread(analyze_media_bytes, **fallback_kwargs)
+
+
+async def _ai_training_examples_for(user_id: int) -> list[dict[str, Any]]:
+    limit = int(getattr(settings, "ai_training_examples_limit", 24) or 0)
+    if limit <= 0:
+        return []
+    try:
+        return await db.list_ai_vision_training_examples(int(user_id), limit=limit)
+    except Exception as exc:
+        logger.warning("Unable to load gallery AI training examples: %s", exc)
+        return []
+
+
+def _media_training_source(item: dict[str, Any] | None) -> dict[str, Any]:
+    item = dict(item or {})
+    return {
+        "original_filename": item.get("original_filename"),
+        "title": item.get("title"),
+        "category_name": item.get("category_name"),
+        "subcategory_name": item.get("subcategory_name"),
+        "tags": item.get("tags") or [],
+    }
+
+
+def _media_training_corrected(item: dict[str, Any] | VisionTrainingRequest | None) -> dict[str, Any]:
+    if isinstance(item, VisionTrainingRequest):
+        payload = item.model_dump()
+    else:
+        payload = dict(item or {})
+    return {
+        "title": payload.get("title"),
+        "category_name": payload.get("category_name"),
+        "subcategory_name": payload.get("subcategory_name"),
+        "tags": payload.get("tags") or [],
+        "is_adult": bool(payload.get("is_adult")),
+    }
+
+
+def _jsonl_response(rows: list[dict[str, Any]], filename: str) -> Response:
+    body = "".join(json.dumps(_jsonable(row), ensure_ascii=False) + "\n" for row in rows)
+    return Response(
+        body,
+        media_type="application/x-ndjson; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
 
 def _jsonable(value: Any) -> Any:
     if isinstance(value, list):
@@ -2190,6 +2245,7 @@ async def upload_media(
         raise HTTPException(status_code=400, detail="Visibility must be public, unlisted, or private.")
     _rate_limit(f"upload:{auth['id']}", limit=settings.upload_rate_limit_per_hour, window_seconds=3600)
     uploaded = await _read_validated_upload(file, settings.max_upload_bytes)
+    training_examples = await _ai_training_examples_for(int(auth["id"]))
     analysis = await _analyze_media_safely(
         content=uploaded["content"],
         filename=uploaded["original_filename"],
@@ -2203,6 +2259,7 @@ async def upload_media(
         ai_base_url=settings.active_ai_base_url,
         ai_model=settings.active_ai_model,
         ai_timeout_seconds=settings.ai_timeout_seconds,
+        training_examples=training_examples,
     )
     title = " ".join((title or analysis.title).strip().split())[:160]
     if not title:
@@ -2274,6 +2331,7 @@ async def analyze_media_upload(
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
     _rate_limit(f"analyze:{auth['id']}", limit=settings.analyze_rate_limit_per_hour, window_seconds=3600)
     uploaded = await _read_validated_upload(file, settings.max_upload_bytes)
+    training_examples = await _ai_training_examples_for(int(auth["id"]))
     analysis = await _analyze_media_safely(
         content=uploaded["content"],
         filename=uploaded["original_filename"],
@@ -2287,6 +2345,7 @@ async def analyze_media_upload(
         ai_base_url=settings.active_ai_base_url,
         ai_model=settings.active_ai_model,
         ai_timeout_seconds=settings.ai_timeout_seconds,
+        training_examples=training_examples,
     )
     return {
         "analysis": analysis.to_dict(),
@@ -2312,6 +2371,7 @@ async def media_detail(media_id: int, request: Request) -> dict[str, Any]:
 @app.patch("/api/media/{media_id}")
 async def edit_media(media_id: int, payload: MediaUpdateRequest, request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+    previous_item = await db.get_media(media_id, int(auth["id"]))
     try:
         item = await db.update_media(media_id, int(auth["id"]), payload.model_dump())
     except PermissionError as exc:
@@ -2320,9 +2380,57 @@ async def edit_media(media_id: int, payload: MediaUpdateRequest, request: Reques
         raise HTTPException(status_code=400, detail=str(exc)) from None
     if not item:
         raise HTTPException(status_code=404, detail="Media not found.")
+    if getattr(settings, "ai_auto_train_on_edit", True):
+        try:
+            await db.record_ai_vision_training_example(
+                user_id=int(auth["id"]),
+                media_id=media_id,
+                source=_media_training_source(previous_item),
+                corrected=_media_training_corrected(item),
+                notes="Auto-trained from owner media edit.",
+            )
+        except Exception as exc:
+            logger.warning("Unable to record gallery AI training example for media %s: %s", media_id, exc)
     adult_allowed = await _viewer_can_open_adult(request)
     _invalidate_api_cache("media", "tags", "categories")
     return {"media": _with_urls(request, item, adult_allowed)}
+
+
+@app.post("/api/media/{media_id}/ai/train")
+async def train_media_ai(media_id: int, payload: VisionTrainingRequest, request: Request) -> dict[str, Any]:
+    auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+    item = await db.get_media(media_id, int(auth["id"]))
+    if not item:
+        raise HTTPException(status_code=404, detail="Media not found.")
+    try:
+        example = await db.record_ai_vision_training_example(
+            user_id=int(auth["id"]),
+            media_id=media_id,
+            source=_media_training_source(item),
+            corrected=_media_training_corrected(payload),
+            notes=payload.notes,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if not example:
+        raise HTTPException(status_code=404, detail="Media not found.")
+    return {"training_example": _jsonable(example)}
+
+
+@app.get("/api/ai/vision/training")
+async def list_ai_training(request: Request, limit: int = 50) -> dict[str, Any]:
+    auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+    rows = await db.list_ai_vision_training_examples(int(auth["id"]), limit=limit)
+    return {"training_examples": _jsonable(rows)}
+
+
+@app.get("/api/ai/vision/training/export")
+async def export_ai_training(request: Request, limit: int = 500) -> Response:
+    auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+    rows = await db.export_ai_vision_training_examples(int(auth["id"]), limit=limit)
+    return _jsonl_response(rows, "gallery-ai-vision-training.jsonl")
 
 
 @app.patch("/api/media/{media_id}/controls")
