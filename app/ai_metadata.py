@@ -55,18 +55,42 @@ KNOWN_CATEGORIES = [
     "Cartoon",
     "Memes",
     "Resident Evil",
+    "Final Fantasy",
     "Xenoblade",
     "Sonic",
     "Desktop Backgrounds",
     "Phone Backgrounds",
     "Wallpapers",
 ]
+CHARACTER_RECOGNITION_GUIDE = {
+    "My Little Pony / Equestria Girls": [
+        "Aria Blaze", "Adagio Dazzle", "Sonata Dusk", "Dazzlings", "Sunset Shimmer",
+        "Twilight Sparkle", "Fluttershy", "Rainbow Dash", "Pinkie Pie", "Rarity", "Applejack",
+        "Starlight Glimmer", "Trixie", "Princess Celestia", "Princess Luna",
+    ],
+    "Five Nights at Freddy's": [
+        "Freddy Fazbear", "Bonnie", "Chica", "Foxy", "Roxanne Wolf", "Roxy", "Frenni",
+    ],
+    "Final Fantasy": ["Cloud Strife", "Tifa Lockhart", "Aerith Gainsborough", "Sephiroth"],
+    "Resident Evil": ["Leon Kennedy", "Ada Wong", "Jill Valentine", "Claire Redfield", "Ashley Graham", "Albert Wesker"],
+    "Sonic": ["Sonic", "Shadow", "Amy Rose", "Tails", "Knuckles", "Rouge"],
+    "Xenoblade": ["Pyra", "Mythra", "Nia", "Mio", "Eunie", "Noah"],
+    "Hyperdimension Neptunia": ["Neptune", "Nepgear", "Noire", "Blanc", "Vert", "Uzume", "Plutia"],
+    "KPOP Demon Hunters": ["Huntrix", "Mira", "Zoey", "Rumi"],
+}
 VISION_BACKOFF: dict[str, float] = {}
 
 
 def _local_vision_command() -> Path | None:
     classifier = Path(os.getenv("GALLERY_LOCAL_VISION_COMMAND") or os.path.expanduser("~/.local/bin/ai-enhance"))
     return classifier if classifier.is_file() else None
+
+
+def _character_guide_text() -> str:
+    lines = []
+    for franchise, names in CHARACTER_RECOGNITION_GUIDE.items():
+        lines.append(f"{franchise}: {', '.join(names)}")
+    return " | ".join(lines)
 
 
 @dataclass
@@ -526,6 +550,7 @@ def _ollama_vision_analysis(
         "Create up to 12 short lowercase tags. Do not include numeric file IDs as tags.\n"
         "Only give a specific character or subcategory if the visual evidence is clear.\n"
         "Prefer these main categories when they fit: " + ", ".join(KNOWN_CATEGORIES) + ".\n"
+        "Use this local recognition guide as hints, not proof: " + _character_guide_text() + ".\n"
         "If it looks like a phone wallpaper use category 'Phone Backgrounds'. If it looks like a desktop wallpaper use 'Desktop Backgrounds'.\n"
         "If the image is NSFW, set is_adult true.\n"
         "Return exactly this JSON schema:"
@@ -611,6 +636,9 @@ def _gemini_vision_analysis(
         "Never use generic titles like Backgrounds, Wallpaper, Image, Art, Artwork, or the filename. "
         "Do not guess a named character if the identity is unclear; describe visible traits instead. "
         "Create up to 12 short lowercase tags, including character/franchise/background tags when reliable. "
+        "Use this local recognition guide as hints, not proof: "
+        + _character_guide_text()
+        + ". "
         "Prefer these main categories when they fit: "
         + ", ".join(KNOWN_CATEGORIES)
         + ". If it looks like a phone wallpaper use Phone Backgrounds; desktop wallpaper use Desktop Backgrounds. "
@@ -689,6 +717,9 @@ def _openai_vision_analysis(
         "Create up to 12 short lowercase tags. "
         "Choose a broad category when uncertain. "
         "Only give a specific character or subcategory if the visual evidence is clear. "
+        "Use this local recognition guide as hints, not proof: "
+        + _character_guide_text()
+        + ". "
         "Prefer these main categories when they fit: "
         + ", ".join(KNOWN_CATEGORIES)
         + ". If nothing specific fits, use Wallpapers, Desktop Backgrounds, Phone Backgrounds, Videos, or Profile Pictures. "

@@ -6,7 +6,7 @@ export function Shell({ ctx, children, className = "", style }) {
   const checks = Array.isArray(ctx.lookups.live?.checks) ? ctx.lookups.live.checks : [];
   const telegram = checks.find((item) => item.id === "telegram");
   const liveOk = ctx.lookups.live?.ok ?? ctx.lookups.live?.check_map?.db ?? ctx.lookups.live?.check_map?.api;
-  const healthText = telegram ? (telegram.ok ? "Telegram Live" : "Telegram Sync") : (liveOk ? "Live" : "Checking");
+  const healthText = liveOk ? "Live" : "Checking";
   return (
     <div className={`app-shell ${className}`.trim()} style={style}>
       <header className="topbar">
@@ -47,6 +47,10 @@ export function Shell({ ctx, children, className = "", style }) {
         </div>
       </header>
       <main className="main-stage">{children}</main>
+      <footer className="site-footer">
+        <span>Copyright © HeavenlyXenusVR</span>
+        <a href="https://discord.com/users/1304564041863266347" target="_blank" rel="noreferrer">Discord</a>
+      </footer>
     </div>
   );
 }

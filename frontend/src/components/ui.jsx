@@ -53,7 +53,18 @@ export function Segmented({ value, onChange, options }) {
 export function Avatar({ user, compact = false, large = false }) {
   const src = user?.avatar_url || user?.user_avatar_url;
   const label = initials(user?.display_name || user?.username || "IG");
-  return <span className={`avatar ${compact ? "compact" : ""} ${large ? "large" : ""}`}>{src ? <img src={src} alt="" loading="lazy" decoding="async" /> : label}</span>;
+  const knownPresence = typeof user?.is_online === "boolean";
+  return (
+    <span className={`avatar ${compact ? "compact" : ""} ${large ? "large" : ""}`}>
+      {src ? <img src={src} alt="" loading="lazy" decoding="async" /> : label}
+      {knownPresence ? <span className={`presence-dot ${user.is_online ? "online" : "inactive"}`} /> : null}
+    </span>
+  );
+}
+
+export function PresencePill({ user }) {
+  const online = Boolean(user?.is_online);
+  return <span className={`presence-pill ${online ? "online" : "inactive"}`}><span />{online ? "Online and active" : "Inactive"}</span>;
 }
 
 export function UserLine({ user }) {

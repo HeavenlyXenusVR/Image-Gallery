@@ -568,6 +568,47 @@ def _render_video_placeholder_thumb(item: dict[str, Any], width: int) -> tuple[b
         return _store_preview(cache_key, (svg, "image/svg+xml"))
 
 
+def _render_video_frame_thumb(source_path: Path, cache_path: Path, width: int) -> bool:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = cache_path.with_suffix(".tmp.webp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    command = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        "0.35",
+        "-i",
+        str(source_path),
+        "-frames:v",
+        "1",
+        "-vf",
+        f"scale='min({int(width)},iw)':-2",
+        "-c:v",
+        "libwebp",
+        "-quality",
+        "82",
+        str(tmp_path),
+    ]
+    try:
+        subprocess.run(command, check=True, timeout=60)
+        if tmp_path.exists() and tmp_path.stat().st_size > 0:
+            tmp_path.replace(cache_path)
+            return True
+    except Exception:
+        logger.debug("Video thumbnail extraction failed for %s", source_path, exc_info=True)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
+    return False
+
+
 def _is_widescreen_background(width: int, height: int) -> bool:
     if width <= 0 or height <= 0 or width < height:
         return False
@@ -1295,6 +1336,7 @@ async def lifespan(app: FastAPI):
         ],
     )
     await telegram_service.start()
+    await _send_telegram_alert("startup", "Image Gallery online", "Telegram bridge, database health checks, and media services are running.")
     yield
     if telegram_service:
         await telegram_service.close()
@@ -1656,6 +1698,7 @@ async def login(payload: LoginRequest, request: Request) -> dict[str, Any]:
 @app.get("/api/me")
 async def me(request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
+    await db.touch_user_seen(int(auth["id"]))
     user = await db.get_user(int(auth["id"]))
     if not user:
         raise HTTPException(status_code=401, detail="Account no longer exists.")
@@ -2459,18 +2502,22 @@ async def _video_variant_response(media_id: int, item: dict[str, Any], file_info
     digest = str((file_info or {}).get("sha256") or item.get("content_sha256") or item.get("updated_at") or item.get("created_at") or media_id)
     cache_file = VIDEO_CACHE_DIR / f"{int(media_id)}_{quality}_{hashlib.sha256(digest.encode('utf-8')).hexdigest()[:16]}.mp4"
     if not cache_file.exists() or cache_file.stat().st_size <= 0:
-        if file_info:
-            file_row = await db.get_media_file(media_id)
-            if not file_row:
+        try:
+            if file_info:
+                file_row = await db.get_media_file(media_id)
+                if not file_row:
+                    return None
+                with tempfile.TemporaryDirectory(prefix="gallery-video-") as tmp_dir:
+                    safe_name = Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
+                    source_path = Path(tmp_dir) / safe_name
+                    source_path.write_bytes(file_row["content"])
+                    await asyncio.to_thread(_transcode_video_variant, source_path, cache_file, profile)
+            elif legacy:
+                await asyncio.to_thread(_transcode_video_variant, legacy, cache_file, profile)
+            else:
                 return None
-            with tempfile.TemporaryDirectory(prefix="gallery-video-") as tmp_dir:
-                safe_name = Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
-                source_path = Path(tmp_dir) / safe_name
-                source_path.write_bytes(file_row["content"])
-                await asyncio.to_thread(_transcode_video_variant, source_path, cache_file, profile)
-        elif legacy:
-            await asyncio.to_thread(_transcode_video_variant, legacy, cache_file, profile)
-        else:
+        except Exception:
+            logger.exception("Video quality variant generation failed for media_id=%s quality=%s; falling back to source.", media_id, quality)
             return None
     return FileResponse(
         cache_file,
@@ -2606,12 +2653,35 @@ async def serve_media_thumb(media_id: int, request: Request, access: str | None 
             return cached
 
     if str(item.get("media_kind") or "").lower() == "video":
-        preview_bytes, preview_mime = await asyncio.to_thread(_render_video_placeholder_thumb, item, width)
-        etag = f"\"video-thumb:{int(media_id)}:{width}:{hashlib.sha256(preview_bytes).hexdigest()[:16]}\""
-        video_headers = {**headers, "ETag": etag, "X-Xenus-Video-Thumb": "blurred"}
-        if _etag_matches(request, etag):
-            return Response(status_code=304, headers=video_headers)
-        return Response(content=preview_bytes, media_type=preview_mime, headers=video_headers)
+        video_headers = {**headers, "X-Xenus-Video-Thumb": "frame"}
+        lock_key = f"video:{int(media_id)}:{width}"
+        lock = _thumb_generation_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            cached = _thumb_file_response(request, cache_file, video_headers)
+            if cached:
+                return cached
+            file_row = await db.get_media_file(media_id)
+            extracted = False
+            if file_row:
+                with tempfile.TemporaryDirectory(prefix="gallery-video-thumb-") as tmp_dir:
+                    safe_name = Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
+                    source_path = Path(tmp_dir) / safe_name
+                    source_path.write_bytes(file_row["content"])
+                    extracted = await asyncio.to_thread(_render_video_frame_thumb, source_path, cache_file, width)
+            else:
+                legacy = _legacy_upload_path(item.get("storage_path"))
+                if legacy:
+                    extracted = await asyncio.to_thread(_render_video_frame_thumb, legacy, cache_file, width)
+            if extracted:
+                cached = _thumb_file_response(request, cache_file, video_headers)
+                if cached:
+                    return cached
+            preview_bytes, preview_mime = await asyncio.to_thread(_render_video_placeholder_thumb, item, width)
+            etag = f"\"video-thumb:{int(media_id)}:{width}:{hashlib.sha256(preview_bytes).hexdigest()[:16]}\""
+            fallback_headers = {**headers, "ETag": etag, "X-Xenus-Video-Thumb": "placeholder"}
+            if _etag_matches(request, etag):
+                return Response(status_code=304, headers=fallback_headers)
+            return Response(content=preview_bytes, media_type=preview_mime, headers=fallback_headers)
 
     if str(item.get("media_kind") or "").lower() != "image":
         return await _serve_media_content(media_id, request, access=access, as_download=False)

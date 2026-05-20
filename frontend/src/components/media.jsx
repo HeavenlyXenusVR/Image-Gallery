@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Bookmark, Download, Film, Heart, Image as ImageIcon, Lock, RefreshCw, Save, Trash2 } from "lucide-react";
+import { Bookmark, Copy, Download, ExternalLink, Film, Heart, Image as ImageIcon, Link as LinkIcon, Lock, RefreshCw, Save, Trash2 } from "lucide-react";
 import { apiFetch, clearApiCache } from "../api.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
 import { formatBytes, formatDate, numberish } from "../utils/format.js";
@@ -42,6 +42,7 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
       <div className="card-actions">
         <button type="button" onClick={() => actions.toggleLike(item)} title={item.liked_by_me ? "Unlike" : "Like"}><Heart size={16} className={item.liked_by_me ? "filled" : ""} />{numberish(item.likes || item.like_count)}</button>
         <button type="button" onClick={() => actions.toggleBookmark(item)} title={item.bookmarked_by_me ? "Remove bookmark" : "Bookmark"}><Bookmark size={16} className={item.bookmarked_by_me ? "filled" : ""} /></button>
+        <button type="button" onClick={() => actions.copyAddress(item)} title="Copy media address"><Copy size={16} /></button>
         <button type="button" onClick={() => actions.download(item)} title="Download"><Download size={16} /></button>
       </div>
     </article>
@@ -109,6 +110,18 @@ export function MediaControls({ ctx, media, onChanged }) {
         <button type="button" onClick={save}><Save size={16} />Save</button>
         {media.deleted_at ? <button type="button" onClick={restore}><RefreshCw size={16} />Restore</button> : <button type="button" className="danger" onClick={remove}><Trash2 size={16} />Delete</button>}
       </div>
+    </section>
+  );
+}
+
+export function MediaActionPanel({ ctx, media, actions }) {
+  return (
+    <section className="side-box media-action-panel">
+      <h3>Post Actions</h3>
+      <button type="button" onClick={() => actions.copyAddress(media)}><Copy size={16} />Copy Media Address</button>
+      <button type="button" onClick={() => actions.copyPageLink(media)}><LinkIcon size={16} />Copy Post Link</button>
+      <button type="button" onClick={() => actions.openOriginal(media)}><ExternalLink size={16} />Open Original</button>
+      <button type="button" onClick={() => actions.download(media)}><Download size={16} />Download</button>
     </section>
   );
 }

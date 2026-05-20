@@ -115,6 +115,8 @@ img,
 video {
   display: block;
   max-width: 100%;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .sr-only {
@@ -284,6 +286,7 @@ video {
 
 .avatar,
 .collection-cover {
+  position: relative;
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
@@ -317,10 +320,79 @@ video {
   object-fit: cover;
 }
 
+.presence-dot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: #ff6b6b;
+}
+
+.avatar.large .presence-dot {
+  width: 16px;
+  height: 16px;
+  border-width: 3px;
+}
+
+.presence-dot.online {
+  background: var(--ok);
+  box-shadow: 0 0 12px rgba(126, 231, 135, 0.55);
+}
+
+.presence-dot.inactive {
+  background: var(--danger);
+}
+
+.presence-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: fit-content;
+  min-height: 26px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.presence-pill span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.presence-pill.online {
+  color: var(--ok);
+  border-color: rgba(126, 231, 135, 0.4);
+}
+
+.presence-pill.online span {
+  background: var(--ok);
+  animation: live-pulse 1.8s ease-out infinite;
+}
+
 .main-stage {
   width: min(1720px, calc(100vw - 32px));
   margin: 0 auto;
   padding: 24px 0 48px;
+}
+
+.site-footer {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 16px 26px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.site-footer a {
+  color: var(--accent);
 }
 
 .page {
@@ -920,6 +992,28 @@ textarea:focus {
   display: grid;
   gap: 13px;
   padding: 14px;
+}
+
+.media-action-panel button {
+  justify-content: flex-start;
+}
+
+.verified-state {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 9px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid rgba(126, 231, 135, 0.35);
+  border-radius: var(--radius);
+  background: rgba(126, 231, 135, 0.08);
+  color: var(--ok);
+}
+
+.verified-state span {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 0.86rem;
 }
 
 .description {

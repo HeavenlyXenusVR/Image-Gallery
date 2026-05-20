@@ -1,67 +1,49 @@
 # Image Gallery
 
-FastAPI and MySQL gallery for wallpapers, profile pictures, memes, GIFs, and videos up to 250MB.
+![Witch Knot site icon](favicon.ico)
 
-## Features
-- User registration and login with token auth.
-- Upload images, GIFs, and videos.
-- Pick an existing category or create a new category while uploading.
-- Browse by media type, category, search text, newest, likes, or downloads.
-- Like posts, comment on posts, copy direct media addresses, and download files.
-- Uploaders can mark posts as 18+, and automatic moderation flags likely adult uploads from filenames, titles, descriptions, tags, and MIME metadata.
-- Smart image identification can run against a free local Ollama vision model for subject, franchise, and character tagging during upload.
-- 18+ posts require account age verification; previews stay blurred or locked until a verified user chooses to reveal them.
-- Private per-account settings for theme, accent color, grid density, default sort, preview behavior, reduced motion, and original-link behavior.
-- Public profile controls for circular avatar, display name, bio, website, location label, profile color, and profile visibility.
-- Save/bookmark media to a private account list.
-- Collections/boards for curating public or private sets of media.
-- Creator Studio for upload stats and deleting your own posts.
-- Tag cloud filtering, random discovery, and user report submissions.
-- Own MySQL schema and tables using the shared bot database login defaults.
-- Static GitHub Pages frontend that reads `live-config.json` to find the current public backend tunnel.
+Image Gallery is the React and FastAPI media site for uploaded images, GIFs, wallpapers, profile pictures, memes, and videos. It is built around a MySQL-backed account system, local or tunnel-backed media delivery, AI-assisted tagging, and social profile discovery.
 
-## Database
-Defaults match the requested shared login:
+## What It Does
 
-- User: `botuser`
-- Password: `botlogins`
-- Schema: `image_gallery`
+- Uploads and serves images, GIFs, and videos with thumbnail, preview, and quality variants.
+- Keeps video playback inside the React app without background refreshes interrupting the player.
+- Provides protected media controls: copy media address, copy post link, open original, and download when allowed.
+- Blocks browser right-click menus across the app to reduce casual saving of uploaded media.
+- Uses age verification gates for 18+ posts and replaces the verification form with a verified state after approval.
+- Supports public user profiles with avatars, display names, bios, links, profile colors, cover styling, privacy, and online or inactive presence.
+- Lets users browse other profiles, follow creators, send friend requests, message accounts, save media, and build collections.
+- Uses AI-assisted upload analysis for categories, tags, character hints, franchise hints, adult-safety checks, and smarter search metadata.
+- Generates real thumbnails for uploaded videos from the source file instead of showing a generic placeholder.
+- Stores gallery settings, profile customization, social data, media metadata, reports, and account state in the `image_gallery` schema.
+- Publishes a static GitHub Pages frontend that reads `live-config.json` for the current live backend URL.
 
-The backend creates the schema and tables automatically on startup.
+## Main Surfaces
 
-## Local Run
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-.venv/bin/python -m pip install -r requirements.txt
-.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8788
-```
+- **Gallery Feed:** fast browsing, filters, reactions, media actions, locked previews, and responsive card layouts.
+- **Media Detail:** large media viewer, comments, collections, direct address tools, related metadata, and stable video playback.
+- **Profiles:** avatar, presence, bio, customization, uploads, social actions, and public account details.
+- **Creator Studio:** upload history, media stats, owner actions, visibility controls, and deletion.
+- **Settings:** theme, accent, density, media behavior, age state, profile customization, and account preferences.
+- **Admin and Health:** health route, request tracing, storage reporting, Telegram operator alerts, and backend diagnostics.
 
-Open `http://127.0.0.1:8788`.
+## Servers And Data
 
-For free local vision-based smart identify, run Ollama and set:
+- Frontend: React and Vite, deployable to GitHub Pages.
+- Backend: FastAPI app served from `app.main`.
+- Database: MySQL schema `image_gallery`.
+- Media storage: local filesystem by default, with app-level storage abstractions.
+- Optional AI: Ollama, Gemini, or OpenAI-compatible vision providers.
+- Operator alerts: Telegram bridge for scoped health and database notices.
 
-```bash
-GALLERY_AI_ENABLED=true
-GALLERY_AI_PROVIDER=ollama
-GALLERY_OLLAMA_BASE_URL=http://127.0.0.1:11434
-GALLERY_OLLAMA_MODEL=qwen2.5vl:7b
-```
+## Guardrails
 
-## Live GitHub Pages Backend
-```bash
-scripts/start_live_backend.sh 8788
-```
+- Secrets belong in ignored environment files, never in committed code.
+- Media route responses include security and cache headers.
+- Right-click is disabled in-app, but this should be treated as a deterrent rather than DRM.
+- AI character recognition uses local guide hints as suggestions, not proof.
+- Age-gated content stays hidden until the account is verified.
 
-The script starts the backend, opens a Cloudflare quick tunnel, writes the tunnel URL to `live-config.json`, commits it, and pushes it to `main` when a Git remote is configured.
+## Copyright
 
-## Auto Start
-```bash
-scripts/install_live_backend_service.sh
-```
-
-Stop and remove it with:
-
-```bash
-scripts/uninstall_live_backend_service.sh
-```
+(c) HeavenlyXenusVR. Discord: <https://discord.com/users/1304564041863266347>

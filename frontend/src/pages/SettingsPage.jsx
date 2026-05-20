@@ -223,11 +223,15 @@ export function SettingsPage({ ctx }) {
             <label className="field"><span>Code</span><input value={emailCode} onChange={(event) => setEmailCode(event.target.value)} /></label>
             <button type="submit"><Check size={16} />Verify</button>
           </form>
-          <form className="mini-form" onSubmit={saveAge}>
-            <label className="field"><span>Birthdate</span><input type="date" value={age.birthdate} onChange={(event) => setAge((current) => ({ ...current, birthdate: event.target.value }))} /></label>
-            <label className="check-row"><input checked={age.confirm_over_18} onChange={(event) => setAge((current) => ({ ...current, confirm_over_18: event.target.checked }))} type="checkbox" />I am 18+</label>
-            <button type="submit"><ShieldCheck size={16} />Verify Age</button>
-          </form>
+          {ctx.user.age_verified ? (
+            <div className="verified-state"><ShieldCheck size={18} /><strong>Age Verified</strong><span>Adult-content access is enabled for this account.</span></div>
+          ) : (
+            <form className="mini-form" onSubmit={saveAge}>
+              <label className="field"><span>Birthdate</span><input type="date" value={age.birthdate} onChange={(event) => setAge((current) => ({ ...current, birthdate: event.target.value }))} /></label>
+              <label className="check-row"><input checked={age.confirm_over_18} onChange={(event) => setAge((current) => ({ ...current, confirm_over_18: event.target.checked }))} type="checkbox" />I am 18+</label>
+              <button type="submit"><ShieldCheck size={16} />Verify Age</button>
+            </form>
+          )}
         </div>
         <form className="side-box stacked-form" onSubmit={changePassword}>
           <h2><KeyRound size={18} /> Password</h2>

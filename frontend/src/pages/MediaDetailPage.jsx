@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Bookmark, Download, Heart, Lock, MessageCircle, Save, Trash2 } from "lucide-react";
+import { Bookmark, Copy, Download, Heart, Link as LinkIcon, Lock, MessageCircle, Save, Trash2 } from "lucide-react";
 import { apiFetch } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
-import { MediaControls } from "../components/media.jsx";
+import { MediaActionPanel, MediaControls } from "../components/media.jsx";
 import { Avatar, ChipRow, EmptyState, Notice, NotFound, Page, SkeletonGrid, StatsRow, UserLine } from "../components/ui.jsx";
 import { imageQualityUrl, isGifMedia, thumbUrl, videoQualityUrl } from "../utils/media.js";
 
@@ -22,6 +22,7 @@ export function MediaDetailPage({ ctx }) {
   const [videoQuality, setVideoQuality] = useState("high");
   const actions = useMediaActions(ctx, (updated) => setMedia(updated));
 
+  const isLoggedIn = Boolean(ctx.user);
   const loadDetail = useCallback(async ({ background = false } = {}) => {
     if (!background) {
       setLoading(true);
@@ -31,7 +32,7 @@ export function MediaDetailPage({ ctx }) {
       const data = await apiFetch(`/api/media/${mediaId}`);
       setMedia(data.media);
       setComments(data.comments || []);
-      if (ctx.user) {
+      if (isLoggedIn && !background) {
         const mine = await apiFetch("/api/collections?mine=true").catch(() => ({ collections: [] }));
         setCollections(mine.collections || []);
       }
@@ -43,7 +44,7 @@ export function MediaDetailPage({ ctx }) {
     } finally {
       if (!background) setLoading(false);
     }
-  }, [ctx.user, mediaId]);
+  }, [isLoggedIn, mediaId]);
 
   useEffect(() => {
     loadDetail();
@@ -116,6 +117,8 @@ export function MediaDetailPage({ ctx }) {
       <>
         <button type="button" onClick={() => actions.toggleLike(media)}><Heart size={16} />{media.liked_by_me ? "Unlike" : "Like"}</button>
         <button type="button" onClick={() => actions.toggleBookmark(media)}><Bookmark size={16} />{media.bookmarked_by_me ? "Saved" : "Save"}</button>
+        <button type="button" onClick={() => actions.copyAddress(media)}><Copy size={16} />Copy Address</button>
+        <button type="button" onClick={() => actions.copyPageLink(media)}><LinkIcon size={16} />Copy Link</button>
         <button type="button" onClick={() => actions.download(media)}><Download size={16} />Download</button>
       </>
     )}>
@@ -156,6 +159,7 @@ export function MediaDetailPage({ ctx }) {
           {media.description ? <p className="description">{media.description}</p> : null}
           <StatsRow item={media} />
           <ChipRow values={[media.category_name, media.subcategory_name, ...(media.tags || [])]} />
+          <MediaActionPanel ctx={ctx} media={media} actions={actions} />
           {ctx.user && collections.length ? (
             <section className="side-box">
               <h3>Collection</h3>

@@ -9,3 +9,7 @@ _site/
 node_modules/
 frontend/node_modules/
 npm-debug.log*
+*.backup-*
+*.bak
+.aria_patch_backups/
+backups/*.sql

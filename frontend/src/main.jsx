@@ -32,6 +32,10 @@ function applyRuntimeClasses() {
 
 applyRuntimeClasses();
 
+document.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+}, { capture: true });
+
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <BrowserRouter basename={runtimeBasename()}>

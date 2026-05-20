@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { Heart, LogIn, MessageCircle, UserPlus } from "lucide-react";
 import { apiFetch, clearApiCache } from "../api.js";
 import { friendLabel } from "../utils/format.js";
-import { Avatar, EmptyState, UserMini } from "./ui.jsx";
+import { Avatar, EmptyState, PresencePill, UserMini } from "./ui.jsx";
 
 export function ProfileActions({ ctx, user, onChanged }) {
   async function follow() {
@@ -46,6 +46,7 @@ export function UserCard({ ctx, user, onChanged }) {
       <Link className="avatar-link" to={`/users/${user.username}`}><Avatar user={user} large /></Link>
       <div>
         <Link to={`/users/${user.username}`}><h3>{user.display_name || user.username}</h3></Link>
+        <PresencePill user={user} />
         <p>@{user.username}{user.profile_headline ? ` / ${user.profile_headline}` : ""}</p>
       </div>
       <div className="profile-actions user-card-actions">

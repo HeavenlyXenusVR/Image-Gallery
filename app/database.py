@@ -55,6 +55,7 @@ USER_COLUMNS = (
     ("email_verified_at", "TIMESTAMP NULL DEFAULT NULL"),
     ("email_verification_token_hash", "CHAR(64) NULL"),
     ("email_verification_sent_at", "TIMESTAMP NULL DEFAULT NULL"),
+    ("last_seen_at", "TIMESTAMP NULL DEFAULT NULL"),
     ("bio", "VARCHAR(500) NULL"),
     ("website_url", "VARCHAR(300) NULL"),
     ("location_label", "VARCHAR(80) NULL"),
@@ -611,6 +612,7 @@ class GalleryDatabase:
             ("Memes", "mixed"),
             ("GIFs", "image"),
             ("Videos", "video"),
+            ("Final Fantasy", "image"),
             ("Reaction Images", "image"),
             ("Phone Backgrounds", "image"),
             ("Desktop Backgrounds", "image"),
@@ -722,8 +724,13 @@ class GalleryDatabase:
                 user = await cur.fetchone()
                 if not user or not verify_password(password, user["password_hash"]):
                     return None
-                await cur.execute("UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE id=%s", (user["id"],))
+                await cur.execute("UPDATE users SET last_login_at=CURRENT_TIMESTAMP, last_seen_at=CURRENT_TIMESTAMP WHERE id=%s", (user["id"],))
                 return await self.get_user(user["id"])
+
+    async def touch_user_seen(self, user_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("UPDATE users SET last_seen_at=CURRENT_TIMESTAMP WHERE id=%s", (user_id,))
 
     async def get_user(self, user_id: int) -> dict[str, Any] | None:
         async with self.pool.acquire() as conn:
@@ -735,7 +742,7 @@ class GalleryDatabase:
                            email, email_verified_at, avatar_path, avatar_file_id, avatar_mime_type, avatar_original_filename, public_profile,
                            show_liked_count, show_collections, show_recent_uploads, show_friends,
                            birthdate, age_verified_at, adult_content_consent,
-                           user_settings, created_at, updated_at
+                           user_settings, created_at, updated_at, last_seen_at
                     FROM users WHERE id=%s
                     """,
                     (user_id,),
@@ -1915,6 +1922,7 @@ class GalleryDatabase:
                            CASE WHEN u.public_profile=1 OR u.id=%s THEN u.user_settings ELSE NULL END AS user_settings,
                            u.avatar_file_id, u.profile_color, u.public_profile, u.show_liked_count,
                            u.show_collections, u.show_recent_uploads, u.show_friends, u.created_at,
+                           u.last_seen_at,
                            COUNT(DISTINCT m.id) AS media_count,
                            COALESCE(SUM(CASE WHEN m.deleted_at IS NULL AND m.visibility='public' THEN m.downloads ELSE 0 END), 0) AS download_count,
                            COUNT(DISTINCT ml.user_id, ml.media_id) AS like_count,
@@ -1945,6 +1953,7 @@ class GalleryDatabase:
                 row["show_recent_uploads"] = bool(row.get("show_recent_uploads"))
                 row["show_friends"] = bool(row.get("show_friends"))
                 row["followed_by_me"] = bool(row.get("followed_by_me"))
+                row["is_online"] = self._is_recently_seen(row.get("last_seen_at"))
                 tags = row.get("featured_tags")
                 if isinstance(tags, str):
                     try:
@@ -2129,8 +2138,6 @@ class GalleryDatabase:
 
     async def search_users(self, query: str, viewer_id: int | None = None, limit: int = 30) -> list[dict[str, Any]]:
         query = " ".join(str(query or "").strip().split())[:80]
-        if not query:
-            return []
         needle = f"%{query}%"
         viewer = int(viewer_id or 0)
         async with self.pool.acquire() as conn:
@@ -2144,6 +2151,7 @@ class GalleryDatabase:
                            CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
                            u.profile_color, u.public_profile, u.show_liked_count, u.show_collections,
                            u.show_recent_uploads, u.show_friends, u.adult_content_consent, u.email_verified_at,
+                           u.last_seen_at,
                            COUNT(DISTINCT m.id) AS media_count,
                            COUNT(DISTINCT f.follower_id) AS follower_count,
                            MAX(CASE WHEN mine.follower_id IS NULL THEN 0 ELSE 1 END) AS followed_by_me
@@ -2151,7 +2159,8 @@ class GalleryDatabase:
                     LEFT JOIN media_items m ON m.user_id=u.id AND m.deleted_at IS NULL AND m.visibility='public'
                     LEFT JOIN user_follows f ON f.followed_id=u.id
                     LEFT JOIN user_follows mine ON mine.followed_id=u.id AND mine.follower_id=%s
-                    WHERE u.username LIKE %s
+                    WHERE %s = ''
+                       OR u.username LIKE %s
                        OR (CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE NULL END) LIKE %s
                        OR (CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END) LIKE %s
                        OR (CASE WHEN u.public_profile=1 OR u.id=%s THEN u.profile_headline ELSE NULL END) LIKE %s
@@ -2165,6 +2174,7 @@ class GalleryDatabase:
                         viewer,
                         viewer,
                         viewer,
+                        query,
                         needle,
                         viewer,
                         needle,
@@ -2528,6 +2538,7 @@ class GalleryDatabase:
         user["adult_content_consent"] = bool(user.get("adult_content_consent"))
         user["age_verified"] = bool(user.get("age_verified_at"))
         user["email_verified"] = bool(user.get("email_verified_at"))
+        user["is_online"] = self._is_recently_seen(user.get("last_seen_at"))
         tags = user.get("featured_tags")
         if isinstance(tags, str):
             try:
@@ -2537,6 +2548,23 @@ class GalleryDatabase:
         elif tags is None:
             user["featured_tags"] = []
         return user
+
+    @staticmethod
+    def _is_recently_seen(value: Any) -> bool:
+        if not value:
+            return False
+        try:
+            from datetime import datetime, timezone
+
+            if isinstance(value, str):
+                seen = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            else:
+                seen = value
+            if seen.tzinfo is None:
+                seen = seen.replace(tzinfo=timezone.utc)
+            return (datetime.now(timezone.utc) - seen.astimezone(timezone.utc)).total_seconds() <= 180
+        except Exception:
+            return False
 
     def _decode_collection(self, row: dict[str, Any]) -> dict[str, Any]:
         row["is_public"] = bool(row.get("is_public"))

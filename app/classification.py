@@ -47,6 +47,7 @@ def canonical_category_pair(category: str | None, subcategory: str | None = None
         "KPOP Demon Hunters (Huntrix)": ("KPOP Demon Hunters", "Huntrix"),
         "KPOP Demon Hunters (Mira)": ("KPOP Demon Hunters", "Mira"),
         "Resident Evil (Leon)": ("Resident Evil", "Leon"),
+        "Final Fantasy (Cloud)": ("Final Fantasy", "Cloud Strife"),
     }
     return direct_map.get(main, (main, sub))
 
@@ -78,6 +79,7 @@ def infer_category_pair(
     xenoblade_tokens = {"xenoblade", "pyra", "mythra", "nia", "mio", "eunie", "taion", "lanz", "noah"}
     sonic_tokens = {"sonic", "tails", "amy", "shadow", "knuckles", "rouge"}
     resident_evil_tokens = {"resident", "evil", "leon", "ada", "jill", "claire", "wesker", "ashley"}
+    final_fantasy_tokens = {"final", "fantasy", "cloud", "strife", "tifa", "aerith", "sephiroth", "ff7", "ffvii"}
     kpop_demon_hunters_tokens = {"kpop", "demon", "hunters", "huntrix", "mira", "zoey", "rumi"}
     cartoon_tokens = {"boondocks", "cartoon", "anime"}
     meme_tokens = {"meme", "memes", "funny", "reaction"}
@@ -145,6 +147,12 @@ def infer_category_pair(
         ("Albert Wesker", {"wesker"}),
         ("Ashley Graham", {"ashley"}),
     ]
+    final_fantasy_subcategories = [
+        ("Cloud Strife", {"cloud", "strife"}),
+        ("Tifa Lockhart", {"tifa"}),
+        ("Aerith Gainsborough", {"aerith"}),
+        ("Sephiroth", {"sephiroth"}),
+    ]
     kpop_subcategories = [
         ("Huntrix", {"huntrix"}),
         ("Mira", {"mira"}),
@@ -160,6 +168,9 @@ def infer_category_pair(
 
     if _has_any(tokens, resident_evil_tokens) or (current_main and current_main == "Resident Evil"):
         return "Resident Evil", _single_match(tokens, resident_evil_subcategories)
+
+    if _has_any(tokens, final_fantasy_tokens) or (current_main and current_main == "Final Fantasy"):
+        return "Final Fantasy", _single_match(tokens, final_fantasy_subcategories)
 
     if _has_any(tokens, neptunia_tokens) or (current_main and current_main == "Hyperdimension Neptunia"):
         neptunia_hits = [label for label, aliases in neptunia_subcategories if _has_any(tokens, aliases)]

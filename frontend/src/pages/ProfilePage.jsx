@@ -4,7 +4,7 @@ import { CalendarDays, Images, Link as LinkIcon, MapPin, Settings, Users } from 
 import { cachedApiFetch } from "../api.js";
 import { MediaGrid } from "../components/media.jsx";
 import { ProfileActions } from "../components/social.jsx";
-import { Avatar, ChipRow, CollectionMini, Notice, NotFound, Page, SkeletonGrid, UserMini } from "../components/ui.jsx";
+import { Avatar, ChipRow, CollectionMini, Notice, NotFound, Page, PresencePill, SkeletonGrid, UserMini } from "../components/ui.jsx";
 import { formatDate, numberish, safeColor } from "../utils/format.js";
 import { profileClassName, profileStyle } from "../utils/appearance.js";
 import { preloadMediaAssets } from "../utils/media.js";
@@ -75,6 +75,7 @@ export function ProfilePage({ ctx }) {
         <Avatar user={profile} large />
         <div>
           <h2>{profile.profile_headline || profile.display_name || profile.username}</h2>
+          <PresencePill user={profile} />
           {profile.bio ? <p>{profile.bio}</p> : null}
           <div className="profile-meta">
             {profile.location_label ? <span><MapPin size={14} />{profile.location_label}</span> : null}
@@ -94,7 +95,7 @@ export function ProfilePage({ ctx }) {
           <div className="profile-feature-strip">
             {featuredPanel === "collections" ? featuredItems.slice(0, 4).map((collection) => <CollectionMini collection={collection} key={collection.id} />) : null}
             {featuredPanel === "friends" ? featuredItems.slice(0, 6).map((friend) => <UserMini user={friend} key={friend.id} />) : null}
-            {featuredPanel === "uploads" ? featuredItems.slice(0, 4).map((item) => <Link className="profile-media-mini" to={`/media/${item.id}`} key={item.id}>{item.thumbnail_url || item.file_url ? <img src={item.thumbnail_url || item.file_url} alt="" loading="lazy" decoding="async" /> : null}<span>{item.title || "Untitled"}</span></Link>) : null}
+            {featuredPanel === "uploads" ? featuredItems.slice(0, 4).map((item) => <Link className="profile-media-mini" to={`/media/${item.id}`} key={item.id}>{item.thumb_url || item.preview_url || item.url ? <img src={item.thumb_url || item.preview_url || item.url} alt="" loading="lazy" decoding="async" /> : null}<span>{item.title || "Untitled"}</span></Link>) : null}
             {!featuredItems.length ? <p>No featured items yet.</p> : null}
           </div>
         </article>
