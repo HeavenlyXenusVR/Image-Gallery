@@ -1,6 +1,6 @@
 import { memo, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Bookmark, Copy, Download, ExternalLink, Film, Heart, Image as ImageIcon, Link as LinkIcon, Lock, RefreshCw, Save, Trash2 } from "lucide-react";
+import { Bookmark, Copy, Download, ExternalLink, Film, FolderPlus, Heart, Image as ImageIcon, Link as LinkIcon, Lock, RefreshCw, Save, Trash2 } from "lucide-react";
 import { apiFetch, clearApiCache } from "../api.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
 import { formatBytes, formatDate, numberish } from "../utils/format.js";
@@ -60,10 +60,93 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
         <button type="button" onClick={() => actions.toggleBookmark(item)} title={item.bookmarked_by_me ? "Remove bookmark" : "Bookmark"}><Bookmark size={16} className={item.bookmarked_by_me ? "filled" : ""} /></button>
         <button type="button" onClick={() => actions.download(item)} title="Download"><Download size={16} /></button>
         <button type="button" onClick={() => actions.copyAddress(item)} title="Copy media URL"><Copy size={16} /></button>
+        <CollectionSaveControl ctx={ctx} media={item} compact />
       </div>
     </article>
   );
 });
+
+export function CollectionSaveControl({ ctx, media, compact = false, openLabel = "Collect" }) {
+  const [open, setOpen] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [collections, setCollections] = useState([]);
+  const [collectionId, setCollectionId] = useState("");
+
+  async function loadCollections() {
+    if (!ctx.user) return;
+    setLoading(true);
+    try {
+      const data = await apiFetch("/api/collections?mine=true");
+      const rows = data.collections || [];
+      setCollections(rows);
+      setCollectionId((current) => current || String(rows[0]?.id || ""));
+      setLoaded(true);
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function togglePanel() {
+    if (!ctx.user) {
+      ctx.showToast("Login required to use collections.", "error");
+      return;
+    }
+    const nextOpen = !open;
+    setOpen(nextOpen);
+    if (nextOpen && !loaded && !loading) await loadCollections();
+  }
+
+  async function saveToCollection() {
+    if (!collectionId || !media?.id) return;
+    setSaving(true);
+    try {
+      await apiFetch(`/api/collections/${collectionId}/items`, {
+        method: "POST",
+        body: JSON.stringify({ media_id: media.id, saved: true }),
+      });
+      clearApiCache();
+      const target = collections.find((collection) => String(collection.id) === String(collectionId));
+      ctx.showToast(`Added to ${target?.name || "collection"}.`, "success");
+      setOpen(false);
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <button className="collection-save-toggle" type="button" onClick={togglePanel} title="Add to collection">
+        <FolderPlus size={16} />{compact ? <span className="sr-only">{openLabel}</span> : openLabel}
+      </button>
+      {open ? (
+        <div className="collection-inline-panel">
+          <strong>Add this post to a collection</strong>
+          {loading ? <p>Loading collections…</p> : collections.length ? (
+            <div className="inline-controls collection-save-controls">
+              <select value={collectionId} onChange={(event) => setCollectionId(event.target.value)} aria-label="Choose collection">
+                {collections.map((collection) => <option key={collection.id} value={collection.id}>{collection.name}</option>)}
+              </select>
+              <button type="button" onClick={saveToCollection} disabled={saving || !collectionId}>
+                <Save size={16} />{saving ? "Adding" : "Add"}
+              </button>
+            </div>
+          ) : (
+            <div className="collection-empty-hint">
+              <p>You do not have any collections yet.</p>
+              <Link className="button-link" to="/collections">Create one</Link>
+            </div>
+          )}
+        </div>
+      ) : null}
+    </>
+  );
+}
 
 export function MediaControls({ ctx, media, onChanged }) {
   const [draft, setDraft] = useState({
@@ -138,6 +221,7 @@ export function MediaActionPanel({ ctx, media, actions }) {
       <button type="button" onClick={() => actions.copyPageLink(media)}><LinkIcon size={16} />Copy Page Link</button>
       <button type="button" onClick={() => actions.openOriginal(media)}><ExternalLink size={16} />Open Original</button>
       <button type="button" onClick={() => actions.download(media)}><Download size={16} />Save File</button>
+      <CollectionSaveControl ctx={ctx} media={media} openLabel="Add to Collection" />
     </section>
   );
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Bookmark, Copy, Download, Heart, Link as LinkIcon, Lock, MessageCircle, Save, Trash2 } from "lucide-react";
+import { Bookmark, Copy, Download, Heart, Link as LinkIcon, Lock, MessageCircle, Trash2 } from "lucide-react";
 import { apiFetch } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
@@ -12,8 +12,6 @@ export function MediaDetailPage({ ctx }) {
   const { mediaId } = useParams();
   const [media, setMedia] = useState(null);
   const [comments, setComments] = useState([]);
-  const [collections, setCollections] = useState([]);
-  const [collectionId, setCollectionId] = useState("");
   const [commentBody, setCommentBody] = useState("");
   const [report, setReport] = useState({ reason: "", details: "" });
   const [loading, setLoading] = useState(true);
@@ -22,7 +20,6 @@ export function MediaDetailPage({ ctx }) {
   const [videoQuality, setVideoQuality] = useState("high");
   const actions = useMediaActions(ctx, (updated) => setMedia(updated));
 
-  const isLoggedIn = Boolean(ctx.user);
   const loadDetail = useCallback(async ({ background = false } = {}) => {
     if (!background) {
       setLoading(true);
@@ -32,10 +29,6 @@ export function MediaDetailPage({ ctx }) {
       const data = await apiFetch(`/api/media/${mediaId}`);
       setMedia(data.media);
       setComments(data.comments || []);
-      if (isLoggedIn && !background) {
-        const mine = await apiFetch("/api/collections?mine=true").catch(() => ({ collections: [] }));
-        setCollections(mine.collections || []);
-      }
     } catch (fetchError) {
       if (!background) {
         setError(fetchError.message);
@@ -44,7 +37,7 @@ export function MediaDetailPage({ ctx }) {
     } finally {
       if (!background) setLoading(false);
     }
-  }, [isLoggedIn, mediaId]);
+  }, [mediaId]);
 
   useEffect(() => {
     loadDetail();
@@ -79,19 +72,6 @@ export function MediaDetailPage({ ctx }) {
       setComments((rows) => rows.filter((comment) => Number(comment.id) !== Number(commentId)));
     } catch (deleteError) {
       ctx.showToast(deleteError.message, "error");
-    }
-  }
-
-  async function saveToCollection() {
-    if (!collectionId) return;
-    try {
-      await apiFetch(`/api/collections/${collectionId}/items`, {
-        method: "POST",
-        body: JSON.stringify({ media_id: media.id, saved: true }),
-      });
-      ctx.showToast("Saved to collection.", "success");
-    } catch (saveError) {
-      ctx.showToast(saveError.message, "error");
     }
   }
 
@@ -166,18 +146,6 @@ export function MediaDetailPage({ ctx }) {
           <StatsRow item={media} />
           <ChipRow values={[media.category_name, media.subcategory_name, ...(media.tags || [])]} />
           <MediaActionPanel ctx={ctx} media={media} actions={actions} />
-          {ctx.user && collections.length ? (
-            <section className="side-box">
-              <h3>Collection</h3>
-              <div className="inline-controls">
-                <select value={collectionId} onChange={(event) => setCollectionId(event.target.value)}>
-                  <option value="">Choose</option>
-                  {collections.map((collection) => <option key={collection.id} value={collection.id}>{collection.name}</option>)}
-                </select>
-                <button type="button" onClick={saveToCollection}><Save size={16} />Add</button>
-              </div>
-            </section>
-          ) : null}
           {isOwner ? <MediaControls ctx={ctx} media={media} onChanged={setMedia} /> : null}
           {ctx.user ? (
             <form className="side-box" onSubmit={reportMedia}>
