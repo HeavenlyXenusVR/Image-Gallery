@@ -9,6 +9,7 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import magic
 import pymysql
@@ -127,6 +128,7 @@ CATEGORY_TAGS: dict[str, list[str]] = {
     "Cartoon": ["cartoon"],
     "Memes": ["meme"],
 }
+TRAINING_RECOGNIZED_SOURCES = {"visual-training", "gallery-training"}
 
 
 def load_env_file(path: Path) -> dict[str, str]:
@@ -486,6 +488,39 @@ def detect_kpop_demon_hunters(haystack: str) -> tuple[str | None, str | None, li
     return KPOP_DEMON_HUNTERS_CATEGORY, subcategory, matched_characters
 
 
+def build_description(
+    *,
+    title: str,
+    category: str,
+    subcategory: str | None,
+    tags: list[str],
+    source: str,
+    analysis_reason: str | None,
+) -> str:
+    lines = [title.strip().rstrip(".") or "Imported media"]
+    if subcategory and subcategory.lower() not in title.lower():
+        lines.append(f"Featuring {subcategory}.")
+    elif category and category.lower() not in title.lower() and category not in {"Uncategorized", "Other", "Misc"}:
+        lines.append(f"Category: {category}.")
+
+    source_line = {
+        "visual-training": "Matched against the gallery's learned visual training memory.",
+        "gallery-training": "Matched against the gallery's learned correction memory.",
+        "ollama": "Analyzed by the gallery's local Ollama vision model.",
+        "local-clip": "Analyzed by the gallery's local visual fallback model.",
+        "domain-hint": "Matched by strong character or series hints already present in the metadata.",
+    }.get(source, "")
+    if source_line:
+        lines.append(source_line)
+
+    reason = " ".join(str(analysis_reason or "").strip().split())
+    if reason:
+        lines.append(reason.rstrip(".") + ".")
+    if tags:
+        lines.append("Tags: " + ", ".join(tags[:10]) + ".")
+    return " ".join(part for part in lines if part).strip()[:2000]
+
+
 def merge_analysis_and_rules(
     path: Path,
     media_kind: str,
@@ -498,6 +533,8 @@ def merge_analysis_and_rules(
     analysis_tags = list(getattr(analysis, "tags", []) or [])
     analysis_filename = str(getattr(analysis, "suggested_filename", "") or "")
     source = str(getattr(analysis, "source", "heuristic") or "heuristic")
+    analysis_reason = str(getattr(analysis, "reason", "") or "")
+    confidence = float(getattr(analysis, "confidence", 0.0) or 0.0)
 
     haystack = " ".join(
         [
@@ -553,9 +590,19 @@ def merge_analysis_and_rules(
         "category": category,
         "subcategory": subcategory,
         "title": title,
+        "description": build_description(
+            title=title,
+            category=category,
+            subcategory=subcategory,
+            tags=tags[:24],
+            source=source,
+            analysis_reason=analysis_reason,
+        ),
         "tags": tags[:24],
         "stored_filename": stored_filename,
         "source": source,
+        "confidence": confidence,
+        "analysis_reason": analysis_reason,
         "matched_characters": matched_characters,
     }
 
@@ -646,6 +693,7 @@ def prepare_media_item(
     ai_base_url: str,
     ai_model: str,
     ai_timeout_seconds: int,
+    training_examples: list[dict[str, Any]] | None = None,
 ) -> dict[str, object]:
     mime_type, media_kind = detect_media(path)
     size = image_size(path) if media_kind == "image" else video_size(path)
@@ -658,6 +706,7 @@ def prepare_media_item(
         ai_base_url=ai_base_url,
         ai_model=ai_model,
         ai_timeout_seconds=ai_timeout_seconds,
+        training_examples=training_examples or [],
     )
     base_category, base_subcategory = canonical_category_pair(
         getattr(analysis, "category_name", None),
@@ -715,6 +764,7 @@ def update_existing_media(
         "category_id": category_id,
         "subcategory_id": subcategory_id,
         "title": title,
+        "description": str(item.get("description") or "")[:2000] or None,
         "tags": json.dumps(tags),
         "media_kind": str(item["media_kind"]),
         "mime_type": str(item["mime_type"])[:120],
@@ -809,13 +859,14 @@ def insert_new_media(
            storage_path, file_size, media_file_id, content_sha256, visibility, comments_enabled,
            downloads_enabled, pinned_at, is_adult, adult_marked_by_user, adult_marked_by_ai,
            moderation_status, moderation_score, moderation_reason, moderated_at)
-        VALUES (%s, %s, %s, %s, NULL, %s, %s, %s, %s, %s, %s, %s, %s, 'public', 1, 1, NULL, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'public', 1, 1, NULL, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
         """,
         (
             user_id,
             category_id,
             subcategory_id,
             title[:160],
+            str(item.get("description") or "")[:2000] or None,
             json.dumps(tags),
             media_kind,
             mime_type[:120],
@@ -835,6 +886,72 @@ def insert_new_media(
     return int(cur.lastrowid)
 
 
+def _decode_json_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [str(item).strip() for item in payload if str(item).strip()]
+
+
+def load_training_examples(
+    cur: pymysql.cursors.Cursor,
+    user_id: int,
+    *,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    cur.execute(
+        """
+        SELECT id, media_id, original_filename, source_title, source_category_name, source_subcategory_name,
+               source_tags, corrected_title, corrected_category_name, corrected_subcategory_name,
+               corrected_tags, corrected_is_adult, notes, image_phash, image_dhash, image_width, image_height,
+               training_origin, training_confidence, created_at
+        FROM ai_vision_training_examples
+        WHERE user_id=%s
+        ORDER BY created_at DESC
+        LIMIT %s
+        """,
+        (int(user_id), max(1, min(int(limit or 500), 5000))),
+    )
+    rows = cur.fetchall()
+    examples: list[dict[str, Any]] = []
+    for row in rows:
+        examples.append(
+            {
+                "id": row[0],
+                "media_id": row[1],
+                "original_filename": row[2],
+                "source_title": row[3],
+                "source_category_name": row[4],
+                "source_subcategory_name": row[5],
+                "source_tags": _decode_json_list(row[6]),
+                "corrected_title": row[7],
+                "corrected_category_name": row[8],
+                "corrected_subcategory_name": row[9],
+                "corrected_tags": _decode_json_list(row[10]),
+                "corrected_is_adult": bool(row[11]),
+                "notes": row[12],
+                "image_phash": row[13],
+                "image_dhash": row[14],
+                "image_width": row[15],
+                "image_height": row[16],
+                "training_origin": row[17],
+                "training_confidence": float(row[18] or 0.0),
+                "created_at": row[19].isoformat() if hasattr(row[19], "isoformat") else row[19],
+            }
+        )
+    return examples
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Import iCloud Photos into the Image Gallery database and smart-retag existing uploads.")
     parser.add_argument("--folder", default="/home/desmond/Pictures/iCloud Photos")
@@ -844,6 +961,9 @@ def main() -> int:
     parser.add_argument("--no-import-new", action="store_true", help="Only retag/update existing uploads; do not import new files.")
     parser.add_argument("--sample", type=int, default=12, help="Number of planned changes to print during dry-run.")
     parser.add_argument("--force-ai", action="store_true", help="Force AI analysis on even if .env says GALLERY_AI_ENABLED=false.")
+    parser.add_argument("--only-training-recognized", action="store_true", help="Only import/update files the gallery training memory recognized directly.")
+    parser.add_argument("--min-confidence", type=float, default=0.0, help="Skip prepared items below this confidence threshold.")
+    parser.add_argument("--training-limit", type=int, default=500, help="How many gallery training examples to preload from MariaDB.")
     args = parser.parse_args()
 
     gallery_root = PROJECT_ROOT
@@ -899,6 +1019,7 @@ def main() -> int:
             if not user_row and not args.no_import_new:
                 raise SystemExit("No gallery user exists yet.")
             user_id = int(user_row[0]) if user_row else 0
+            training_examples = load_training_examples(cur, user_id, limit=args.training_limit) if user_id else []
 
             existing_media_by_sha = fetch_existing_media_by_sha(cur, media_item_columns)
 
@@ -933,7 +1054,14 @@ def main() -> int:
                         ai_base_url=ai_base_url,
                         ai_model=ai_model,
                         ai_timeout_seconds=ai_timeout_seconds,
+                        training_examples=training_examples,
                     )
+                    confidence = float(item.get("confidence") or 0.0)
+                    source = str(item.get("source") or "").strip().lower()
+                    if args.only_training_recognized and source not in TRAINING_RECOGNIZED_SOURCES:
+                        continue
+                    if confidence < float(args.min_confidence or 0.0):
+                        continue
                     existing_rows = existing_media_by_sha.get(sha, [])
                     if existing_rows:
                         if args.no_update_existing:
@@ -958,11 +1086,16 @@ def main() -> int:
                     "ai_provider": ai_provider,
                     "ai_base_url": ai_base_url,
                     "ai_model": ai_model,
+                    "loaded_training_examples": len(training_examples),
+                    "only_training_recognized": bool(args.only_training_recognized),
+                    "min_confidence": float(args.min_confidence or 0.0),
                     "planned_new_imports": len(planned_imports),
                     "planned_existing_updates": sum(len(item.get("existing_rows", [])) for item in planned_updates),
                     "skipped_existing": skipped_existing,
                     "skipped_new_due_to_no_import_new": skipped_new,
                     "failed_to_prepare": failed,
+                    "planned_new_by_source": dict(Counter(str(item.get("source") or "unknown") for item in planned_imports).most_common()),
+                    "planned_updates_by_source": dict(Counter(str(item.get("source") or "unknown") for item in planned_updates).most_common()),
                     "new_import_category_breakdown": dict(Counter(str(item["category"]) for item in planned_imports).most_common()),
                     "update_category_breakdown": dict(Counter(str(item["category"]) for item in planned_updates).most_common()),
                 },
@@ -978,7 +1111,8 @@ def main() -> int:
                         print(
                             f"- {action}: {Path(str(item['path'])).name} -> "
                             f"title={item['title']!r}, category={item['category']!r}, "
-                            f"subcategory={item.get('subcategory')!r}, source={item.get('source')!r}, tags={item.get('tags', [])[:10]}"
+                            f"subcategory={item.get('subcategory')!r}, source={item.get('source')!r}, "
+                            f"confidence={float(item.get('confidence') or 0.0):.3f}, tags={item.get('tags', [])[:10]}"
                         )
                 if error_paths:
                     print("\nPreparation errors:")

@@ -104,6 +104,7 @@ MEDIA_COLUMNS = (
 )
 
 AI_TRAINING_COLUMNS = (
+    ("dedupe_key", "CHAR(64) NULL"),
     ("image_phash", "CHAR(16) NULL"),
     ("image_dhash", "CHAR(16) NULL"),
     ("image_width", "INT UNSIGNED NULL"),
@@ -545,6 +546,7 @@ class GalleryDatabase:
                       corrected_tags JSON NULL,
                       corrected_is_adult TINYINT(1) NOT NULL DEFAULT 0,
                       notes VARCHAR(500) NULL,
+                      dedupe_key CHAR(64) NULL,
                       image_phash CHAR(16) NULL,
                       image_dhash CHAR(16) NULL,
                       image_width INT UNSIGNED NULL,
@@ -555,8 +557,31 @@ class GalleryDatabase:
                       KEY idx_ai_training_user_time (user_id, created_at),
                       KEY idx_ai_training_phash (image_phash),
                       KEY idx_ai_training_media (media_id),
+                      UNIQUE KEY uniq_ai_training_dedupe (dedupe_key),
                       CONSTRAINT fk_ai_training_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                       CONSTRAINT fk_ai_training_media FOREIGN KEY (media_id) REFERENCES media_items(id) ON DELETE SET NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+                await ensure_table(
+                    "ai_media_learning_state",
+                    """
+                    CREATE TABLE ai_media_learning_state (
+                      media_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+                      user_id BIGINT UNSIGNED NOT NULL,
+                      last_scanned_at TIMESTAMP NULL DEFAULT NULL,
+                      last_scan_status VARCHAR(30) NOT NULL DEFAULT 'pending',
+                      last_scan_source VARCHAR(40) NULL,
+                      last_scan_confidence FLOAT NULL,
+                      last_scan_title VARCHAR(160) NULL,
+                      last_scan_error VARCHAR(300) NULL,
+                      last_learned_at TIMESTAMP NULL DEFAULT NULL,
+                      last_autofill_at TIMESTAMP NULL DEFAULT NULL,
+                      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                      KEY idx_ai_media_learning_status (last_scan_status, last_scanned_at),
+                      KEY idx_ai_media_learning_user (user_id, updated_at),
+                      CONSTRAINT fk_ai_media_learning_media FOREIGN KEY (media_id) REFERENCES media_items(id) ON DELETE CASCADE,
+                      CONSTRAINT fk_ai_media_learning_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                     """,
                 )
@@ -564,6 +589,7 @@ class GalleryDatabase:
         await self.ensure_subcategory_tables()
         await self.ensure_media_columns()
         await self.ensure_ai_training_columns()
+        await self.ensure_ai_media_learning_tables()
         await self.seed_default_categories()
 
     async def ensure_user_columns(self) -> None:
@@ -676,6 +702,46 @@ class GalleryDatabase:
                     await cur.execute("CREATE INDEX idx_ai_training_phash ON ai_vision_training_examples (image_phash)")
                 except Exception:
                     pass
+                try:
+                    await cur.execute("CREATE UNIQUE INDEX uniq_ai_training_dedupe ON ai_vision_training_examples (dedupe_key)")
+                except Exception:
+                    pass
+
+    async def ensure_ai_media_learning_tables(self) -> None:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = %s AND table_name = 'ai_media_learning_state'
+                    LIMIT 1
+                    """,
+                    (self.settings.db_schema,),
+                )
+                if await cur.fetchone():
+                    return
+                await cur.execute(
+                    """
+                    CREATE TABLE ai_media_learning_state (
+                      media_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+                      user_id BIGINT UNSIGNED NOT NULL,
+                      last_scanned_at TIMESTAMP NULL DEFAULT NULL,
+                      last_scan_status VARCHAR(30) NOT NULL DEFAULT 'pending',
+                      last_scan_source VARCHAR(40) NULL,
+                      last_scan_confidence FLOAT NULL,
+                      last_scan_title VARCHAR(160) NULL,
+                      last_scan_error VARCHAR(300) NULL,
+                      last_learned_at TIMESTAMP NULL DEFAULT NULL,
+                      last_autofill_at TIMESTAMP NULL DEFAULT NULL,
+                      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                      KEY idx_ai_media_learning_status (last_scan_status, last_scanned_at),
+                      KEY idx_ai_media_learning_user (user_id, updated_at),
+                      CONSTRAINT fk_ai_media_learning_media FOREIGN KEY (media_id) REFERENCES media_items(id) ON DELETE CASCADE,
+                      CONSTRAINT fk_ai_media_learning_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """
+                )
 
     async def seed_default_categories(self) -> None:
         defaults = [
@@ -2502,6 +2568,17 @@ class GalleryDatabase:
         subcategory_name = self._clean_text(corrected.get("subcategory_name") or corrected.get("corrected_subcategory_name"), 80)
         corrected_tags = self._clean_tags(corrected.get("tags") or corrected.get("corrected_tags") or [])
         source_tags = self._clean_tags(source.get("tags") or source.get("source_tags") or [])
+        dedupe_key = self._ai_training_dedupe_key(
+            user_id=int(user_id),
+            media_id=media_id,
+            original_filename=source.get("original_filename"),
+            corrected_title=title,
+            corrected_category_name=category_name,
+            corrected_subcategory_name=subcategory_name,
+            corrected_tags=corrected_tags,
+            image_phash=source.get("image_phash") or source.get("source_image_phash"),
+            image_dhash=source.get("image_dhash") or source.get("source_image_dhash"),
+        )
         if media_id is not None:
             media_id = int(media_id)
         async with self.pool.acquire() as conn:
@@ -2513,37 +2590,98 @@ class GalleryDatabase:
                         return None
                     if int(row["user_id"]) != int(user_id):
                         raise PermissionError("You can only train AI using your own media.")
-                await cur.execute(
-                    """
-                    INSERT INTO ai_vision_training_examples
-                    (user_id, media_id, original_filename, source_title, source_category_name, source_subcategory_name,
-                     source_tags, corrected_title, corrected_category_name, corrected_subcategory_name, corrected_tags,
-                     corrected_is_adult, notes, image_phash, image_dhash, image_width, image_height, training_origin, training_confidence)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """,
-                    (
-                        user_id,
-                        media_id,
-                        self._clean_text(source.get("original_filename"), 255),
-                        self._clean_text(source.get("title"), 160),
-                        self._clean_text(source.get("category_name"), 80),
-                        self._clean_text(source.get("subcategory_name"), 80),
-                        json.dumps(source_tags),
-                        title,
-                        category_name,
-                        subcategory_name,
-                        json.dumps(corrected_tags),
-                        1 if bool(corrected.get("is_adult") or corrected.get("corrected_is_adult")) else 0,
-                        self._clean_text(notes, 500),
-                        self._clean_text(source.get("image_phash") or source.get("source_image_phash"), 16),
-                        self._clean_text(source.get("image_dhash") or source.get("source_image_dhash"), 16),
-                        int(source.get("image_width") or 0) or None,
-                        int(source.get("image_height") or 0) or None,
-                        self._clean_text(source.get("training_origin") or source.get("origin"), 80),
-                        max(0.0, min(float(source.get("training_confidence") or corrected.get("training_confidence") or 0.72), 1.0)),
-                    ),
-                )
-                await cur.execute("SELECT * FROM ai_vision_training_examples WHERE id=%s", (cur.lastrowid,))
+                original_filename = self._clean_text(source.get("original_filename"), 255)
+                source_title = self._clean_text(source.get("title"), 160)
+                source_category_name = self._clean_text(source.get("category_name"), 80)
+                source_subcategory_name = self._clean_text(source.get("subcategory_name"), 80)
+                notes_text = self._clean_text(notes, 500)
+                image_phash = self._clean_text(source.get("image_phash") or source.get("source_image_phash"), 16)
+                image_dhash = self._clean_text(source.get("image_dhash") or source.get("source_image_dhash"), 16)
+                image_width = int(source.get("image_width") or 0) or None
+                image_height = int(source.get("image_height") or 0) or None
+                training_origin = self._clean_text(source.get("training_origin") or source.get("origin"), 80)
+                training_confidence = max(0.0, min(float(source.get("training_confidence") or corrected.get("training_confidence") or 0.72), 1.0))
+                await cur.execute("SELECT id FROM ai_vision_training_examples WHERE dedupe_key=%s LIMIT 1", (dedupe_key,))
+                existing = await cur.fetchone()
+                if existing:
+                    await cur.execute(
+                        """
+                        UPDATE ai_vision_training_examples
+                        SET source_title=COALESCE(%s, source_title),
+                            source_category_name=COALESCE(%s, source_category_name),
+                            source_subcategory_name=COALESCE(%s, source_subcategory_name),
+                            source_tags=%s,
+                            corrected_title=%s,
+                            corrected_category_name=COALESCE(%s, corrected_category_name),
+                            corrected_subcategory_name=COALESCE(%s, corrected_subcategory_name),
+                            corrected_tags=%s,
+                            corrected_is_adult=%s,
+                            notes=COALESCE(%s, notes),
+                            original_filename=COALESCE(%s, original_filename),
+                            image_phash=COALESCE(%s, image_phash),
+                            image_dhash=COALESCE(%s, image_dhash),
+                            image_width=COALESCE(%s, image_width),
+                            image_height=COALESCE(%s, image_height),
+                            training_origin=COALESCE(%s, training_origin),
+                            training_confidence=GREATEST(training_confidence, %s)
+                        WHERE id=%s
+                        """,
+                        (
+                            source_title,
+                            source_category_name,
+                            source_subcategory_name,
+                            json.dumps(source_tags),
+                            title,
+                            category_name,
+                            subcategory_name,
+                            json.dumps(corrected_tags),
+                            1 if bool(corrected.get("is_adult") or corrected.get("corrected_is_adult")) else 0,
+                            notes_text,
+                            original_filename,
+                            image_phash,
+                            image_dhash,
+                            image_width,
+                            image_height,
+                            training_origin,
+                            training_confidence,
+                            int(existing["id"]),
+                        ),
+                    )
+                    training_id = int(existing["id"])
+                else:
+                    await cur.execute(
+                        """
+                        INSERT INTO ai_vision_training_examples
+                        (user_id, media_id, original_filename, source_title, source_category_name, source_subcategory_name,
+                         source_tags, corrected_title, corrected_category_name, corrected_subcategory_name, corrected_tags,
+                         corrected_is_adult, notes, dedupe_key, image_phash, image_dhash, image_width, image_height, training_origin, training_confidence)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            user_id,
+                            media_id,
+                            original_filename,
+                            source_title,
+                            source_category_name,
+                            source_subcategory_name,
+                            json.dumps(source_tags),
+                            title,
+                            category_name,
+                            subcategory_name,
+                            json.dumps(corrected_tags),
+                            1 if bool(corrected.get("is_adult") or corrected.get("corrected_is_adult")) else 0,
+                            notes_text,
+                            dedupe_key,
+                            image_phash,
+                            image_dhash,
+                            image_width,
+                            image_height,
+                            training_origin,
+                            training_confidence,
+                        ),
+                    )
+                    training_id = int(cur.lastrowid)
+                await cur.execute("SELECT * FROM ai_vision_training_examples WHERE id=%s", (training_id,))
                 row = await cur.fetchone()
                 return self._decode_ai_training_example(row)
 
@@ -2583,6 +2721,104 @@ class GalleryDatabase:
                     (int(user_id), limit),
                 )
                 return [self._decode_ai_training_example(row) for row in await cur.fetchall()]
+
+    async def list_ai_media_learning_candidates(
+        self,
+        limit: int = 8,
+        stale_minutes: int = 720,
+        error_retry_minutes: int = 30,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 8), 50))
+        stale_minutes = max(10, int(stale_minutes or 720))
+        error_retry_minutes = max(5, int(error_retry_minutes or 30))
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    f"""
+                    SELECT m.id, m.user_id, m.title, m.description, m.tags, m.media_kind, m.mime_type,
+                           m.original_filename, m.storage_path, m.file_size, m.visibility, m.is_adult,
+                           m.created_at, m.updated_at, {MEDIA_CATEGORY_SELECT}
+                           s.last_scanned_at, s.last_scan_status, s.last_scan_source, s.last_scan_confidence,
+                           s.last_scan_title, s.last_scan_error, s.last_learned_at, s.last_autofill_at
+                    FROM media_items m
+                    {MEDIA_CATEGORY_JOIN}
+                    LEFT JOIN ai_media_learning_state s ON s.media_id = m.id
+                    WHERE m.deleted_at IS NULL
+                      AND m.media_kind='image'
+                      AND (
+                        s.media_id IS NULL
+                        OR s.last_scanned_at IS NULL
+                        OR m.updated_at > s.last_scanned_at
+                        OR (
+                          s.last_scan_status='error'
+                          AND COALESCE(s.updated_at, s.last_scanned_at) < (CURRENT_TIMESTAMP - INTERVAL %s MINUTE)
+                        )
+                        OR s.last_scanned_at < (CURRENT_TIMESTAMP - INTERVAL %s MINUTE)
+                      )
+                    ORDER BY
+                      CASE
+                        WHEN s.media_id IS NULL OR s.last_scanned_at IS NULL THEN 0
+                        WHEN m.updated_at > s.last_scanned_at THEN 1
+                        ELSE 2
+                      END ASC,
+                      COALESCE(s.last_scanned_at, '1970-01-01 00:00:00') ASC,
+                      m.updated_at DESC
+                    LIMIT %s
+                    """,
+                    (error_retry_minutes, stale_minutes, limit),
+                )
+                return [self._decode_media(row) for row in await cur.fetchall()]
+
+    async def upsert_ai_media_learning_state(
+        self,
+        *,
+        media_id: int,
+        user_id: int,
+        status: str,
+        source: str | None = None,
+        confidence: float | None = None,
+        title: str | None = None,
+        error: str | None = None,
+        learned: bool = False,
+        autofilled: bool = False,
+    ) -> None:
+        clean_status = self._clean_text(status, 30, required=True) or "pending"
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO ai_media_learning_state
+                      (media_id, user_id, last_scanned_at, last_scan_status, last_scan_source,
+                       last_scan_confidence, last_scan_title, last_scan_error, last_learned_at, last_autofill_at)
+                    VALUES
+                      (%s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s,
+                       CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE NULL END,
+                       CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE NULL END)
+                    ON DUPLICATE KEY UPDATE
+                      user_id=VALUES(user_id),
+                      last_scanned_at=CURRENT_TIMESTAMP,
+                      last_scan_status=VALUES(last_scan_status),
+                      last_scan_source=VALUES(last_scan_source),
+                      last_scan_confidence=VALUES(last_scan_confidence),
+                      last_scan_title=VALUES(last_scan_title),
+                      last_scan_error=VALUES(last_scan_error),
+                      last_learned_at=CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE last_learned_at END,
+                      last_autofill_at=CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE last_autofill_at END
+                    """,
+                    (
+                        int(media_id),
+                        int(user_id),
+                        clean_status,
+                        self._clean_text(source, 40),
+                        None if confidence is None else max(0.0, min(float(confidence), 1.0)),
+                        self._clean_text(title, 160),
+                        self._clean_text(error, 300),
+                        1 if learned else 0,
+                        1 if autofilled else 0,
+                        1 if learned else 0,
+                        1 if autofilled else 0,
+                    ),
+                )
 
     def _decode_ai_training_example(self, row: dict[str, Any] | None) -> dict[str, Any] | None:
         if not row:
@@ -2848,3 +3084,29 @@ class GalleryDatabase:
             if tag and tag.lower() not in {existing.lower() for existing in clean}:
                 clean.append(tag)
         return clean[:12]
+
+    def _ai_training_dedupe_key(
+        self,
+        *,
+        user_id: int,
+        media_id: int | None,
+        original_filename: Any,
+        corrected_title: Any,
+        corrected_category_name: Any,
+        corrected_subcategory_name: Any,
+        corrected_tags: list[str] | None,
+        image_phash: Any,
+        image_dhash: Any,
+    ) -> str:
+        payload = {
+            "user_id": int(user_id),
+            "media_id": int(media_id) if media_id is not None else None,
+            "original_filename": self._clean_text(original_filename, 255),
+            "corrected_title": self._clean_text(corrected_title, 160),
+            "corrected_category_name": self._clean_text(corrected_category_name, 80),
+            "corrected_subcategory_name": self._clean_text(corrected_subcategory_name, 80),
+            "corrected_tags": [tag.lower() for tag in self._clean_tags(corrected_tags or [])],
+            "image_phash": self._clean_text(image_phash, 16),
+            "image_dhash": self._clean_text(image_dhash, 16),
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()

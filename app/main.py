@@ -31,7 +31,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .ai_metadata import analyze_media_bytes, is_low_signal_filename
+from .ai_metadata import analyze_media_bytes, is_low_signal_filename, _image_fingerprint
 from .auth import extract_bearer_token, issue_token, require_auth, verify_token
 from .config import ROOT_DIR, load_settings
 from .database import GalleryDatabase
@@ -93,6 +93,33 @@ _background_cache: dict[str, Any] = {"built_at": 0.0, "items": []}
 _preview_cache: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
 _api_cache: OrderedDict[str, tuple[float, str, str]] = OrderedDict()
 _thumb_generation_locks: dict[str, asyncio.Lock] = {}
+GENERIC_MEDIA_TITLES = {
+    "uncategorized media",
+    "uncategorized image",
+    "uncategorized video",
+    "uncategorized wallpaper",
+    "uncategorized desktop background",
+    "uncategorized phone background",
+    "imported media",
+    "imported image",
+    "media",
+    "image",
+    "video",
+    "artwork",
+    "wallpaper",
+    "wallpapers",
+    "background",
+    "backgrounds",
+}
+GENERIC_MEDIA_CATEGORIES = {
+    "wallpapers",
+    "desktop backgrounds",
+    "phone backgrounds",
+    "profile pictures",
+    "uncategorized",
+    "other",
+    "misc",
+}
 
 
 def _app_shell_path() -> Path:
@@ -282,14 +309,115 @@ async def _ai_training_examples_for(user_id: int) -> list[dict[str, Any]]:
         return []
 
 
-def _media_training_source(item: dict[str, Any] | None) -> dict[str, Any]:
+def _normalize_compact_label(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _title_is_placeholder(title: Any, category_name: Any = "", subcategory_name: Any = "") -> bool:
+    cleaned = " ".join(str(title or "").strip().split()).lower()
+    if not cleaned:
+        return True
+    compact = _normalize_compact_label(cleaned)
+    blocked = {
+        _normalize_compact_label(category_name),
+        _normalize_compact_label(subcategory_name),
+        "wallpaper",
+        "wallpapers",
+        "background",
+        "backgrounds",
+        "image",
+        "images",
+        "art",
+        "artwork",
+        "media",
+        "profilepicture",
+        "profilepictures",
+        "desktopbackground",
+        "desktopbackgrounds",
+        "phonebackground",
+        "phonebackgrounds",
+    }
+    blocked.discard("")
+    return cleaned in GENERIC_MEDIA_TITLES or compact in blocked
+
+
+def _category_is_generic(category_name: Any) -> bool:
+    return " ".join(str(category_name or "").strip().lower().split()) in GENERIC_MEDIA_CATEGORIES
+
+
+def _description_is_placeholder(description: Any) -> bool:
+    text = " ".join(str(description or "").strip().split()).lower()
+    return not text or text in {"description pending", "imported media", "imported image", "imported video"}
+
+
+def _build_media_description(
+    *,
+    title: str,
+    category_name: str | None,
+    subcategory_name: str | None,
+    tags: list[str],
+    source: str | None,
+    reason: str | None = None,
+) -> str:
+    summary = title.strip() or subcategory_name or category_name or "Imported media"
+    category = (category_name or "").strip()
+    subcategory = (subcategory_name or "").strip()
+    source_name = (source or "").strip().lower()
+    generic_category = _category_is_generic(category)
+    lines = [summary.rstrip(".")]
+    if subcategory and subcategory.lower() not in summary.lower():
+        if category and not generic_category:
+            lines.append(f"Featuring {subcategory} from {category}.")
+        else:
+            lines.append(f"Featuring {subcategory}.")
+    elif category and not generic_category and category.lower() not in summary.lower():
+        lines.append(f"Category: {category}.")
+    if source_name == "visual-training":
+        lines.append("Recognized through the gallery's learned visual reference memory.")
+    elif source_name == "gallery-training":
+        lines.append("Recognized from the gallery's learned metadata and correction history.")
+    elif source_name == "ollama":
+        lines.append("Analyzed through the gallery's local Ollama vision pipeline.")
+    elif source_name == "local-clip":
+        lines.append("Analyzed through the gallery's local visual fallback model.")
+    if reason:
+        lines.append(reason.strip().rstrip(".") + ".")
+    if tags:
+        lines.append("Tags: " + ", ".join(tags[:10]) + ".")
+    return " ".join(part for part in lines if part).strip()[:2000]
+
+
+def _media_has_curated_metadata(item: dict[str, Any] | None) -> bool:
     item = dict(item or {})
+    title = item.get("title")
+    category_name = item.get("category_name")
+    subcategory_name = item.get("subcategory_name")
+    if _title_is_placeholder(title, category_name, subcategory_name):
+        return False
+    tags = list(item.get("tags") or [])
+    description = item.get("description")
+    return (
+        bool(subcategory_name)
+        or len(tags) >= int(getattr(settings, "ai_background_learning_min_training_tags", 3) or 3)
+        or not _description_is_placeholder(description)
+    )
+
+
+def _media_training_source(item: dict[str, Any] | None, *, content: bytes | None = None, mime_type: str | None = None, media_kind: str | None = None) -> dict[str, Any]:
+    item = dict(item or {})
+    fingerprint = _image_fingerprint(
+        content or b"",
+        str(item.get("original_filename") or "media.jpg"),
+        str(mime_type or item.get("mime_type") or "image/jpeg"),
+        str(media_kind or item.get("media_kind") or "image"),
+    ) if content else {}
     return {
         "original_filename": item.get("original_filename"),
         "title": item.get("title"),
         "category_name": item.get("category_name"),
         "subcategory_name": item.get("subcategory_name"),
         "tags": item.get("tags") or [],
+        **(fingerprint or {}),
     }
 
 
@@ -304,6 +432,94 @@ def _media_training_corrected(item: dict[str, Any] | VisionTrainingRequest | Non
         "subcategory_name": payload.get("subcategory_name"),
         "tags": payload.get("tags") or [],
         "is_adult": bool(payload.get("is_adult")),
+    }
+
+
+async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> dict[str, Any] | None:
+    current_category = str(item.get("category_name") or "")
+    current_subcategory = str(item.get("subcategory_name") or "")
+    current_tags = list(item.get("tags") or [])
+    current_title = str(item.get("title") or "")
+    current_description = str(item.get("description") or "")
+    confidence = float(getattr(analysis, "confidence", 0.0) or 0.0)
+    source = str(getattr(analysis, "source", "") or "").lower()
+    if source not in {"visual-training", "gallery-training", "ollama", "local-clip", "domain-hint"}:
+        return None
+    if confidence < float(getattr(settings, "ai_background_learning_autofill_confidence", 0.88) or 0.88):
+        return None
+
+    title = current_title
+    if _title_is_placeholder(current_title, current_category, current_subcategory) and getattr(analysis, "title", ""):
+        title = str(analysis.title).strip()[:160] or current_title
+
+    category_id = int(item.get("category_id") or 0)
+    subcategory_id = item.get("subcategory_id")
+    next_category = current_category
+    next_subcategory = current_subcategory
+    media_kind = str(item.get("media_kind") or "image")
+
+    if category_id <= 0 and current_category and not _category_is_generic(current_category):
+        existing_category = await db.create_category(current_category, media_kind, int(item["user_id"]))
+        category_id = int(existing_category["id"])
+
+    if (_category_is_generic(current_category) or not current_category) and getattr(analysis, "category_name", ""):
+        category = await db.create_category(str(analysis.category_name), media_kind, int(item["user_id"]))
+        category_id = int(category["id"])
+        next_category = str(analysis.category_name)
+        next_subcategory = str(getattr(analysis, "subcategory_name", "") or "")
+        category_id, subcategory_id = await db.resolve_category_ids(
+            category_id=category_id,
+            subcategory_id=None,
+            subcategory_name=next_subcategory,
+            user_id=int(item["user_id"]),
+        )
+    elif getattr(analysis, "subcategory_name", "") and not current_subcategory and category_id > 0:
+        next_subcategory = str(analysis.subcategory_name)
+        category_id, subcategory_id = await db.resolve_category_ids(
+            category_id=category_id,
+            subcategory_id=subcategory_id,
+            subcategory_name=next_subcategory,
+            user_id=int(item["user_id"]),
+        )
+
+    tags = list(current_tags)
+    if len(tags) < len(list(getattr(analysis, "tags", []) or [])):
+        tags = list(getattr(analysis, "tags", []) or [])[:12]
+
+    description = current_description
+    if _description_is_placeholder(current_description):
+        description = _build_media_description(
+            title=title or str(getattr(analysis, "title", "") or current_title),
+            category_name=next_category or str(getattr(analysis, "category_name", "") or current_category),
+            subcategory_name=next_subcategory or str(getattr(analysis, "subcategory_name", "") or current_subcategory),
+            tags=tags or list(getattr(analysis, "tags", []) or [])[:12],
+            source=str(getattr(analysis, "source", "") or ""),
+            reason=str(getattr(analysis, "reason", "") or ""),
+        )
+
+    changed = any(
+        [
+            title != current_title,
+            description != current_description,
+            tags != current_tags,
+            category_id != int(item.get("category_id") or 0),
+            (subcategory_id or 0) != int(item.get("subcategory_id") or 0),
+        ]
+    )
+    if not changed:
+        return None
+    return {
+        "title": title or current_title,
+        "description": description or None,
+        "tags": tags or current_tags,
+        "category_id": category_id,
+        "subcategory_id": subcategory_id,
+        "subcategory_name": next_subcategory,
+        "visibility": item.get("visibility") or "public",
+        "comments_enabled": bool(item.get("comments_enabled", True)),
+        "downloads_enabled": bool(item.get("downloads_enabled", True)),
+        "pinned": bool(item.get("pinned_at")),
+        "is_adult": bool(item.get("is_adult") or getattr(analysis, "is_adult", False)),
     }
 
 
@@ -1414,12 +1630,134 @@ async def _telegram_health_watch_loop() -> None:
         await asyncio.sleep(TELEGRAM_HEALTH_INTERVAL_SECONDS)
 
 
+async def _run_ai_background_learning_pass() -> int:
+    rows = await db.list_ai_media_learning_candidates(
+        limit=int(getattr(settings, "ai_background_learning_batch_size", 8) or 8),
+        stale_minutes=int(getattr(settings, "ai_background_learning_stale_minutes", 720) or 720),
+        error_retry_minutes=int(getattr(settings, "ai_background_learning_error_retry_minutes", 30) or 30),
+    )
+    processed = 0
+    for item in rows:
+        media_id = int(item.get("id") or 0)
+        user_id = int(item.get("user_id") or 0)
+        learned = False
+        autofilled = False
+        try:
+            file_row = await db.get_media_file(media_id)
+            if not file_row or not file_row.get("content"):
+                await db.upsert_ai_media_learning_state(
+                    media_id=media_id,
+                    user_id=user_id,
+                    status="missing-file",
+                    error="Media bytes are not available for background learning.",
+                )
+                continue
+
+            content = bytes(file_row.get("content") or b"")
+            source_payload = _media_training_source(
+                item,
+                content=content,
+                mime_type=str(item.get("mime_type") or file_row.get("mime_type") or "image/jpeg"),
+                media_kind=str(item.get("media_kind") or file_row.get("media_kind") or "image"),
+            )
+            if _media_has_curated_metadata(item):
+                example = await db.record_ai_vision_training_example(
+                    user_id=user_id,
+                    media_id=media_id,
+                    source=source_payload,
+                    corrected=_media_training_corrected(item),
+                    notes="Auto-trained from curated gallery metadata during background learning.",
+                )
+                learned = bool(example)
+
+            training_examples = await _ai_training_examples_for(user_id)
+            analysis = await _analyze_media_safely(
+                content=content,
+                filename=str(item.get("original_filename") or file_row.get("original_filename") or f"media-{media_id}.jpg"),
+                mime_type=str(item.get("mime_type") or file_row.get("mime_type") or "image/jpeg"),
+                media_kind=str(item.get("media_kind") or file_row.get("media_kind") or "image"),
+                title_hint=str(item.get("title") or ""),
+                description_hint=str(item.get("description") or ""),
+                tags_hint=list(item.get("tags") or []),
+                ai_enabled=settings.ai_enabled,
+                ai_api_key=settings.ai_api_key,
+                ai_base_url=settings.active_ai_base_url,
+                ai_model=settings.active_ai_model,
+                ai_timeout_seconds=settings.ai_timeout_seconds,
+                training_examples=training_examples,
+            )
+
+            autofill_payload = await _background_autofill_payload(item, analysis)
+            if autofill_payload:
+                updated_item = await db.update_media(media_id, user_id, autofill_payload)
+                if updated_item:
+                    autofilled = True
+                    item = updated_item
+                    example = await db.record_ai_vision_training_example(
+                        user_id=user_id,
+                        media_id=media_id,
+                        source=source_payload,
+                        corrected=_media_training_corrected(updated_item),
+                        notes="Auto-trained after background metadata autofill.",
+                    )
+                    learned = learned or bool(example)
+                    logger.info(
+                        "Gallery AI autofilled media %s using %s at confidence %.3f.",
+                        media_id,
+                        getattr(analysis, "source", "unknown"),
+                        float(getattr(analysis, "confidence", 0.0) or 0.0),
+                    )
+
+            await db.upsert_ai_media_learning_state(
+                media_id=media_id,
+                user_id=user_id,
+                status="ok",
+                source=str(getattr(analysis, "source", "") or ""),
+                confidence=float(getattr(analysis, "confidence", 0.0) or 0.0),
+                title=str(getattr(analysis, "title", "") or ""),
+                learned=learned,
+                autofilled=autofilled,
+            )
+            processed += 1
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Gallery background learning failed for media %s: %s", media_id, exc)
+            try:
+                await db.upsert_ai_media_learning_state(
+                    media_id=media_id,
+                    user_id=user_id,
+                    status="error",
+                    error=str(exc),
+                )
+            except Exception:
+                logger.debug("Unable to persist gallery learning failure state for media %s.", media_id, exc_info=True)
+    return processed
+
+
+async def _ai_background_learning_loop() -> None:
+    if not getattr(settings, "ai_background_learning_enabled", True):
+        return
+    await asyncio.sleep(12)
+    interval = max(15.0, float(getattr(settings, "ai_background_learning_interval_seconds", 180) or 180))
+    while True:
+        try:
+            processed = await _run_ai_background_learning_pass()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Gallery background learning loop paused after failure: %s", exc)
+            processed = 0
+        await asyncio.sleep(2.0 if processed else interval)
+
+
 async def lifespan(app: FastAPI):
     global telegram_service
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
     await db.connect()
     migration_task = asyncio.create_task(_auto_migrate_legacy_uploads())
     health_task = asyncio.create_task(_telegram_health_watch_loop())
+    ai_learning_task = asyncio.create_task(_ai_background_learning_loop())
     telegram_service = TelegramPollingService(
         token=settings.telegram_bot_token,
         name="Image Gallery",
@@ -1453,6 +1791,13 @@ async def lifespan(app: FastAPI):
         pass
     except Exception as exc:
         logger.warning("Telegram health watch task ended during shutdown: %s", exc)
+    ai_learning_task.cancel()
+    try:
+        await ai_learning_task
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.warning("Gallery AI background learning task ended during shutdown: %s", exc)
     await db.close()
 
 
@@ -2331,6 +2676,16 @@ async def upload_media(
     title = " ".join((title or analysis.title).strip().split())[:160]
     if not title:
         raise HTTPException(status_code=400, detail="Title is required.")
+    description_value = description.strip()[:2000] or None
+    if not description_value and float(getattr(analysis, "confidence", 0.0) or 0.0) >= 0.62:
+        description_value = _build_media_description(
+            title=title,
+            category_name=analysis.category_name,
+            subcategory_name=analysis.subcategory_name,
+            tags=list(analysis.tags or [])[:12],
+            source=str(getattr(analysis, "source", "") or ""),
+            reason=str(getattr(analysis, "reason", "") or ""),
+        )
     parsed_tags = _merge_upload_tags(_parse_tags(tags), analysis.tags)
     chosen_category_name = " ".join(category_name.strip().split())[:80] or analysis.category_name or ""
     chosen_subcategory_name = " ".join(subcategory_name.strip().split())[:80] or analysis.subcategory_name or ""
@@ -2352,7 +2707,7 @@ async def upload_media(
             stored_filename = analysis.suggested_filename[:255]
     moderation = _moderate_upload(
         title=title,
-        description=description.strip()[:2000] or None,
+        description=description_value,
         tags=parsed_tags,
         filename=stored_filename,
         mime_type=uploaded["mime_type"],
@@ -2366,7 +2721,7 @@ async def upload_media(
             "category_id": category_id_int,
             "subcategory_id": subcategory_id_int,
             "title": title,
-            "description": description.strip()[:2000] or None,
+            "description": description_value,
             "tags": parsed_tags,
             "media_kind": media_kind,
             "mime_type": uploaded["mime_type"],

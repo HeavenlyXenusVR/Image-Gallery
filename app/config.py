@@ -110,6 +110,13 @@ class Settings:
     ai_timeout_seconds: int
     ai_auto_train_on_edit: bool
     ai_training_examples_limit: int
+    ai_background_learning_enabled: bool
+    ai_background_learning_interval_seconds: int
+    ai_background_learning_batch_size: int
+    ai_background_learning_stale_minutes: int
+    ai_background_learning_error_retry_minutes: int
+    ai_background_learning_autofill_confidence: float
+    ai_background_learning_min_training_tags: int
     telegram_bot_token: str
     telegram_allowed_chat_ids: set[int]
     telegram_polling_enabled: bool
@@ -181,6 +188,13 @@ def load_settings() -> Settings:
         ai_timeout_seconds=max(10, int(_env("GALLERY_AI_TIMEOUT_SECONDS", "45"))),
         ai_auto_train_on_edit=_env_bool("GALLERY_AI_AUTO_TRAIN_ON_EDIT", True),
         ai_training_examples_limit=max(0, min(1000, int(_env("GALLERY_AI_TRAINING_EXAMPLES_LIMIT", "300")))),
+        ai_background_learning_enabled=_env_bool("GALLERY_AI_BACKGROUND_LEARNING_ENABLED", True),
+        ai_background_learning_interval_seconds=max(15, int(_env("GALLERY_AI_BACKGROUND_LEARNING_INTERVAL_SECONDS", "180"))),
+        ai_background_learning_batch_size=max(1, min(50, int(_env("GALLERY_AI_BACKGROUND_LEARNING_BATCH_SIZE", "8")))),
+        ai_background_learning_stale_minutes=max(10, int(_env("GALLERY_AI_BACKGROUND_LEARNING_STALE_MINUTES", "720"))),
+        ai_background_learning_error_retry_minutes=max(5, int(_env("GALLERY_AI_BACKGROUND_LEARNING_ERROR_RETRY_MINUTES", "30"))),
+        ai_background_learning_autofill_confidence=max(0.45, min(0.99, float(_env("GALLERY_AI_BACKGROUND_LEARNING_AUTOFILL_CONFIDENCE", "0.88")))),
+        ai_background_learning_min_training_tags=max(1, min(24, int(_env("GALLERY_AI_BACKGROUND_LEARNING_MIN_TRAINING_TAGS", "3")))),
         telegram_bot_token=_env("GALLERY_TELEGRAM_BOT_TOKEN") or _env("TELEGRAM_BOT_TOKEN"),
         telegram_allowed_chat_ids=_env_int_set("GALLERY_TELEGRAM_ALLOWED_CHAT_IDS") or _env_int_set("TELEGRAM_ALLOWED_CHAT_IDS"),
         telegram_polling_enabled=_env_bool("GALLERY_TELEGRAM_POLLING_ENABLED", bool(_env("GALLERY_TELEGRAM_BOT_TOKEN") or _env("TELEGRAM_BOT_TOKEN"))),
