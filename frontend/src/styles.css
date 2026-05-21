@@ -1527,8 +1527,11 @@ textarea:focus {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background:
-    linear-gradient(145deg, rgba(55, 201, 167, 0.06), transparent 68%),
+    linear-gradient(145deg, color-mix(in srgb, var(--accent) var(--profile-backdrop-strength, 18%), transparent), rgba(15, 22, 29, 0.56)),
+    var(--profile-backdrop),
     rgba(15, 22, 29, 0.72);
+  background-size: cover;
+  background-position: center;
   box-shadow: var(--shadow);
 }
 
@@ -1722,6 +1725,15 @@ textarea:focus {
 .profile-rail {
   display: grid;
   gap: 14px;
+}
+
+.profile-sections .side-box {
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--accent) 10%, transparent), rgba(15, 22, 29, 0.56)),
+    var(--profile-backdrop),
+    rgba(15, 22, 29, 0.72);
+  background-size: cover;
+  background-position: center;
 }
 
 .user-grid {

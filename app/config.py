@@ -177,7 +177,7 @@ def load_settings() -> Settings:
         ai_base_url=(_env("GALLERY_AI_BASE_URL") or _env("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/"),
         ai_model=_env("GALLERY_AI_MODEL", "gpt-5.4-nano"),
         ollama_base_url=(_env("GALLERY_OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/"),
-        ollama_model=_env("GALLERY_OLLAMA_MODEL", "qwen2.5vl:7b"),
+        ollama_model=_env("GALLERY_OLLAMA_MODEL", "qwen2.5vl:3b"),
         ai_timeout_seconds=max(10, int(_env("GALLERY_AI_TIMEOUT_SECONDS", "45"))),
         ai_auto_train_on_edit=_env_bool("GALLERY_AI_AUTO_TRAIN_ON_EDIT", True),
         ai_training_examples_limit=max(0, min(1000, int(_env("GALLERY_AI_TRAINING_EXAMPLES_LIMIT", "300")))),

@@ -6,7 +6,7 @@ import { MediaGrid } from "../components/media.jsx";
 import { ProfileActions } from "../components/social.jsx";
 import { Avatar, ChipRow, CollectionMini, Notice, NotFound, Page, PresencePill, SkeletonGrid, UserMini } from "../components/ui.jsx";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
-import { formatDate, numberish, safeColor } from "../utils/format.js";
+import { formatDate, numberish } from "../utils/format.js";
 import { profileClassName, profileStyle } from "../utils/appearance.js";
 import { preloadMediaAssets } from "../utils/media.js";
 
@@ -75,7 +75,7 @@ export function ProfilePage({ ctx }) {
     ...(showFriends ? [["friends", profile.friend_count || data.friends?.length || 0]] : []),
   ];
   const profileClasses = profileClassName(profileSettings);
-  const heroStyle = profileStyle({ ...profileSettings, accent_color: profile.profile_color || ctx.settings.accent_color }, ctx.settings.accent_color);
+  const profileSurface = profileStyle({ ...profileSettings, accent_color: profile.profile_color || ctx.settings.accent_color }, ctx.settings.accent_color);
   const featuredItems = featuredPanel === "collections" ? (data.collections || []) : featuredPanel === "friends" ? (data.friends || []) : (data.media || []);
 
   return (
@@ -86,7 +86,7 @@ export function ProfilePage({ ctx }) {
       className="page-profile"
       actions={isOwner ? <Link className="button-link" to="/settings"><Settings size={16} />Settings</Link> : null}
     >
-      <section className={`profile-hero ${profileClasses}`} style={heroStyle}>
+      <section className={`profile-hero ${profileClasses}`} style={profileSurface}>
         <div className="profile-hero-main">
           <span className="profile-kicker">@{profile.username}</span>
           <h2>{profile.profile_headline || profile.display_name || profile.username}</h2>
@@ -121,7 +121,7 @@ export function ProfilePage({ ctx }) {
           </div>
         </div>
       </section>
-      <section className={`profile-showcase ${profileClasses}`} style={{ "--accent": safeColor(profile.profile_color || ctx.settings.accent_color) }}>
+      <section className={`profile-showcase ${profileClasses}`} style={profileSurface}>
         <article className="profile-feature-card">
           <div className="section-head"><h2>{featuredPanel === "collections" ? "Featured Collections" : featuredPanel === "friends" ? "Featured Friends" : "Featured Posts"}</h2><Images size={18} /></div>
           <div className="profile-feature-strip">
@@ -144,7 +144,7 @@ export function ProfilePage({ ctx }) {
           </div>
         </article>
       </section>
-      <section className={`profile-sections ${profileClasses}`}>
+      <section className={`profile-sections ${profileClasses}`} style={profileSurface}>
         {showUploads ? <div className="profile-posts">
           <div className="section-head"><h2>Posts</h2><span>{data.media?.length || 0}</span></div>
           <MediaGrid ctx={ctx} items={data.media || []} emptyTitle="No public posts" />

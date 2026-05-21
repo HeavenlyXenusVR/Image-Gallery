@@ -358,10 +358,11 @@ def analyze_media_bytes(
                     return fallback
 
         if provider == "ollama" or os.getenv("GALLERY_OLLAMA_MODEL"):
-            model = str(os.getenv("GALLERY_OLLAMA_MODEL") or ai_model or "qwen2.5vl:7b").strip()
+            model = str(os.getenv("GALLERY_OLLAMA_MODEL") or ai_model or "qwen2.5vl:3b").strip()
             base_url = str(os.getenv("GALLERY_OLLAMA_BASE_URL") or ai_base_url or "http://127.0.0.1:11434").rstrip("/")
             ai_result = _ollama_vision_analysis(
                 preview_image_b64=preview_image_b64,
+                original_image_b64=(base64.b64encode(content).decode("ascii") if media_kind == "image" else None),
                 filename=filename,
                 mime_type=mime_type,
                 media_kind=media_kind,
@@ -466,8 +467,12 @@ def analyze_media_bytes(
         fallback.reason = f"AI suggestion unavailable, using local analyzer: {exc}"
         return fallback
 
-    if training_result and _clamp_float(ai_result.get("confidence"), 0.0, 1.0, 0.0) < 0.55:
-        ai_result = training_result
+    if training_result:
+        training_confidence = _clamp_float(training_result.get("confidence"), 0.0, 1.0, 0.0)
+        ai_confidence = _clamp_float(ai_result.get("confidence"), 0.0, 1.0, 0.0)
+        training_source = str(training_result.get("source") or "").strip().lower()
+        if (training_source == "visual-training" and training_confidence >= 0.8) or ai_confidence < 0.55:
+            ai_result = training_result
 
     return _merge_analysis(
         ai_result=ai_result,
@@ -478,13 +483,21 @@ def analyze_media_bytes(
     )
 
 
-def _training_guide_text(training_examples: list[dict[str, Any]] | None) -> str:
-    examples = list(training_examples or [])[:12]
+def _training_guide_text(
+    training_examples: list[dict[str, Any]] | None,
+    *,
+    limit: int = 12,
+    compact: bool = False,
+) -> str:
+    examples = list(training_examples or [])[: max(1, limit)]
     if not examples:
         return ""
-    lines = [
-        "Learn from these user-approved gallery corrections. Treat them as naming/category style and character/category aliases, but still require visual evidence:"
-    ]
+    if compact:
+        lines = ["Use these learned gallery examples as hints only when the image visually matches:"]
+    else:
+        lines = [
+            "Learn from these user-approved gallery corrections. Treat them as naming/category style and character/category aliases, but still require visual evidence:"
+        ]
     for index, example in enumerate(examples, 1):
         title = _clean_title(example.get("corrected_title") or example.get("title"))
         category = _clean_label(example.get("corrected_category_name") or example.get("category_name")) or ""
@@ -492,19 +505,50 @@ def _training_guide_text(training_examples: list[dict[str, Any]] | None) -> str:
         tags = ", ".join(_normalize_tags(example.get("corrected_tags") or example.get("tags") or [])[:8])
         filename = _clean_title(example.get("original_filename") or "")
         parts = []
-        if filename:
-            parts.append(f"file/name hint '{filename}'")
-        if title:
-            parts.append(f"title '{title}'")
-        if category:
-            parts.append(f"category '{category}'")
-        if subcategory:
-            parts.append(f"subcategory '{subcategory}'")
-        if tags:
-            parts.append(f"tags [{tags}]")
+        if compact:
+            if title:
+                parts.append(f"title={title}")
+            if category:
+                parts.append(f"category={category}")
+            if subcategory:
+                parts.append(f"subcategory={subcategory}")
+            if tags:
+                parts.append(f"tags={tags}")
+            if filename:
+                parts.append(f"hint={filename}")
+        else:
+            if filename:
+                parts.append(f"file/name hint '{filename}'")
+            if title:
+                parts.append(f"title '{title}'")
+            if category:
+                parts.append(f"category '{category}'")
+            if subcategory:
+                parts.append(f"subcategory '{subcategory}'")
+            if tags:
+                parts.append(f"tags [{tags}]")
         if parts:
             lines.append(f"{index}. " + "; ".join(parts))
     return "\n".join(lines) + "\n"
+
+
+def _looks_placeholder_ai_result(payload: dict[str, Any]) -> bool:
+    title = _clean_title(payload.get("title")).lower()
+    reason = _clean_title(payload.get("reason")).lower()
+    category = (_clean_label(payload.get("category_name")) or "").lower()
+    subcategory = (_clean_label(payload.get("subcategory_name")) or "").lower()
+    filename_base = _clean_filename_base(payload.get("suggested_filename_base")).lower()
+    tags = [tag.lower() for tag in _normalize_tags(payload.get("tags"))]
+    return any(
+        (
+            title in {"string", "title"},
+            reason in {"string", "reason"},
+            category in {"string", "category", "category-name"},
+            subcategory in {"string", "subcategory", "subcategory-name"},
+            filename_base in {"string", "filename", "suggested-filename", "suggested_filename"},
+            bool(tags) and all(tag in {"tag", "tags", "string"} for tag in tags),
+        )
+    )
 
 
 def _training_lookup_analysis(
@@ -939,6 +983,7 @@ def _merge_analysis(
 def _ollama_vision_analysis(
     *,
     preview_image_b64: str,
+    original_image_b64: str | None,
     filename: str,
     mime_type: str,
     media_kind: str,
@@ -951,6 +996,86 @@ def _ollama_vision_analysis(
     model: str,
     timeout_seconds: int,
 ) -> dict[str, Any]:
+    normalized_model = model.strip().lower()
+    compact_model = "moondream" in normalized_model
+    if compact_model:
+        prompt = (
+            "Describe the main subject of this image in one short sentence. "
+            "Mention character or franchise names only if you are sure."
+        )
+        request = urllib.request.Request(
+            f"{base_url}/api/generate",
+            data=json.dumps(
+                {
+                    "model": model,
+                    "prompt": prompt,
+                    "images": [original_image_b64 or preview_image_b64],
+                    "stream": False,
+                    "options": {"temperature": 0.1, "num_predict": 40},
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                raw = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"Ollama API error {exc.code}: {body[:240]}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Ollama API network error: {exc.reason}") from exc
+
+        caption = _clean_title(json.loads(raw or "{}").get("response") or "")
+        caption = re.sub(r"^(?:a|an|the)\s+", "", caption, flags=re.IGNORECASE).strip()
+        title_candidate = re.split(
+            r"\b(?:is|are|was|were|stands|standing|sits|sitting|poses|posing|shown|featured)\b",
+            caption,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0].strip(" ,.-")
+        text = title_candidate or caption
+        compact_generic_titles = {"image", "artwork", "wallpaper", "background", "photo", "picture", "art"}
+        if not text or text.lower() in compact_generic_titles:
+            raise RuntimeError("Ollama compact caption was too generic.")
+        text = text[:1].upper() + text[1:]
+
+        domain_hint = _domain_hint_analysis_from_text(
+            filename=filename,
+            title_hint=text,
+            description_hint=caption,
+            tags_hint=tags_hint or [],
+            fallback=fallback,
+        )
+        inferred_category, inferred_subcategory = infer_category_pair(
+            filename=filename,
+            media_kind=media_kind,
+            title=text,
+            current_category=(domain_hint or {}).get("category_name") or fallback.category_name,
+            size=fallback.size,
+        )
+        category_name = _clean_label((domain_hint or {}).get("category_name")) or inferred_category or fallback.category_name or ""
+        subcategory_name = _clean_label((domain_hint or {}).get("subcategory_name")) or inferred_subcategory or fallback.subcategory_name or ""
+        tags = _normalize_tags([
+            *clean_tokens(text),
+            *clean_tokens(caption),
+            *((domain_hint or {}).get("tags") or []),
+            *(tags_hint or []),
+            *(fallback.tags[:4] if fallback.tags else []),
+        ])
+        return {
+            "title": (domain_hint or {}).get("title") or text,
+            "suggested_filename_base": _clean_filename_base(text),
+            "tags": tags[:12],
+            "category_name": category_name,
+            "subcategory_name": subcategory_name,
+            "is_adult": fallback.is_adult,
+            "confidence": 0.62,
+            "reason": f"Ollama compact caption: {caption}",
+            "source": "ollama",
+        }
+
+    training_guide = _training_guide_text(training_examples, limit=12, compact=False)
     prompt = (
         "You analyze media uploads for a personal gallery. Return JSON only.\n"
         "IMPORTANT: Never use generic titles like 'Backgrounds', 'Wallpaper', 'Image', 'Art', or 'Artwork'.\n"
@@ -965,7 +1090,7 @@ def _ollama_vision_analysis(
         "Only give a specific character or subcategory if the visual evidence is clear.\n"
         "Prefer these main categories when they fit: " + ", ".join(KNOWN_CATEGORIES) + ".\n"
         "Use this local recognition guide as hints, not proof: " + _character_guide_text() + ".\n"
-        + _training_guide_text(training_examples)
+        + training_guide
         + "If it looks like a phone wallpaper use category 'Phone Backgrounds'. If it looks like a desktop wallpaper use 'Desktop Backgrounds'.\n"
         "If the image is NSFW, set is_adult true.\n"
         "Return exactly this JSON schema:"
@@ -1008,7 +1133,7 @@ def _ollama_vision_analysis(
                 "reason",
             ],
         },
-        "options": {"temperature": 0.2},
+        "options": {"temperature": 0.2, "num_ctx": 2048, "num_predict": 160},
     }
     request = urllib.request.Request(
         f"{base_url}/api/generate",
@@ -1028,7 +1153,10 @@ def _ollama_vision_analysis(
     text = str(data.get("response") or "").strip()
     if not text:
         raise RuntimeError("Ollama response did not include text.")
-    return json.loads(text)
+    result = json.loads(text)
+    if _looks_placeholder_ai_result(result):
+        raise RuntimeError("Ollama returned placeholder schema values.")
+    return result
 
 
 def _gemini_vision_analysis(

@@ -492,7 +492,7 @@ async function runMobileMock(browser, failures) {
   await expectVisible(page, "Upload");
   await page.getByTitle("Settings").click();
   await expectVisible(page, "Settings");
-  await page.getByTitle("Profile").click();
+  await page.locator("a.avatar-link[title='Profile']").click();
   await expectVisible(page, "Testing every button");
   await page.getByTitle("Logout").click();
   await expectVisible(page, "Login");

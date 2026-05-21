@@ -307,7 +307,7 @@ def main() -> int:
     ai_enabled = env_or_file("GALLERY_AI_ENABLED", env_file, ai_enabled_default).lower() not in {"0", "false", "no", "off"}
     if ai_provider == "ollama":
         ai_base_url = env_or_file("GALLERY_OLLAMA_BASE_URL", env_file, "http://127.0.0.1:11434").rstrip("/")
-        ai_model = env_or_file("GALLERY_OLLAMA_MODEL", env_file, "qwen2.5vl:7b")
+        ai_model = env_or_file("GALLERY_OLLAMA_MODEL", env_file, "qwen2.5vl:3b")
     else:
         ai_base_url = env_or_file("GALLERY_AI_BASE_URL", env_file, env_or_file("OPENAI_BASE_URL", env_file, "https://api.openai.com/v1")).rstrip("/")
         ai_model = env_or_file("GALLERY_AI_MODEL", env_file, "gpt-5.4-nano")
