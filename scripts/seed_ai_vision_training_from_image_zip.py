@@ -36,6 +36,15 @@ SKIP_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm", ".wmv", ".flv", ".
 
 KNOWN_IMAGE_FILENAME_OVERRIDES: dict[str, dict[str, Any]] = {
     # Hand-labeled from the user-provided test images in this debugging session.
+    "two_wheeled_rainbow_by_sourcerabbit_d8iutaz-pre": {
+        "title": "Rainbow Dash",
+        "category_name": "My Little Pony",
+        "subcategory_name": "Equestria Girls",
+        "tags": ["rainbow dash", "mlp", "equestria girls", "motorcycle", "rainbow hair"],
+        "confidence": 0.94,
+        "reason": "Hand-labeled from the uploaded Rainbow Dash motorcycle reference image.",
+        "source": "manual-dataset-label",
+    },
     "0a512b46-bb67-4cdc-a911-b9b2989abe9e": {
         "title": "The Dazzlings",
         "category_name": "My Little Pony",
