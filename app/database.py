@@ -2769,6 +2769,34 @@ class GalleryDatabase:
                 )
                 return [self._decode_media(row) for row in await cur.fetchall()]
 
+    async def list_video_thumb_candidates(
+        self,
+        limit: int = 8,
+        before_media_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 8), 32))
+        clauses = ["m.deleted_at IS NULL", "m.media_kind='video'"]
+        params: list[Any] = []
+        if before_media_id:
+            clauses.append("m.id < %s")
+            params.append(int(before_media_id))
+        where_sql = " AND ".join(clauses)
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    f"""
+                    SELECT m.*, c.name AS category_name, sc.name AS subcategory_name
+                    FROM media_items m
+                    JOIN categories c ON c.id = m.category_id
+                    LEFT JOIN subcategories sc ON sc.id = m.subcategory_id
+                    WHERE {where_sql}
+                    ORDER BY m.id DESC
+                    LIMIT %s
+                    """,
+                    (*params, limit),
+                )
+                return [self._decode_media(row) for row in await cur.fetchall()]
+
     async def upsert_ai_media_learning_state(
         self,
         *,

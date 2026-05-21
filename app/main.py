@@ -64,6 +64,9 @@ MEDIA_LIST_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_MEDIA_LIST_CACHE_SE
 LOOKUP_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_LOOKUP_CACHE_SECONDS", "300") or "300"))
 PRESENCE_TOUCH_INTERVAL_SECONDS = max(15, int(os.getenv("GALLERY_PRESENCE_TOUCH_INTERVAL_SECONDS", "30") or "30"))
 MAX_IMAGE_PIXELS = max(8_000_000, int(os.getenv("GALLERY_MAX_IMAGE_PIXELS", "80000000")))
+VIDEO_THUMB_WARM_INTERVAL_SECONDS = max(45.0, float(os.getenv("GALLERY_VIDEO_THUMB_WARM_INTERVAL_SECONDS", "240") or "240"))
+VIDEO_THUMB_WARM_BATCH_SIZE = max(1, min(24, int(os.getenv("GALLERY_VIDEO_THUMB_WARM_BATCH_SIZE", "6") or "6")))
+VIDEO_THUMB_WARM_WIDTHS = tuple(sorted({420, 640}))
 REQUEST_ID_RE = re.compile(r"[^A-Za-z0-9_.:-]+")
 PERSONAL_API_PREFIXES = (
     "/api/auth/",
@@ -93,6 +96,7 @@ _background_cache: dict[str, Any] = {"built_at": 0.0, "items": []}
 _preview_cache: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
 _api_cache: OrderedDict[str, tuple[float, str, str]] = OrderedDict()
 _thumb_generation_locks: dict[str, asyncio.Lock] = {}
+_video_thumb_warm_tasks: dict[tuple[int, tuple[int, ...]], asyncio.Task[Any]] = {}
 GENERIC_MEDIA_TITLES = {
     "uncategorized media",
     "uncategorized image",
@@ -1751,6 +1755,24 @@ async def _ai_background_learning_loop() -> None:
         await asyncio.sleep(2.0 if processed else interval)
 
 
+async def _video_thumb_warm_loop() -> None:
+    await asyncio.sleep(18)
+    cursor: int | None = None
+    while True:
+        try:
+            scanned, cursor = await _run_video_thumb_warm_pass(cursor)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Video thumbnail warm loop paused after failure: %s", exc)
+            scanned, cursor = 0, None
+        if not scanned:
+            cursor = None
+            await asyncio.sleep(VIDEO_THUMB_WARM_INTERVAL_SECONDS)
+        else:
+            await asyncio.sleep(2.0)
+
+
 async def lifespan(app: FastAPI):
     global telegram_service
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -1758,6 +1780,7 @@ async def lifespan(app: FastAPI):
     migration_task = asyncio.create_task(_auto_migrate_legacy_uploads())
     health_task = asyncio.create_task(_telegram_health_watch_loop())
     ai_learning_task = asyncio.create_task(_ai_background_learning_loop())
+    video_thumb_task = asyncio.create_task(_video_thumb_warm_loop())
     telegram_service = TelegramPollingService(
         token=settings.telegram_bot_token,
         name="Image Gallery",
@@ -1798,6 +1821,13 @@ async def lifespan(app: FastAPI):
         pass
     except Exception as exc:
         logger.warning("Gallery AI background learning task ended during shutdown: %s", exc)
+    video_thumb_task.cancel()
+    try:
+        await video_thumb_task
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logger.warning("Gallery video thumbnail warm task ended during shutdown: %s", exc)
     await db.close()
 
 
@@ -2737,6 +2767,8 @@ async def upload_media(
             **moderation,
         }
     )
+    if media_kind == "video":
+        _queue_video_thumb_warmup(int(item["id"]), item=item, widths=VIDEO_THUMB_WARM_WIDTHS)
     adult_allowed = await _viewer_can_open_adult(request)
     _invalidate_api_cache("media", "tags", "categories")
     return {"media": _with_urls(request, item, adult_allowed)}
@@ -3168,6 +3200,109 @@ VIDEO_QUALITY_PROFILES = {
     "low": {"max_width": 854, "crf": 28, "audio_bitrate": "96k"},
 }
 
+
+def _video_thumb_cache_file(media_id: int, width: int) -> Path:
+    return THUMB_CACHE_DIR / f"{int(media_id)}_{int(width)}.webp"
+
+
+def _normalize_video_thumb_widths(widths: tuple[int, ...] | list[int] | None = None) -> tuple[int, ...]:
+    raw = widths or VIDEO_THUMB_WARM_WIDTHS
+    cleaned = sorted({max(160, min(int(width or 0), 1440)) for width in raw if int(width or 0) > 0})
+    return tuple(cleaned or VIDEO_THUMB_WARM_WIDTHS)
+
+
+async def _ensure_video_thumb_cache(
+    media_id: int,
+    *,
+    item: dict[str, Any] | None = None,
+    widths: tuple[int, ...] | list[int] | None = None,
+) -> int:
+    normalized_widths = _normalize_video_thumb_widths(widths)
+    pending = [
+        width
+        for width in normalized_widths
+        if not _video_thumb_cache_file(media_id, width).exists()
+        or _video_thumb_cache_file(media_id, width).stat().st_size <= 0
+    ]
+    if not pending:
+        return 0
+
+    item = item or await db.get_media(media_id, None)
+    if not item or str(item.get("media_kind") or "").lower() != "video":
+        return 0
+
+    async def _extract_from_source(source_path: Path) -> int:
+        generated = 0
+        for width in pending:
+            cache_file = _video_thumb_cache_file(media_id, width)
+            lock_key = f"video:{int(media_id)}:{width}"
+            lock = _thumb_generation_locks.setdefault(lock_key, asyncio.Lock())
+            async with lock:
+                if cache_file.exists() and cache_file.stat().st_size > 0:
+                    continue
+                success = await asyncio.to_thread(_render_video_frame_thumb, source_path, cache_file, width)
+                if success:
+                    generated += 1
+        return generated
+
+    file_row = await db.get_media_file(media_id)
+    if file_row and file_row.get("content"):
+        with tempfile.TemporaryDirectory(prefix="gallery-video-thumb-") as tmp_dir:
+            safe_name = Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
+            source_path = Path(tmp_dir) / safe_name
+            source_path.write_bytes(file_row["content"])
+            return await _extract_from_source(source_path)
+
+    legacy = _legacy_upload_path(item.get("storage_path"))
+    if legacy:
+        return await _extract_from_source(legacy)
+    return 0
+
+
+def _queue_video_thumb_warmup(
+    media_id: int,
+    *,
+    item: dict[str, Any] | None = None,
+    widths: tuple[int, ...] | list[int] | None = None,
+) -> asyncio.Task[Any]:
+    normalized_widths = _normalize_video_thumb_widths(widths)
+    key = (int(media_id), normalized_widths)
+    existing = _video_thumb_warm_tasks.get(key)
+    if existing and not existing.done():
+        return existing
+
+    async def _runner() -> None:
+        try:
+            generated = await _ensure_video_thumb_cache(int(media_id), item=item, widths=normalized_widths)
+            if generated:
+                logger.info("Warmed %s video thumbnail(s) for media %s.", generated, media_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("Video thumbnail warmup failed for media %s.", media_id, exc_info=True)
+        finally:
+            _video_thumb_warm_tasks.pop(key, None)
+
+    task = asyncio.create_task(_runner())
+    _video_thumb_warm_tasks[key] = task
+    return task
+
+
+async def _run_video_thumb_warm_pass(before_media_id: int | None = None) -> tuple[int, int | None]:
+    rows = await db.list_video_thumb_candidates(limit=VIDEO_THUMB_WARM_BATCH_SIZE, before_media_id=before_media_id)
+    if not rows:
+        return 0, None
+    next_cursor = int(rows[-1].get("id") or 0) or None
+    scanned = 0
+    for item in rows:
+        media_id = int(item.get("id") or 0)
+        if not media_id:
+            continue
+        await _ensure_video_thumb_cache(media_id, item=item, widths=VIDEO_THUMB_WARM_WIDTHS)
+        scanned += 1
+    return scanned, next_cursor
+
+
 def _thumb_file_response(request: Request, cache_file: Path, headers: dict[str, str]) -> Response | None:
     if not cache_file.exists() or cache_file.stat().st_size <= 0:
         return None
@@ -3204,34 +3339,16 @@ async def serve_media_thumb(media_id: int, request: Request, access: str | None 
 
     if str(item.get("media_kind") or "").lower() == "video":
         video_headers = {**headers, "X-Xenus-Video-Thumb": "frame"}
-        lock_key = f"video:{int(media_id)}:{width}"
-        lock = _thumb_generation_locks.setdefault(lock_key, asyncio.Lock())
-        async with lock:
-            cached = _thumb_file_response(request, cache_file, video_headers)
-            if cached:
-                return cached
-            file_row = await db.get_media_file(media_id)
-            extracted = False
-            if file_row:
-                with tempfile.TemporaryDirectory(prefix="gallery-video-thumb-") as tmp_dir:
-                    safe_name = Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
-                    source_path = Path(tmp_dir) / safe_name
-                    source_path.write_bytes(file_row["content"])
-                    extracted = await asyncio.to_thread(_render_video_frame_thumb, source_path, cache_file, width)
-            else:
-                legacy = _legacy_upload_path(item.get("storage_path"))
-                if legacy:
-                    extracted = await asyncio.to_thread(_render_video_frame_thumb, legacy, cache_file, width)
-            if extracted:
-                cached = _thumb_file_response(request, cache_file, video_headers)
-                if cached:
-                    return cached
-            preview_bytes, preview_mime = await asyncio.to_thread(_render_video_placeholder_thumb, item, width)
-            etag = f"\"video-thumb:{int(media_id)}:{width}:{hashlib.sha256(preview_bytes).hexdigest()[:16]}\""
-            fallback_headers = {**headers, "ETag": etag, "X-Xenus-Video-Thumb": "placeholder"}
-            if _etag_matches(request, etag):
-                return Response(status_code=304, headers=fallback_headers)
-            return Response(content=preview_bytes, media_type=preview_mime, headers=fallback_headers)
+        await _ensure_video_thumb_cache(int(media_id), item=item, widths=(width,))
+        cached = _thumb_file_response(request, cache_file, video_headers)
+        if cached:
+            return cached
+        preview_bytes, preview_mime = await asyncio.to_thread(_render_video_placeholder_thumb, item, width)
+        etag = f"\"video-thumb:{int(media_id)}:{width}:{hashlib.sha256(preview_bytes).hexdigest()[:16]}\""
+        fallback_headers = {**headers, "ETag": etag, "X-Xenus-Video-Thumb": "placeholder"}
+        if _etag_matches(request, etag):
+            return Response(status_code=304, headers=fallback_headers)
+        return Response(content=preview_bytes, media_type=preview_mime, headers=fallback_headers)
 
     if str(item.get("media_kind") or "").lower() != "image":
         return await _serve_media_content(media_id, request, access=access, as_download=False)

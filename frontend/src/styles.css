@@ -181,6 +181,239 @@ video {
   transition-duration: 1ms !important;
 }
 
+.gallery-loading-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  opacity: 1;
+  transition: opacity var(--motion-med), visibility var(--motion-med);
+}
+
+.gallery-loading-screen.is-leaving {
+  opacity: 0;
+  visibility: hidden;
+}
+
+.gallery-loading-backdrop {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 16% 18%, rgba(55, 201, 167, 0.18), transparent 26%),
+    radial-gradient(circle at 84% 20%, rgba(110, 199, 255, 0.16), transparent 24%),
+    radial-gradient(circle at 72% 76%, rgba(255, 207, 106, 0.11), transparent 24%),
+    linear-gradient(180deg, rgba(8, 11, 15, 0.5), rgba(8, 11, 15, 0.92)),
+    rgba(5, 7, 10, 0.7);
+  backdrop-filter: blur(22px);
+}
+
+.gallery-loading-panel {
+  position: relative;
+  display: grid;
+  gap: 20px;
+  width: min(920px, calc(100vw - 32px));
+  padding: 28px;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--line));
+  border-radius: calc(var(--radius) + 8px);
+  background:
+    radial-gradient(circle at top right, rgba(55, 201, 167, 0.14), transparent 34%),
+    linear-gradient(150deg, rgba(110, 199, 255, 0.08), transparent 38%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), transparent 55%),
+    rgba(10, 15, 21, 0.92);
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.44),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.gallery-loading-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.7), transparent);
+  pointer-events: none;
+}
+
+.gallery-loading-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 24px;
+  align-items: center;
+}
+
+.gallery-loading-lightbox {
+  position: relative;
+  width: 168px;
+  aspect-ratio: 1;
+  border-radius: 30px;
+  border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--line));
+  background:
+    radial-gradient(circle at 30% 25%, rgba(255, 207, 106, 0.22), transparent 28%),
+    radial-gradient(circle at 72% 72%, rgba(110, 199, 255, 0.22), transparent 30%),
+    rgba(8, 12, 17, 0.94);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.05),
+    0 0 42px color-mix(in srgb, var(--accent) 18%, transparent);
+  overflow: hidden;
+}
+
+.gallery-loading-frame,
+.gallery-loading-beam,
+.gallery-loading-core {
+  position: absolute;
+}
+
+.gallery-loading-frame {
+  --frame-transform: none;
+  inset: 22px;
+  border-radius: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background:
+    linear-gradient(135deg, rgba(55, 201, 167, 0.16), transparent 56%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.01)),
+    rgba(18, 26, 35, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  transform: var(--frame-transform);
+}
+
+.gallery-loading-frame.frame-back {
+  --frame-transform: translate(-22px, 16px) rotate(-10deg);
+  opacity: 0.46;
+  animation: gallery-frame-float 2.8s ease-in-out infinite;
+}
+
+.gallery-loading-frame.frame-mid {
+  --frame-transform: translate(18px, -14px) rotate(8deg);
+  opacity: 0.62;
+  animation: gallery-frame-float 2.8s ease-in-out infinite 180ms;
+}
+
+.gallery-loading-frame.frame-front {
+  inset: 18px;
+  --frame-transform: rotate(-2deg);
+  background:
+    linear-gradient(140deg, rgba(255, 207, 106, 0.16), transparent 36%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
+    rgba(20, 29, 38, 0.96);
+  animation: gallery-frame-float 2.8s ease-in-out infinite 360ms;
+}
+
+.gallery-loading-beam {
+  inset: -18% auto -18% -32%;
+  width: 52%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
+  transform: rotate(14deg);
+  filter: blur(1px);
+  animation: gallery-beam-scan 2.7s ease-in-out infinite;
+}
+
+.gallery-loading-core {
+  inset: 50%;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 78%, white);
+  transform: translate(-50%, -50%);
+  box-shadow:
+    0 0 0 10px rgba(110, 199, 255, 0.08),
+    0 0 24px color-mix(in srgb, var(--accent) 34%, transparent);
+  animation: gallery-core-breathe 1.8s ease-in-out infinite;
+}
+
+.gallery-loading-copy {
+  position: relative;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.gallery-loading-kicker {
+  color: color-mix(in srgb, var(--accent) 74%, white);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.gallery-loading-copy strong {
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  line-height: 0.94;
+  letter-spacing: -0.06em;
+  color: var(--text);
+}
+
+.gallery-loading-copy p {
+  max-width: 58ch;
+  margin: 0;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.55;
+}
+
+.gallery-loading-status-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.gallery-loading-status-grid article {
+  display: grid;
+  gap: 6px;
+  min-height: 118px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+  border-radius: calc(var(--radius) - 2px);
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 66%),
+    rgba(16, 23, 32, 0.82);
+}
+
+.gallery-loading-status-grid article span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.gallery-loading-status-grid article strong {
+  font-size: 1.15rem;
+  color: var(--text);
+}
+
+.gallery-loading-status-grid article small {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.gallery-loading-progress {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+  background: rgba(16, 23, 32, 0.82);
+  overflow: hidden;
+}
+
+.gallery-loading-progress span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, rgba(255, 207, 106, 0.16), color-mix(in srgb, var(--accent) 78%, white), rgba(110, 199, 255, 0.16));
+  box-shadow: 0 0 28px color-mix(in srgb, var(--accent) 26%, transparent);
+  animation: gallery-loading-drift 1.7s ease-in-out infinite;
+}
+
 .topbar {
   position: sticky;
   top: 0;
@@ -2213,6 +2446,55 @@ textarea:focus {
   }
 }
 
+@keyframes gallery-frame-float {
+  0%,
+  100% {
+    transform: var(--frame-transform) translateY(0);
+  }
+  50% {
+    transform: var(--frame-transform) translateY(-6px);
+  }
+}
+
+@keyframes gallery-beam-scan {
+  0% {
+    transform: translateX(-150%) rotate(14deg);
+    opacity: 0;
+  }
+  20% {
+    opacity: 0.34;
+  }
+  60% {
+    opacity: 0.18;
+  }
+  100% {
+    transform: translateX(340%) rotate(14deg);
+    opacity: 0;
+  }
+}
+
+@keyframes gallery-core-breathe {
+  0%,
+  100% {
+    transform: translate(-50%, -50%) scale(0.96);
+  }
+  50% {
+    transform: translate(-50%, -50%) scale(1.08);
+  }
+}
+
+@keyframes gallery-loading-drift {
+  0% {
+    transform: translateX(-18%);
+  }
+  50% {
+    transform: translateX(132%);
+  }
+  100% {
+    transform: translateX(-18%);
+  }
+}
+
 @keyframes live-pulse {
   0% {
     box-shadow: 0 0 0 0 rgba(126, 231, 135, 0.42);
@@ -2338,6 +2620,24 @@ textarea:focus {
 @media (max-width: 760px) {
   .app-shell {
     padding-bottom: calc(74px + env(safe-area-inset-bottom));
+  }
+
+  .gallery-loading-panel {
+    padding: 20px;
+  }
+
+  .gallery-loading-hero,
+  .gallery-loading-status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .gallery-loading-lightbox {
+    width: min(220px, 60vw);
+    margin: 0 auto;
+  }
+
+  .gallery-loading-copy strong {
+    font-size: clamp(1.8rem, 8vw, 2.8rem);
   }
 
   .main-stage {
@@ -2477,6 +2777,10 @@ textarea:focus {
 }
 
 @media (max-width: 420px) {
+  .gallery-loading-screen {
+    padding: 16px;
+  }
+
   .page-head h1 {
     font-size: 1.7rem;
   }

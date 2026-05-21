@@ -50,6 +50,11 @@ export function MediaDetailPage({ ctx }) {
     loadDetail();
   }, [loadDetail]);
 
+  useEffect(() => {
+    setVideoQuality("high");
+    setImageQuality("medium");
+  }, [mediaId]);
+
   useLiveRefresh(() => loadDetail({ background: true }), { enabled: Boolean(mediaId) && media?.media_kind !== "video", interval: 45_000 });
 
   async function addComment(event) {
@@ -111,6 +116,7 @@ export function MediaDetailPage({ ctx }) {
 
   const isOwner = ctx.user && Number(ctx.user.id) === Number(media.user_id);
   const gif = isGifMedia(media);
+  const videoSrc = media.media_kind === "video" ? videoQualityUrl(media, videoQuality) : "";
 
   return (
     <Page title={media.title || `Media ${media.id}`} eyebrow={media.media_kind || "Media"} actions={(
@@ -131,12 +137,12 @@ export function MediaDetailPage({ ctx }) {
               <div className="quality-bar">
                 <span>Video quality</span>
                 <select value={videoQuality} onChange={(event) => setVideoQuality(event.target.value)}>
-                  <option value="high">High</option>
+                  <option value="high">Original / full</option>
                   <option value="medium">Medium</option>
-                  <option value="low">Low</option>
+                  <option value="low">Low / fast</option>
                 </select>
               </div>
-              <video controls playsInline preload="metadata" src={videoQualityUrl(media, videoQuality)} poster={thumbUrl(media, 1280)} />
+              <video key={videoSrc} controls playsInline preload="metadata" src={videoSrc} poster={thumbUrl(media, 640)} />
             </>
           ) : (
             <>

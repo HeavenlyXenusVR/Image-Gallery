@@ -20,9 +20,10 @@ export function MediaGrid({ ctx, items, loading = false, emptyTitle = "No media"
 
 export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onItemUpdated }) {
   const actions = useMediaActions(ctx, onItemUpdated);
-  const thumb = thumbUrl(item);
+  const thumb = item.media_kind === "video" ? thumbUrl(item, 420) : thumbUrl(item);
   const mutedPreview = ctx.settings.muted_previews !== false;
   const liveVideoPreview = item.media_kind === "video" && ctx.settings.autoplay_previews && item.url && !isPerfLiteRuntime();
+  const previewSrc = liveVideoPreview ? videoQualityUrl(item, "low") : "";
   return (
     <article className={`media-card ${item.locked ? "is-locked" : ""}`}>
       <Link className="media-link" to={`/media/${item.id}`} aria-label={item.title || `Open media ${item.id}`}>
@@ -31,7 +32,8 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
             liveVideoPreview ? (
               <video
                 className={`video-thumb ${ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""}`}
-                src={videoQualityUrl(item, "medium")}
+                key={previewSrc}
+                src={previewSrc}
                 poster={thumb}
                 muted={mutedPreview}
                 autoPlay={mutedPreview}
