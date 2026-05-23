@@ -1,6 +1,6 @@
 {
-  "gallery_url": "https://rates-model-hoped-displayed.trycloudflare.com",
+  "gallery_url": "https://api.trycloudflare.com",
   "status": "live",
-  "local_urls": ["http://127.0.0.1:8788", "http://localhost:8788", "http://192.168.12.188:8788"],
-  "updated_at": "2026-05-22T13:05:08-05:00"
+  "local_urls": ["http://127.0.0.1:8788", "http://localhost:8788", "http://172.20.10.3:8788"],
+  "updated_at": "2026-05-22T21:53:16-05:00"
 }
