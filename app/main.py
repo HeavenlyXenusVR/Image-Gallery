@@ -1626,7 +1626,7 @@ async def _telegram_health_watch_loop() -> None:
             raise
         except Exception as exc:
             logger.exception("Image Gallery database health check failed.")
-            await _send_telegram_alert("db", "Image Gallery database problem", str(exc))
+            await _send_telegram_alert("db", "Image Gallery database problem", _safe_public_error(exc))
             try:
                 await db.reconnect()
             except Exception:
@@ -2625,16 +2625,11 @@ async def save_collection_item(collection_id: int, payload: CollectionItemReques
 @app.get("/api/ai/vision/status")
 async def ai_vision_status(request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
-    provider = str(os.getenv("GALLERY_AI_PROVIDER", "") or "").strip().lower()
+    provider = str(settings.ai_provider or "").strip().lower()
+    if provider in {"google", "google-gemini"}:
+        provider = "gemini"
     if not provider:
-        if os.getenv("GALLERY_OLLAMA_MODEL") or os.getenv("GALLERY_OLLAMA_BASE_URL"):
-            provider = "ollama"
-        elif os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
-            provider = "google-gemini"
-        elif os.getenv("GALLERY_AI_API_KEY") or os.getenv("OPENAI_API_KEY"):
-            provider = "openai"
-        else:
-            provider = "heuristic-only"
+        provider = "heuristic-only"
     training_count = 0
     try:
         training_count = len(await db.list_ai_vision_training_examples(int(auth["id"]), limit=1000))

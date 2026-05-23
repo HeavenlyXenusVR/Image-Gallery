@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# NixOS/user profile PATH support for systemd user services.
-export PATH="/run/current-system/sw/bin:${HOME}/.nix-profile/bin:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
-
 PORT="${1:-8788}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
@@ -191,11 +188,6 @@ publish_config() {
   fi
   if ! GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false run_git ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
     echo "Skipping live-config auto-push because GitHub auth is unavailable; local file was still updated."
-    return
-  fi
-  if ! run_git config user.email >/dev/null 2>&1 && ! git config --global user.email >/dev/null 2>&1; then
-    echo "Skipping live-config auto-push because git user.email is not configured." >&2
-    echo "Run: git config --global user.name 'HeavenlyXenusVR' && git config --global user.email 'heavenlyxenusvr@icloud.com'" >&2
     return
   fi
   echo "Publishing updated live-config.json to GitHub Pages..."

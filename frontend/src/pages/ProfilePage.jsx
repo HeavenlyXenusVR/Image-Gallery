@@ -97,7 +97,7 @@ export function ProfilePage({ ctx }) {
           {profile.bio ? <p>{profile.bio}</p> : null}
           <div className="profile-meta">
             {profile.location_label ? <span><MapPin size={14} />{profile.location_label}</span> : null}
-            {profile.website_url ? <a href={profile.website_url} target="_blank" rel="noreferrer"><LinkIcon size={14} />{profile.website_url.replace(/^https?:\/\//, "")}</a> : null}
+            {safeExternalUrl(profile.website_url) ? <a href={safeExternalUrl(profile.website_url)} target="_blank" rel="noreferrer"><LinkIcon size={14} />{safeExternalUrl(profile.website_url).replace(/^https?:\/\//, "")}</a> : null}
             {profileSettings.profile_show_joined_date !== false && profile.created_at ? <span><CalendarDays size={14} />{formatDate(profile.created_at)}</span> : null}
           </div>
           <ChipRow values={profile.featured_tags || []} />

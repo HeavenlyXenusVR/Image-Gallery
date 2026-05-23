@@ -41,12 +41,20 @@ def _env_int_set(name: str) -> set[int]:
     return values
 
 
+def _gemini_api_key() -> str:
+    return _env("GALLERY_GEMINI_API_KEY") or _env("GEMINI_API_KEY") or _env("GOOGLE_API_KEY")
+
+
 def _ai_provider(ai_api_key: str) -> str:
-    preferred = _env("GALLERY_AI_PROVIDER")
+    preferred = _env("GALLERY_AI_PROVIDER").lower()
     if preferred:
-        normalized = preferred.lower()
-        if normalized in {"openai", "ollama"}:
-            return normalized
+        if preferred in {"gemini", "google", "google-gemini"}:
+            return "gemini"
+        if preferred in {"openai", "ollama", "local"}:
+            return preferred
+    # Vision should prefer Gemini when a Gemini/Google key or model is configured.
+    if _gemini_api_key() or _env("GALLERY_GEMINI_MODEL") or _env("GEMINI_MODEL"):
+        return "gemini"
     if _env("GALLERY_OLLAMA_MODEL") or _env("GALLERY_OLLAMA_BASE_URL"):
         return "ollama"
     return "openai" if ai_api_key else "ollama"
@@ -127,14 +135,17 @@ class Settings:
 
     @property
     def active_ai_model(self) -> str:
+        if self.ai_provider in {"gemini", "google", "google-gemini"}:
+            return _env("GALLERY_GEMINI_MODEL") or _env("GEMINI_MODEL") or self.ai_model or "gemini-2.5-flash-lite"
         return self.ollama_model if self.ai_provider == "ollama" else self.ai_model
 
 
 def load_settings() -> Settings:
     pages_url = _env("GALLERY_PAGES_PUBLIC_URL", "https://heavenlyxenusvr.github.io/Image-Gallery/")
     ai_api_key = _env("GALLERY_AI_API_KEY") or _env("OPENAI_API_KEY")
+    gemini_api_key = _gemini_api_key()
     ai_provider = _ai_provider(ai_api_key)
-    ai_enabled_default = "true" if (ai_api_key or ai_provider == "ollama" or _env("GALLERY_OLLAMA_MODEL")) else "false"
+    ai_enabled_default = "true" if (ai_api_key or gemini_api_key or ai_provider in {"ollama", "gemini", "google", "google-gemini"} or _env("GALLERY_OLLAMA_MODEL")) else "false"
     ai_enabled_raw = _env("GALLERY_AI_ENABLED", ai_enabled_default)
     require_strong_secrets = _env_bool("GALLERY_REQUIRE_STRONG_SECRETS") or _env("GALLERY_ENV").lower() == "production"
     session_secret = _env("GALLERY_SESSION_SECRET")
@@ -180,9 +191,9 @@ def load_settings() -> Settings:
         smtp_use_tls=(_env("GALLERY_SMTP_USE_TLS") or _env("SMTP_USE_TLS") or "true").lower() not in {"0", "false", "no", "off"},
         ai_enabled=ai_enabled_raw.lower() not in {"0", "false", "no", "off"},
         ai_provider=ai_provider,
-        ai_api_key=ai_api_key,
+        ai_api_key=gemini_api_key if ai_provider in {"gemini", "google", "google-gemini"} else ai_api_key,
         ai_base_url=(_env("GALLERY_AI_BASE_URL") or _env("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/"),
-        ai_model=_env("GALLERY_AI_MODEL", "gpt-5.4-nano"),
+        ai_model=_env("GALLERY_GEMINI_MODEL") or _env("GEMINI_MODEL") or _env("GALLERY_AI_MODEL", "gemini-2.5-flash-lite" if ai_provider in {"gemini", "google", "google-gemini"} else "gpt-5.4-nano"),
         ollama_base_url=(_env("GALLERY_OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/"),
         ollama_model=_env("GALLERY_OLLAMA_MODEL", "qwen2.5vl:3b"),
         ai_timeout_seconds=max(10, int(_env("GALLERY_AI_TIMEOUT_SECONDS", "45"))),

@@ -2,12 +2,14 @@ const TOKEN_KEY = "image_gallery_token";
 const USER_KEY = "image_gallery_user";
 const API_CACHE_TTL = 30_000;
 const API_CACHE_STALE_TTL = 5 * 60_000;
-const API_CACHE_VERSION = "v3";
+const API_CACHE_VERSION = "v4";
 const API_CACHE_STORE_PREFIX = "image_gallery_api_cache:";
 const MAX_STORED_CACHE_BYTES = 700_000;
 const REMOTE_ORIGIN_KEY = "image_gallery_remote_origin";
 const REMOTE_ORIGIN_TTL = 60_000;
 const REMOTE_ORIGIN_STALE_TTL = 15 * 60_000;
+const API_FETCH_TIMEOUT_MS = 25_000;
+const REMOTE_CONFIG_TIMEOUT_MS = 8_000;
 
 const memoryCache = new Map();
 const inFlightFetches = new Map();
@@ -187,10 +189,10 @@ async function loadRemoteOrigin({ force = false } = {}) {
     return cached.origin;
   }
   try {
-    const response = await fetch(`${remoteConfigUrl()}?t=${Date.now()}`, { cache: "no-store" });
+    const response = await fetchWithTimeout(`${remoteConfigUrl()}?t=${Date.now()}`, { cache: "no-store" }, REMOTE_CONFIG_TIMEOUT_MS);
     if (!response.ok) throw new Error(`Remote config failed (${response.status})`);
     const config = await response.json();
-    const origin = String(config.gallery_url || config.api_url || "").replace(/\/+$/, "");
+    const origin = validApiOrigin(config.gallery_url || config.api_url);
     if (origin) {
       const entry = { origin, localUrls: normalizeLocalUrls(config.local_urls), updatedAt: Date.now() };
       applyRemoteOrigin(entry);
@@ -211,18 +213,18 @@ async function loadRemoteOrigin({ force = false } = {}) {
 async function fetchWithRemoteRetry(path, options, headers) {
   const target = await resolveApiUrl(path);
   try {
-    const response = await fetch(target, { ...options, headers });
+    const response = await fetchWithTimeout(target, { ...options, headers }, options.timeoutMs || API_FETCH_TIMEOUT_MS);
     if (shouldRefreshRemoteAfterStatus(response.status, options)) {
       const retryTarget = await retryTargetFor(path, target, options);
       if (retryTarget && retryTarget !== target) {
-        return fetch(retryTarget, { ...options, headers });
+        return fetchWithTimeout(retryTarget, { ...options, headers }, options.timeoutMs || API_FETCH_TIMEOUT_MS);
       }
     }
     return response;
   } catch (error) {
     const retryTarget = await retryTargetFor(path, target, options);
     if (retryTarget && retryTarget !== target) {
-      return fetch(retryTarget, { ...options, headers });
+      return fetchWithTimeout(retryTarget, { ...options, headers }, options.timeoutMs || API_FETCH_TIMEOUT_MS);
     }
     throw error;
   }
@@ -310,9 +312,32 @@ function clearRemoteOriginCache() {
 
 function normalizeLocalUrls(urls) {
   if (!Array.isArray(urls)) return [];
-  return urls
-    .map((url) => String(url || "").replace(/\/+$/, ""))
-    .filter(Boolean);
+  return urls.map((url) => validApiOrigin(url)).filter(Boolean);
+}
+
+function validApiOrigin(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw, window.location.href);
+    if (!["http:", "https:"].includes(parsed.protocol)) return "";
+    const host = parsed.hostname.toLowerCase();
+    const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1" || /^10\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+    if (window.location.protocol === "https:" && parsed.protocol !== "https:" && !isLocal) return "";
+    return parsed.origin.replace(/\/+$/, "");
+  } catch (_error) {
+    return "";
+  }
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = API_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || API_FETCH_TIMEOUT_MS));
+  try {
+    return await fetch(url, { ...options, signal: options.signal || controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 function originFromUrl(url) {

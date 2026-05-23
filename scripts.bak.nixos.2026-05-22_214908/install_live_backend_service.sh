@@ -30,8 +30,7 @@ Environment=GALLERY_SERVICE_START_BACKEND_IF_MISSING=0
 Environment=GALLERY_PUSH_OFFLINE_CONFIG=0
 Environment=GALLERY_CLOUDFLARE_PROTOCOL=http2
 Environment=GALLERY_KILL_STALE_PORT=0
-Environment=PATH=/run/current-system/sw/bin:/home/%u/.nix-profile/bin:/home/%u/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/run/current-system/sw/bin/env bash -lc 'cd "${ROOT_DIR}" && exec bash ./scripts/start_live_tunnel_service.sh 8788'
+ExecStart=/usr/bin/env bash -lc 'cd "${ROOT_DIR}" && exec bash ./scripts/start_live_tunnel_service.sh 8788'
 Restart=always
 RestartSec=15
 TimeoutStopSec=20

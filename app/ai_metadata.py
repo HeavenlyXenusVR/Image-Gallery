@@ -231,13 +231,15 @@ def analyze_media_bytes(
 
     local_classifier = _local_vision_command()
     provider = str(os.getenv("GALLERY_AI_PROVIDER", "")).strip().lower()
+    if provider == "google-gemini":
+        provider = "gemini"
     if provider not in {"local", "ollama", "openai", "google", "gemini"}:
-        if local_classifier:
+        if os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+            provider = "gemini"
+        elif local_classifier:
             provider = "local"
         elif os.getenv("GALLERY_OLLAMA_MODEL") or os.getenv("GALLERY_OLLAMA_BASE_URL"):
             provider = "ollama"
-        elif os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
-            provider = "google"
         else:
             provider = "openai"
     enabled_default = bool(
@@ -338,13 +340,14 @@ def analyze_media_bytes(
                     mime_type=mime_type,
                     media_kind=media_kind,
                 )
-            if os.getenv("GALLERY_OLLAMA_MODEL") or os.getenv("GALLERY_OLLAMA_BASE_URL"):
+            api_key = str(ai_api_key or os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GALLERY_AI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+            if os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+                provider = "gemini"
+            elif os.getenv("GALLERY_OLLAMA_MODEL") or os.getenv("GALLERY_OLLAMA_BASE_URL"):
                 provider = "ollama"
+            elif api_key:
+                provider = "openai"
             else:
-                api_key = str(ai_api_key or os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GALLERY_AI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
-                if api_key:
-                    provider = "google" if (os.getenv("GALLERY_GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")) else "openai"
-                else:
                     if training_result:
                         training_result["reason"] = training_result.get("reason") or "Learned gallery correction used after local vision failed."
                         return _merge_analysis(
@@ -357,7 +360,7 @@ def analyze_media_bytes(
                     fallback.reason = "Local vision classifier could not confidently identify this image."
                     return fallback
 
-        if provider == "ollama" or os.getenv("GALLERY_OLLAMA_MODEL"):
+        if provider == "ollama":
             model = str(os.getenv("GALLERY_OLLAMA_MODEL") or ai_model or "qwen2.5vl:3b").strip()
             base_url = str(os.getenv("GALLERY_OLLAMA_BASE_URL") or ai_base_url or "http://127.0.0.1:11434").rstrip("/")
             ai_result = _ollama_vision_analysis(
@@ -399,7 +402,7 @@ def analyze_media_bytes(
                 fallback=fallback,
                 training_examples=training_examples or [],
                 api_key=api_key,
-                model=str(ai_model or os.getenv("GALLERY_GEMINI_MODEL") or os.getenv("GEMINI_MODEL") or "gemini-2.5-flash-lite").strip(),
+                model=str(os.getenv("GALLERY_GEMINI_MODEL") or os.getenv("GEMINI_MODEL") or ai_model or "gemini-2.5-flash-lite").strip(),
                 timeout_seconds=timeout_seconds,
             )
             provider = "google"
@@ -439,6 +442,7 @@ def analyze_media_bytes(
             VISION_BACKOFF["ollama"] = time.time()
         if provider in {"google", "gemini"}:
             VISION_BACKOFF["google"] = time.time()
+        safe_exc = _safe_ai_error(exc)
         local_clip_result = local_clip_result or _local_clip_analysis(
             content=content,
             filename=filename,
@@ -447,7 +451,7 @@ def analyze_media_bytes(
             fallback=fallback,
         )
         if local_clip_result:
-            local_clip_result["reason"] = f"{local_clip_result.get('reason') or 'Local CLIP fallback used.'} Primary AI unavailable: {exc}"
+            local_clip_result["reason"] = f"{local_clip_result.get('reason') or 'Local CLIP fallback used.'} Primary AI unavailable: {safe_exc}"
             return _merge_analysis(
                 ai_result=local_clip_result,
                 fallback=fallback,
@@ -456,7 +460,7 @@ def analyze_media_bytes(
                 media_kind=media_kind,
             )
         if training_result:
-            training_result["reason"] = f"{training_result.get('reason') or 'Learned gallery correction used.'} Primary AI unavailable: {exc}"
+            training_result["reason"] = f"{training_result.get('reason') or 'Learned gallery correction used.'} Primary AI unavailable: {safe_exc}"
             return _merge_analysis(
                 ai_result=training_result,
                 fallback=fallback,
@@ -464,7 +468,7 @@ def analyze_media_bytes(
                 mime_type=mime_type,
                 media_kind=media_kind,
             )
-        fallback.reason = f"AI suggestion unavailable, using local analyzer: {exc}"
+        fallback.reason = f"AI suggestion unavailable, using local analyzer: {safe_exc}"
         return fallback
 
     if training_result:
@@ -1226,9 +1230,10 @@ def _gemini_vision_analysis(
             raw = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Gemini API error {exc.code}: {body[:240]}") from exc
+        message = _sanitize_ai_error_text(body)
+        raise RuntimeError(f"Gemini API error {exc.code}: {message[:180]}") from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError(f"Gemini API network error: {exc.reason}") from exc
+        raise RuntimeError(f"Gemini API network error: {_sanitize_ai_error_text(str(exc.reason))}") from exc
     data = json.loads(raw or "{}")
     candidates = data.get("candidates") or []
     parts = ((candidates[0] if candidates else {}).get("content") or {}).get("parts") or []

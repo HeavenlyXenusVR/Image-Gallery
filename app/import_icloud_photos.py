@@ -300,14 +300,20 @@ def main() -> int:
     db_name = env_or_file("GALLERY_DB_SCHEMA", env_file, "image_gallery")
     source_dir = Path(args.folder).expanduser()
     ai_provider = env_or_file("GALLERY_AI_PROVIDER", env_file, "").lower()
-    if ai_provider not in {"ollama", "openai"}:
-        ai_provider = "ollama" if (env_or_file("GALLERY_OLLAMA_MODEL", env_file, "") or env_or_file("GALLERY_OLLAMA_BASE_URL", env_file, "")) else "openai"
-    ai_api_key = env_or_file("GALLERY_AI_API_KEY", env_file, env_or_file("OPENAI_API_KEY", env_file, ""))
-    ai_enabled_default = "true" if (ai_api_key or ai_provider == "ollama") else "false"
+    gemini_key = env_or_file("GALLERY_GEMINI_API_KEY", env_file, env_or_file("GEMINI_API_KEY", env_file, env_or_file("GOOGLE_API_KEY", env_file, "")))
+    if ai_provider in {"google", "google-gemini"}:
+        ai_provider = "gemini"
+    if ai_provider not in {"ollama", "openai", "gemini"}:
+        ai_provider = "gemini" if (gemini_key or env_or_file("GALLERY_GEMINI_MODEL", env_file, "") or env_or_file("GEMINI_MODEL", env_file, "")) else ("ollama" if (env_or_file("GALLERY_OLLAMA_MODEL", env_file, "") or env_or_file("GALLERY_OLLAMA_BASE_URL", env_file, "")) else "openai")
+    ai_api_key = gemini_key if ai_provider == "gemini" else env_or_file("GALLERY_AI_API_KEY", env_file, env_or_file("OPENAI_API_KEY", env_file, ""))
+    ai_enabled_default = "true" if (ai_api_key or ai_provider in {"ollama", "gemini"}) else "false"
     ai_enabled = env_or_file("GALLERY_AI_ENABLED", env_file, ai_enabled_default).lower() not in {"0", "false", "no", "off"}
     if ai_provider == "ollama":
         ai_base_url = env_or_file("GALLERY_OLLAMA_BASE_URL", env_file, "http://127.0.0.1:11434").rstrip("/")
         ai_model = env_or_file("GALLERY_OLLAMA_MODEL", env_file, "qwen2.5vl:3b")
+    elif ai_provider == "gemini":
+        ai_base_url = ""
+        ai_model = env_or_file("GALLERY_GEMINI_MODEL", env_file, env_or_file("GEMINI_MODEL", env_file, "gemini-2.5-flash-lite"))
     else:
         ai_base_url = env_or_file("GALLERY_AI_BASE_URL", env_file, env_or_file("OPENAI_BASE_URL", env_file, "https://api.openai.com/v1")).rstrip("/")
         ai_model = env_or_file("GALLERY_AI_MODEL", env_file, "gpt-5.4-nano")
