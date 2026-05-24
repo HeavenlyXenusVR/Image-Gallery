@@ -116,8 +116,18 @@ print(json.dumps(deduped))
 PY
 }
 
+validate_config_json() {
+  CONFIG_FILE_PATH="${CONFIG_FILE}" python3 <<'PY'
+import json
+import os
+from pathlib import Path
+path = Path(os.environ["CONFIG_FILE_PATH"])
+json.loads(path.read_text(encoding="utf-8"))
+PY
+}
+
 backend_ready() {
-  curl -fsS "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1
+  curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1
 }
 
 port_in_use() {
@@ -156,6 +166,7 @@ write_config() {
   "updated_at": "$(date -Is)"
 }
 EOF
+  python3 -m json.tool "${tmp_config}" >/dev/null
   mv "${tmp_config}" "${CONFIG_FILE}"
 }
 
@@ -171,6 +182,7 @@ write_offline_config() {
   "updated_at": "$(date -Is)"
 }
 EOF
+  python3 -m json.tool "${tmp_config}" >/dev/null
   mv "${tmp_config}" "${CONFIG_FILE}"
 }
 
@@ -210,6 +222,10 @@ publish_config() {
   if ! run_host_git config user.email >/dev/null 2>&1 && ! git config --global user.email >/dev/null 2>&1; then
     echo "Skipping live-config auto-push because git user.email is not configured." >&2
     echo "Run: git config --global user.name 'HeavenlyXenusVR' && git config --global user.email 'heavenlyxenusvr@icloud.com'" >&2
+    return
+  fi
+  if ! validate_config_json; then
+    echo "Refusing to publish invalid live-config.json." >&2
     return
   fi
   echo "Publishing updated live-config.json to GitHub Pages..."

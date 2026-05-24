@@ -2,7 +2,7 @@ const TOKEN_KEY = "image_gallery_token";
 const USER_KEY = "image_gallery_user";
 const API_CACHE_TTL = 30_000;
 const API_CACHE_STALE_TTL = 5 * 60_000;
-const API_CACHE_VERSION = "v4";
+const API_CACHE_VERSION = "v5";
 const API_CACHE_STORE_PREFIX = "image_gallery_api_cache:";
 const MAX_STORED_CACHE_BYTES = 700_000;
 const REMOTE_ORIGIN_KEY = "image_gallery_remote_origin";
@@ -191,7 +191,8 @@ async function loadRemoteOrigin({ force = false } = {}) {
   try {
     const response = await fetchWithTimeout(`${remoteConfigUrl()}?t=${Date.now()}`, { cache: "no-store" }, REMOTE_CONFIG_TIMEOUT_MS);
     if (!response.ok) throw new Error(`Remote config failed (${response.status})`);
-    const config = await response.json();
+    const text = await response.text();
+    const config = parseRemoteConfig(text);
     const origin = validApiOrigin(config.gallery_url || config.api_url);
     if (origin) {
       const entry = { origin, localUrls: normalizeLocalUrls(config.local_urls), updatedAt: Date.now() };
@@ -212,6 +213,7 @@ async function loadRemoteOrigin({ force = false } = {}) {
 
 async function fetchWithRemoteRetry(path, options, headers) {
   const target = await resolveApiUrl(path);
+  options = { ...options, __path: path };
   try {
     const response = await fetchWithTimeout(target, { ...options, headers }, options.timeoutMs || API_FETCH_TIMEOUT_MS);
     if (shouldRefreshRemoteAfterStatus(response.status, options)) {
@@ -240,12 +242,21 @@ async function retryTargetFor(path, failedTarget, options) {
 }
 
 function shouldRefreshRemoteAfterStatus(status, options) {
-  return canRetryWithFreshRemote(options) && (status === 502 || status === 503 || status === 504 || (status >= 520 && status <= 526));
+  if (!canRetryWithFreshRemote(options)) return false;
+  return status === 404 || status === 405 || status === 502 || status === 503 || status === 504 || (status >= 520 && status <= 526);
 }
 
 function canRetryWithFreshRemote(options) {
   const method = String(options.method || "GET").toUpperCase();
-  return isRemoteStaticHost() && !options.body && (method === "GET" || method === "HEAD");
+  if (!isRemoteStaticHost()) return false;
+  if (method === "GET" || method === "HEAD") return true;
+  const path = String(options.__path || "");
+  if (method === "POST" && isSafeRemoteRetryPost(path)) return true;
+  return false;
+}
+
+function isSafeRemoteRetryPost(path) {
+  return /^\/api\/auth\/(login|register|resend-verification)/.test(path);
 }
 
 function fallbackApiUrl(path, failedOrigin) {
@@ -308,6 +319,72 @@ function clearRemoteOriginCache() {
   } catch (_error) {
     // Storage can be unavailable in hardened browser contexts.
   }
+}
+
+function parseRemoteConfig(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch (_error) {
+    const extracted = extractFirstJsonObject(raw);
+    if (extracted) {
+      try {
+        return JSON.parse(extracted);
+      } catch (_innerError) {
+        // Fall through to field-level salvage below.
+      }
+    }
+    return salvageRemoteConfig(raw);
+  }
+}
+
+function extractFirstJsonObject(raw) {
+  const start = raw.indexOf("{");
+  if (start < 0) return "";
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < raw.length; index += 1) {
+    const ch = raw[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) return raw.slice(start, index + 1);
+    }
+  }
+  return "";
+}
+
+function salvageRemoteConfig(raw) {
+  const pick = (name) => {
+    const match = raw.match(new RegExp(`"${name}"\\s*:\\s*"([^"]*)"`));
+    return match ? match[1] : "";
+  };
+  let localUrls = [];
+  const localMatch = raw.match(/"local_urls"\s*:\s*(\[[\s\S]*?\])/);
+  if (localMatch) {
+    try {
+      const parsed = JSON.parse(localMatch[1]);
+      if (Array.isArray(parsed)) localUrls = parsed;
+    } catch (_error) {
+      localUrls = [];
+    }
+  }
+  return {
+    gallery_url: pick("gallery_url"),
+    api_url: pick("api_url"),
+    status: pick("status"),
+    local_urls: localUrls,
+    updated_at: pick("updated_at"),
+  };
 }
 
 function normalizeLocalUrls(urls) {
