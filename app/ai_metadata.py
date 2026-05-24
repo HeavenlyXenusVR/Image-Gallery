@@ -892,6 +892,22 @@ def _resolve_bool(value: bool | None, *, env_name: str, default: bool) -> bool:
     return default
 
 
+def _safe_ai_error(exc: Exception) -> str:
+    """Convert an exception to a safe error string, removing sensitive information."""
+    error_msg = str(exc).strip()
+    # Remove common sensitive patterns like API keys, auth tokens, URLs with credentials
+    sensitive_patterns = [
+        r"https?://[^\s]+:[^\s]+@",  # URLs with credentials
+        r"api[_-]?key[=:\s]+[^\s]+",  # API keys
+        r"token[=:\s]+[^\s]+",  # Tokens
+        r"sk-[^\s]+",  # OpenAI-style keys
+        r"Bearer [^\s]+",  # Bearer tokens
+    ]
+    for pattern in sensitive_patterns:
+        error_msg = re.sub(pattern, "[REDACTED]", error_msg, flags=re.IGNORECASE)
+    return error_msg or "Unknown error"
+
+
 def _heuristic_analysis(
     *,
     filename: str,
