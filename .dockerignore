@@ -17,3 +17,10 @@ backups/
 *.pid
 *.backup*
 *.bak
+env.zip
+scripts.bak.*/
+app/*.backup-*
+app/static/*.backup-*
+index.html.backup-*
+404.html.backup-*
+*.zip

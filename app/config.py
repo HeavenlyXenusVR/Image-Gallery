@@ -167,9 +167,9 @@ def load_settings() -> Settings:
     db_password = _env("GALLERY_DB_PASSWORD") or _env("DB_PASSWORD") or _env("MYSQL_PASSWORD")
     if require_strong_secrets and not db_password:
         raise RuntimeError("GALLERY_DB_PASSWORD, DB_PASSWORD, or MYSQL_PASSWORD is required in hardened mode.")
-    storage_backend = _env("GALLERY_STORAGE_BACKEND", "filesystem").lower()
+    storage_backend = _env("GALLERY_STORAGE_BACKEND", "database").lower()
     if storage_backend not in {"filesystem", "database"}:
-        storage_backend = "filesystem"
+        storage_backend = "database"
     return Settings(
         db_host=_db_host(),
         db_port=int(_env("GALLERY_DB_PORT", "3306")),

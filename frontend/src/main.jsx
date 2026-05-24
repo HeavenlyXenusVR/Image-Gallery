@@ -8,6 +8,10 @@ function runtimeBasename() {
   const configured = String(window.IMAGE_GALLERY_BASENAME || "").replace(/\/+$/, "");
   if (configured) return configured;
   const path = window.location.pathname.replace(/\/+$/, "");
+  if (window.location.hostname.endsWith("github.io")) {
+    const first = path.split("/").filter(Boolean)[0];
+    if (first) return `/${first}`;
+  }
   if (path.startsWith("/static/react")) return "/static/react";
   if (path.startsWith("/app/static/react")) return "/app/static/react";
   return "";

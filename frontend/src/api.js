@@ -156,9 +156,19 @@ function isRemoteStaticHost() {
   return Boolean(window.IMAGE_GALLERY_REMOTE_MODE) || window.location.hostname.endsWith("github.io");
 }
 
+function staticSiteBase() {
+  const configured = String(window.IMAGE_GALLERY_BASENAME || "").replace(/\/+$/, "");
+  if (configured) return configured;
+  if (window.location.hostname.endsWith("github.io")) {
+    const first = window.location.pathname.split("/").filter(Boolean)[0];
+    return first ? `/${first}` : "";
+  }
+  return "";
+}
+
 function remoteConfigUrl() {
   if (window.IMAGE_GALLERY_CONFIG_URL) return window.IMAGE_GALLERY_CONFIG_URL;
-  const basename = String(window.IMAGE_GALLERY_BASENAME || "").replace(/\/+$/, "");
+  const basename = staticSiteBase();
   if (basename) return `${basename}/live-config.json`;
   return "live-config.json";
 }
@@ -256,7 +266,7 @@ function canRetryWithFreshRemote(options) {
 }
 
 function isSafeRemoteRetryPost(path) {
-  return /^\/api\/auth\/(login|register|resend-verification)/.test(path);
+  return /^\/api\/auth\/(login|register|resend-verification)(?:$|[/?#])/.test(path);
 }
 
 function fallbackApiUrl(path, failedOrigin) {
@@ -411,7 +421,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = API_FETCH_TIMEOUT
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || API_FETCH_TIMEOUT_MS));
   try {
-    return await fetch(url, { ...options, signal: options.signal || controller.signal });
+    return await fetch(url, { credentials: "include", ...options, signal: options.signal || controller.signal });
   } finally {
     window.clearTimeout(timer);
   }

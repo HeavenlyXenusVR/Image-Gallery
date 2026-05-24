@@ -9,6 +9,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 
 TOKEN_SALT = "image_gallery_api_token"
+SESSION_COOKIE_NAME = "image_gallery_session"
 PBKDF2_ITERATIONS = 260_000
 
 
@@ -49,10 +50,12 @@ def verify_token(token: str | None, secret_key: str, max_age_seconds: int) -> di
 
 def extract_bearer_token(request: Request) -> str | None:
     header = str(request.headers.get("authorization") or "").strip()
-    if not header.lower().startswith("bearer "):
-        return None
-    token = header[7:].strip()
-    return token or None
+    if header.lower().startswith("bearer "):
+        token = header[7:].strip()
+        if token:
+            return token
+    cookie_token = str(request.cookies.get(SESSION_COOKIE_NAME) or "").strip()
+    return cookie_token or None
 
 
 def require_auth(request: Request, secret_key: str, max_age_seconds: int) -> dict[str, Any]:

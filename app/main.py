@@ -1,5 +1,6 @@
 import asyncio
 import io
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -32,7 +33,7 @@ from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .ai_metadata import analyze_media_bytes, is_low_signal_filename, _image_fingerprint
-from .auth import extract_bearer_token, issue_token, require_auth, verify_token
+from .auth import SESSION_COOKIE_NAME, extract_bearer_token, issue_token, require_auth, verify_token
 from .config import ROOT_DIR, load_settings
 from .database import GalleryDatabase
 from .emailer import EmailDeliveryError, send_verification_email
@@ -1264,20 +1265,67 @@ MAGIC_SIGNATURES = (
     (b"OggS", "video/ogg", "video"),
 )
 RATE_BUCKETS: dict[str, list[float]] = {}
+TRUSTED_PROXY_NETS = tuple(
+    ipaddress.ip_network(value.strip())
+    for value in os.getenv(
+        "GALLERY_TRUSTED_PROXY_CIDRS",
+        "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+    ).split(",")
+    if value.strip()
+)
+
+
+def _is_trusted_proxy(host: str | None) -> bool:
+    if not host:
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return host in {"localhost", "host.docker.internal"}
+    return any(ip in network for network in TRUSTED_PROXY_NETS)
+
+
+def _clean_ip(value: str | None) -> str:
+    raw = str(value or "").strip().split(",")[0].strip()[:64]
+    if not raw:
+        return ""
+    try:
+        return str(ipaddress.ip_address(raw))
+    except ValueError:
+        return re.sub(r"[^A-Za-z0-9_.:-]", "", raw)[:64]
 
 
 def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-    return forwarded or (request.client.host if request.client else "unknown")
+    direct = _clean_ip(request.client.host if request.client else "") or "unknown"
+    if _is_trusted_proxy(direct):
+        cf_ip = _clean_ip(request.headers.get("cf-connecting-ip"))
+        if cf_ip:
+            return cf_ip
+        real_ip = _clean_ip(request.headers.get("x-real-ip"))
+        if real_ip:
+            return real_ip
+        forwarded = _clean_ip(request.headers.get("x-forwarded-for"))
+        if forwarded:
+            return forwarded
+    return direct
 
 
-def _rate_limit(key: str, *, limit: int, window_seconds: int) -> None:
+async def _rate_limit(key: str, *, limit: int, window_seconds: int) -> None:
+    clean_key = re.sub(r"[^A-Za-z0-9_.:@-]", "_", str(key or "unknown"))[:190]
+    try:
+        if await db.check_rate_limit(clean_key, limit=limit, window_seconds=window_seconds):
+            return
+        raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.warning("DB-backed rate limit unavailable; using in-process fallback for %s.", clean_key, exc_info=True)
     now = time.time()
-    bucket = [t for t in RATE_BUCKETS.get(key, []) if now - t < window_seconds]
+    bucket = [t for t in RATE_BUCKETS.get(clean_key, []) if now - t < window_seconds]
     if len(bucket) >= limit:
         raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
     bucket.append(now)
-    RATE_BUCKETS[key] = bucket
+    RATE_BUCKETS[clean_key] = bucket
 
 
 def _bounded_query_limit(value: Any, *, default: int = 60, max_limit: int | None = None) -> int:
@@ -1395,7 +1443,7 @@ def _security_headers(request: Request, response: Response) -> None:
         "media-src 'self' blob: data: https:",
         "font-src 'self' data: https://fonts.gstatic.com",
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-        "script-src 'self' 'unsafe-inline'",
+        "script-src 'self'",
         "connect-src 'self' https: http: ws: wss:",
     ])
     response.headers.setdefault("Content-Security-Policy", csp)
@@ -1478,9 +1526,8 @@ async def _read_validated_upload(upload: UploadFile, max_bytes: int, *, image_on
                     raise HTTPException(status_code=413, detail="Image resolution is too large.")
         except HTTPException:
             raise
-        except Exception:
-            # Some valid formats may not decode in Pillow on every platform; magic-byte validation already ran.
-            pass
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Image bytes are corrupt or unsupported by the server image decoder.") from exc
     sha256 = hashlib.sha256(content).hexdigest()
     return {
         "content": content,
@@ -1869,7 +1916,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_origin_regex=cors_origin_regex,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-Request-ID"],
 )
@@ -2023,6 +2070,9 @@ async def live_checks(request: Request) -> dict[str, Any]:
             "checks": checks,
             "check_map": {str(item.get("id")): bool(item.get("ok")) for item in checks},
             "snapshot": _jsonable(snapshot),
+            "storage_backend": settings.storage_backend,
+            "max_upload_bytes": settings.max_upload_bytes,
+            "media_page_limit": settings.media_page_limit,
             "server_time": datetime.utcnow().isoformat() + "Z",
         }
     except Exception as exc:
@@ -2038,6 +2088,9 @@ async def live_checks(request: Request) -> dict[str, Any]:
             "checks": [{"id": "db", "label": "Database reachable", "ok": False, "severity": "error", "detail": str(exc)[:240]}],
             "check_map": {"api": True, "db": False, "database": False},
             "snapshot": {},
+            "storage_backend": settings.storage_backend,
+            "max_upload_bytes": settings.max_upload_bytes,
+            "media_page_limit": settings.media_page_limit,
             "server_time": datetime.utcnow().isoformat() + "Z",
         }
 
@@ -2072,9 +2125,32 @@ async def migrate_legacy_files(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Migration failed: {str(exc)[:220]}") from None
 
 
+def _request_is_https(request: Request) -> bool:
+    proto = str(request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    return request.url.scheme == "https" or proto == "https"
+
+
+def _set_session_cookie(response: Response, token: str, request: Request) -> None:
+    secure = _request_is_https(request)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        token,
+        max_age=settings.api_token_ttl_seconds,
+        httponly=True,
+        secure=secure,
+        samesite="none" if secure else "lax",
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response, request: Request) -> None:
+    secure = _request_is_https(request)
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/", secure=secure, samesite="none" if secure else "lax")
+
+
 @app.post("/api/auth/register")
-async def register(payload: RegisterRequest, request: Request) -> dict[str, Any]:
-    _rate_limit(f"register:{_client_ip(request)}", limit=10, window_seconds=3600)
+async def register(payload: RegisterRequest, request: Request, response: Response) -> dict[str, Any]:
+    await _rate_limit(f"register:{_client_ip(request)}", limit=10, window_seconds=3600)
     email_token = _verification_code() if payload.email else None
     try:
         user = await db.register_user(payload.username, payload.password, payload.display_name, payload.email, email_token)
@@ -2088,9 +2164,11 @@ async def register(payload: RegisterRequest, request: Request) -> dict[str, Any]
     email_error = None
     if user.get("email") and email_token:
         verification_sent, email_error = _try_send_verification(request, user, email_token)
+    token = issue_token(settings.session_secret, user)
+    _set_session_cookie(response, token, request)
     return {
         "user": _jsonable(user),
-        "token": issue_token(settings.session_secret, user),
+        "token": token,
         "email_verification_sent": verification_sent,
         "email_error": email_error,
     }
@@ -2111,7 +2189,7 @@ async def verify_email(request: Request, token: str):
 @app.post("/api/auth/resend-verification")
 async def resend_verification(request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
-    _rate_limit(f"resend-verification:{auth['id']}", limit=8, window_seconds=3600)
+    await _rate_limit(f"resend-verification:{auth['id']}", limit=8, window_seconds=3600)
     user = await db.get_user(int(auth["id"]))
     if not user:
         raise HTTPException(status_code=404, detail="Account not found.")
@@ -2128,7 +2206,7 @@ async def resend_verification(request: Request) -> dict[str, Any]:
 @app.post("/api/me/email")
 async def update_email(payload: EmailUpdateRequest, request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
-    _rate_limit(f"email-update:{auth['id']}", limit=8, window_seconds=3600)
+    await _rate_limit(f"email-update:{auth['id']}", limit=8, window_seconds=3600)
     try:
         user = await db.update_user_email(int(auth["id"]), payload.email)
     except ValueError as exc:
@@ -2144,7 +2222,7 @@ async def update_email(payload: EmailUpdateRequest, request: Request) -> dict[st
 @app.post("/api/me/email/verify")
 async def verify_email_code(payload: EmailCodeRequest, request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
-    _rate_limit(f"email-verify:{auth['id']}", limit=20, window_seconds=3600)
+    await _rate_limit(f"email-verify:{auth['id']}", limit=20, window_seconds=3600)
     code = re.sub(r"\D+", "", str(payload.code or ""))[:12]
     if not code:
         raise HTTPException(status_code=400, detail="Enter the verification code from your email.")
@@ -2155,7 +2233,7 @@ async def verify_email_code(payload: EmailCodeRequest, request: Request) -> dict
 
 
 @app.post("/api/auth/login")
-async def login(payload: LoginRequest, request: Request) -> dict[str, Any]:
+async def login(payload: LoginRequest, request: Request, response: Response) -> dict[str, Any]:
     ip = _client_ip(request)
     username = (payload.username or "").strip()[:80]
     if await db.count_recent_failed_auth(username, ip) >= 8:
@@ -2168,7 +2246,15 @@ async def login(payload: LoginRequest, request: Request) -> dict[str, Any]:
     await db.record_auth_attempt(username, ip, bool(user))
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password.")
-    return {"user": _jsonable(user), "token": issue_token(settings.session_secret, user)}
+    token = issue_token(settings.session_secret, user)
+    _set_session_cookie(response, token, request)
+    return {"user": _jsonable(user), "token": token}
+
+
+@app.post("/api/auth/logout")
+async def logout(request: Request, response: Response) -> dict[str, Any]:
+    _clear_session_cookie(response, request)
+    return {"ok": True}
 
 
 @app.get("/api/me")
@@ -2207,7 +2293,7 @@ async def update_settings(payload: SettingsUpdateRequest, request: Request) -> d
 @app.post("/api/me/avatar")
 async def update_avatar(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
-    _rate_limit(f"avatar:{auth['id']}", limit=20, window_seconds=3600)
+    await _rate_limit(f"avatar:{auth['id']}", limit=20, window_seconds=3600)
     uploaded = await _read_validated_upload(file, 5 * 1024 * 1024, image_only=True)
 
     try:
@@ -2685,7 +2771,7 @@ async def upload_media(
     visibility = str(visibility or "public").lower()
     if visibility not in {"public", "unlisted", "private"}:
         raise HTTPException(status_code=400, detail="Visibility must be public, unlisted, or private.")
-    _rate_limit(f"upload:{auth['id']}", limit=settings.upload_rate_limit_per_hour, window_seconds=3600)
+    await _rate_limit(f"upload:{auth['id']}", limit=settings.upload_rate_limit_per_hour, window_seconds=3600)
     uploaded = await _read_validated_upload(file, settings.max_upload_bytes)
     training_examples = await _ai_training_examples_for(int(auth["id"]))
     analysis = await _analyze_media_safely(
@@ -2783,7 +2869,7 @@ async def analyze_media_upload(
     tags: str = Form(""),
 ) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
-    _rate_limit(f"analyze:{auth['id']}", limit=settings.analyze_rate_limit_per_hour, window_seconds=3600)
+    await _rate_limit(f"analyze:{auth['id']}", limit=settings.analyze_rate_limit_per_hour, window_seconds=3600)
     uploaded = await _read_validated_upload(file, settings.max_upload_bytes)
     training_examples = await _ai_training_examples_for(int(auth["id"]))
     analysis = await _analyze_media_safely(

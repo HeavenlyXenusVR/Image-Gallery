@@ -1,5 +1,13 @@
 export const PAGE_SIZE = 24;
-export const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
+export const FALLBACK_MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
+export let MAX_UPLOAD_BYTES = FALLBACK_MAX_UPLOAD_BYTES;
+
+export function setRuntimeMaxUploadBytes(value) {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed > 0) MAX_UPLOAD_BYTES = parsed;
+  return MAX_UPLOAD_BYTES;
+}
+
 
 export const DEFAULT_SETTINGS = {
   theme_mode: "system",

@@ -28,6 +28,13 @@ def quote_identifier(value: str) -> str:
     if not DB_IDENTIFIER_RE.fullmatch(name):
         raise RuntimeError(f"Unsafe database identifier: {name!r}")
     return f"`{name}`"
+
+
+def mysql_error_code(exc: Exception) -> int | None:
+    try:
+        return int(getattr(exc, "args", [None])[0])
+    except (TypeError, ValueError):
+        return None
 DEFAULT_USER_SETTINGS = {
     "theme_mode": "system",
     "accent_color": "#37c9a7",
@@ -441,6 +448,19 @@ class GalleryDatabase:
                     """,
                 )
                 await ensure_table(
+                    "api_rate_limits",
+                    """
+                    CREATE TABLE api_rate_limits (
+                      bucket_key VARCHAR(190) NOT NULL PRIMARY KEY,
+                      window_start TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      event_count INT UNSIGNED NOT NULL DEFAULT 0,
+                      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                      KEY idx_api_rate_limits_updated (updated_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+
+                await ensure_table(
                     "media_likes",
                     """
                     CREATE TABLE media_likes (
@@ -609,8 +629,9 @@ class GalleryDatabase:
                 await cur.execute("UPDATE users SET user_settings=%s WHERE user_settings IS NULL", (json.dumps(DEFAULT_USER_SETTINGS),))
                 try:
                     await cur.execute("CREATE UNIQUE INDEX uniq_users_email ON users (email)")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    if mysql_error_code(exc) != 1061:
+                        log.warning("Could not create uniq_users_email; duplicate or invalid existing email data may need cleanup: %s", exc)
 
     async def ensure_subcategory_tables(self) -> None:
         async with self.pool.acquire() as conn:
@@ -662,8 +683,9 @@ class GalleryDatabase:
                     await cur.execute("CREATE INDEX idx_media_adult ON media_items (is_adult, created_at)")
                 try:
                     await cur.execute("CREATE INDEX idx_media_subcategory ON media_items (subcategory_id)")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    if mysql_error_code(exc) != 1061:
+                        log.warning("Could not create idx_media_subcategory: %s", exc)
                 await cur.execute(
                     """
                     SELECT CONSTRAINT_NAME
@@ -700,12 +722,14 @@ class GalleryDatabase:
                         await cur.execute(f"ALTER TABLE ai_vision_training_examples ADD COLUMN {name} {definition}")
                 try:
                     await cur.execute("CREATE INDEX idx_ai_training_phash ON ai_vision_training_examples (image_phash)")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    if mysql_error_code(exc) != 1061:
+                        log.warning("Could not create idx_ai_training_phash: %s", exc)
                 try:
                     await cur.execute("CREATE UNIQUE INDEX uniq_ai_training_dedupe ON ai_vision_training_examples (dedupe_key)")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    if mysql_error_code(exc) != 1061:
+                        log.warning("Could not create uniq_ai_training_dedupe; duplicate dedupe keys may need cleanup: %s", exc)
 
     async def ensure_ai_media_learning_tables(self) -> None:
         async with self.pool.acquire() as conn:
@@ -1195,8 +1219,8 @@ class GalleryDatabase:
                         if media_file_id:
                             try:
                                 await cur.execute("DELETE FROM media_files WHERE id=%s", (media_file_id,))
-                            except Exception:
-                                pass
+                            except Exception as cleanup_exc:
+                                log.warning("Failed to cleanup incomplete media_file row %s after failed chunk write: %s", media_file_id, cleanup_exc)
                         raise
 
     async def get_media_file_info(self, media_id: int) -> dict[str, Any] | None:
@@ -2531,6 +2555,55 @@ class GalleryDatabase:
                 )
                 row = await cur.fetchone()
                 return int(row["n"] or 0)
+
+    async def check_rate_limit(self, key: str, *, limit: int, window_seconds: int) -> bool:
+        """DB-backed fixed-window rate limiter shared across workers/restarts."""
+        bucket_key = str(key or "unknown")[:190]
+        limit = max(1, int(limit or 1))
+        window_seconds = max(1, int(window_seconds or 1))
+        async with self.pool.acquire() as conn:
+            await conn.ping(reconnect=True)
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await conn.begin()
+                try:
+                    await cur.execute(
+                        """
+                        SELECT event_count, TIMESTAMPDIFF(SECOND, window_start, UTC_TIMESTAMP()) AS age_seconds
+                        FROM api_rate_limits
+                        WHERE bucket_key=%s
+                        FOR UPDATE
+                        """,
+                        (bucket_key,),
+                    )
+                    row = await cur.fetchone()
+                    if not row:
+                        await cur.execute(
+                            "INSERT INTO api_rate_limits (bucket_key, window_start, event_count) VALUES (%s, UTC_TIMESTAMP(), 1)",
+                            (bucket_key,),
+                        )
+                        await conn.commit()
+                        return True
+                    age = int(row.get("age_seconds") or 0)
+                    count = int(row.get("event_count") or 0)
+                    if age >= window_seconds:
+                        await cur.execute(
+                            "UPDATE api_rate_limits SET window_start=UTC_TIMESTAMP(), event_count=1 WHERE bucket_key=%s",
+                            (bucket_key,),
+                        )
+                        await conn.commit()
+                        return True
+                    if count >= limit:
+                        await conn.rollback()
+                        return False
+                    await cur.execute(
+                        "UPDATE api_rate_limits SET event_count=event_count+1 WHERE bucket_key=%s",
+                        (bucket_key,),
+                    )
+                    await conn.commit()
+                    return True
+                except Exception:
+                    await conn.rollback()
+                    raise
 
     async def report_media(self, media_id: int, user_id: int, reason: str, details: str | None) -> dict[str, Any]:
         reason = self._clean_text(reason, 80, required=True)

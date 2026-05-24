@@ -3,7 +3,7 @@ import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { apiFetch, cachedApiFetch, clearApiCache, prefetchApi, readStoredUser, readToken, toQuery, writeStoredUser, writeToken } from "./api.js";
 import { Shell } from "./components/Shell.jsx";
 import { NotFound } from "./components/ui.jsx";
-import { DEFAULT_SETTINGS, PAGE_SIZE } from "./config.js";
+import { DEFAULT_SETTINGS, PAGE_SIZE, setRuntimeMaxUploadBytes } from "./config.js";
 import { useLiveRefresh } from "./hooks/useLiveRefresh.js";
 import { galleryClassName, galleryStyle } from "./utils/appearance.js";
 import { AuthPage } from "./pages/AuthPage.jsx";
@@ -55,6 +55,7 @@ function App() {
   }, []);
 
   const logout = useCallback((withNotice = true) => {
+    void apiFetch("/api/auth/logout", { method: "POST", timeoutMs: 5000 }).catch(() => null);
     writeToken("");
     writeStoredUser(null);
     clearApiCache();
@@ -72,6 +73,7 @@ function App() {
         cachedApiFetch("/api/tags", { ttl: 10 * 60_000, staleTtl: 60 * 60_000, storage: "local" }),
         cachedApiFetch("/api/live/checks", { ttl: 30_000, staleTtl: 5 * 60_000 }),
       ]);
+      if (live.status === "fulfilled") setRuntimeMaxUploadBytes(live.value?.max_upload_bytes);
       setLookups({
         categories: categories.status === "fulfilled" ? categories.value.categories || [] : [],
         tags: tags.status === "fulfilled" ? tags.value.tags || [] : [],
@@ -100,20 +102,21 @@ function App() {
   }, [navigate, refreshLookups, showToast]);
 
   const refreshMe = useCallback(async () => {
-    if (!readToken()) {
-      setSessionUser(null);
-      setSessionReady(true);
-      return;
-    }
     try {
       const data = await apiFetch("/api/me");
       setSessionUser(data.user);
+      if (!readToken() && data.user) setTokenState("cookie-session");
     } catch (error) {
-      if (error.status === 401) logout(false);
+      if (error.status === 401) {
+        writeToken("");
+        writeStoredUser(null);
+        setTokenState("");
+        setSessionUser(null);
+      }
     } finally {
       setSessionReady(true);
     }
-  }, [logout, setSessionUser]);
+  }, [setSessionUser]);
 
   useEffect(() => {
     refreshMe();

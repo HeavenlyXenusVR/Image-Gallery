@@ -13,3 +13,12 @@ npm-debug.log*
 *.bak
 .aria_patch_backups/
 backups/*.sql
+.env.*
+env.zip
+.DS_Store
+.pytest_cache/
+scripts.bak.*/
+app/*.backup-*
+app/static/*.backup-*
+index.html.backup-*
+404.html.backup-*
