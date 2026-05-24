@@ -105,7 +105,8 @@ export function UploadPage({ ctx }) {
             {preview ? (form.file?.type?.startsWith("video/") ? <video src={preview} muted playsInline /> : <img src={preview} alt="" />) : <Upload size={42} />}
             <span>{form.file?.name || "Choose media"}</span>
           </label>
-          {analysis ? <ChipRow values={[analysis.media_kind, analysis.category_name, ...(analysis.tags || [])]} /> : null}
+          {analysis ? <ChipRow values={[analysis.media_kind, analysis.source, analysis.category_name, ...(analysis.tags || [])]} /> : null}
+          {analysis?.reason ? <p className="muted small">{analysis.reason}</p> : null}
         </section>
         <section className="stacked-form">
           <label className="field"><span>Title</span><input value={form.title} onChange={(event) => update("title", event.target.value)} required maxLength={160} /></label>

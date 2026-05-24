@@ -380,6 +380,8 @@ def _build_media_description(
         lines.append("Recognized through the gallery's learned visual reference memory.")
     elif source_name == "gallery-training":
         lines.append("Recognized from the gallery's learned metadata and correction history.")
+    elif source_name in {"google-gemini", "gemini"}:
+        lines.append("Analyzed through the gallery's Gemini vision pipeline.")
     elif source_name == "ollama":
         lines.append("Analyzed through the gallery's local Ollama vision pipeline.")
     elif source_name == "local-clip":
@@ -447,7 +449,7 @@ async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> d
     current_description = str(item.get("description") or "")
     confidence = float(getattr(analysis, "confidence", 0.0) or 0.0)
     source = str(getattr(analysis, "source", "") or "").lower()
-    if source not in {"visual-training", "gallery-training", "ollama", "local-clip", "domain-hint"}:
+    if source not in {"visual-training", "gallery-training", "google-gemini", "gemini", "ollama", "local-clip", "domain-hint"}:
         return None
     if confidence < float(getattr(settings, "ai_background_learning_autofill_confidence", 0.88) or 0.88):
         return None
@@ -2642,8 +2644,11 @@ async def ai_vision_status(request: Request) -> dict[str, Any]:
         "training_examples_available": training_count,
         "active_model": settings.active_ai_model,
         "active_base_url": settings.active_ai_base_url if provider == "ollama" else None,
+        "gemini_key_configured": bool(getattr(settings, "ai_api_key", "") and provider == "gemini"),
     }
-    if provider == "ollama":
+    if provider == "gemini":
+        status.update({"active_base_url": "https://generativelanguage.googleapis.com", "reachable": None if settings.ai_api_key else False, "reason": None if settings.ai_api_key else "Gemini provider is selected but no Gemini API key is configured."})
+    elif provider == "ollama":
         base_url = str(os.getenv("GALLERY_OLLAMA_BASE_URL") or settings.active_ai_base_url or "http://127.0.0.1:11434").rstrip("/")
         try:
             with urllib.request.urlopen(f"{base_url}/api/tags", timeout=3) as response:

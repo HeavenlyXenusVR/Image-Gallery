@@ -17,6 +17,19 @@ def _env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+def _env_or_file(name: str, default: str = "") -> str:
+    value = _env(name)
+    if value:
+        return value
+    file_path = _env(f"{name}_FILE")
+    if file_path:
+        try:
+            return Path(file_path).read_text(encoding="utf-8").strip()
+        except Exception:
+            return default
+    return default
+
+
 def _env_csv(name: str) -> list[str]:
     return [item.strip().rstrip("/") for item in _env(name).split(",") if item.strip()]
 
@@ -42,7 +55,7 @@ def _env_int_set(name: str) -> set[int]:
 
 
 def _gemini_api_key() -> str:
-    return _env("GALLERY_GEMINI_API_KEY") or _env("GEMINI_API_KEY") or _env("GOOGLE_API_KEY")
+    return _env_or_file("GALLERY_GEMINI_API_KEY") or _env_or_file("GEMINI_API_KEY") or _env_or_file("GOOGLE_API_KEY")
 
 
 def _ai_provider(ai_api_key: str) -> str:
@@ -142,7 +155,7 @@ class Settings:
 
 def load_settings() -> Settings:
     pages_url = _env("GALLERY_PAGES_PUBLIC_URL", "https://heavenlyxenusvr.github.io/Image-Gallery/")
-    ai_api_key = _env("GALLERY_AI_API_KEY") or _env("OPENAI_API_KEY")
+    ai_api_key = _env_or_file("GALLERY_AI_API_KEY") or _env_or_file("OPENAI_API_KEY")
     gemini_api_key = _gemini_api_key()
     ai_provider = _ai_provider(ai_api_key)
     ai_enabled_default = "true" if (ai_api_key or gemini_api_key or ai_provider in {"ollama", "gemini", "google", "google-gemini"} or _env("GALLERY_OLLAMA_MODEL")) else "false"
