@@ -121,7 +121,7 @@ def _gemini_api_key() -> str:
 
 
 def _gemini_model(explicit_model: str | None = None) -> str:
-    return str(_env_first("GALLERY_GEMINI_MODEL", "GEMINI_MODEL") or explicit_model or "gemini-2.5-flash-lite").strip()
+    return str(_env_first("GALLERY_GEMINI_MODEL", "GEMINI_MODEL") or explicit_model or "gemini-2.5-flash").strip()
 
 
 def _gemini_model_configured(explicit_model: str | None = None) -> bool:
@@ -1339,7 +1339,7 @@ def _gemini_vision_analysis(
             "responseMimeType": "application/json",
         },
     }
-    safe_model = urllib.parse.quote(model or "gemini-2.5-flash-lite", safe="")
+    safe_model = urllib.parse.quote(model or "gemini-2.5-flash", safe="")
     request = urllib.request.Request(
         f"https://generativelanguage.googleapis.com/v1beta/models/{safe_model}:generateContent?key={urllib.parse.quote(api_key, safe='')}",
         data=json.dumps(payload).encode("utf-8"),

@@ -313,7 +313,7 @@ def main() -> int:
         ai_model = env_or_file("GALLERY_OLLAMA_MODEL", env_file, "qwen2.5vl:3b")
     elif ai_provider == "gemini":
         ai_base_url = ""
-        ai_model = env_or_file("GALLERY_GEMINI_MODEL", env_file, env_or_file("GEMINI_MODEL", env_file, "gemini-2.5-flash-lite"))
+        ai_model = env_or_file("GALLERY_GEMINI_MODEL", env_file, env_or_file("GEMINI_MODEL", env_file, "gemini-2.5-flash"))
     else:
         ai_base_url = env_or_file("GALLERY_AI_BASE_URL", env_file, env_or_file("OPENAI_BASE_URL", env_file, "https://api.openai.com/v1")).rstrip("/")
         ai_model = env_or_file("GALLERY_AI_MODEL", env_file, "gpt-5.4-nano")

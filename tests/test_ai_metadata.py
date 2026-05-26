@@ -12,6 +12,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app import ai_metadata
+from app.config import load_settings
 
 
 class _FakeResponse:
@@ -156,3 +157,16 @@ def test_merge_analysis_preserves_reason_codes() -> None:
     )
 
     assert result.reason == "Primary AI unavailable: Gemini API error 429: retry in about 31s"
+
+
+def test_load_settings_defaults_to_gemini_flash(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GALLERY_AI_PROVIDER", "gemini")
+    monkeypatch.delenv("GALLERY_GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.delenv("GALLERY_AI_MODEL", raising=False)
+    monkeypatch.setenv("GALLERY_GEMINI_API_KEY", "test-gemini-key")
+
+    settings = load_settings()
+
+    assert settings.ai_provider == "gemini"
+    assert settings.active_ai_model == "gemini-2.5-flash"
