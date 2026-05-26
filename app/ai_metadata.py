@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -894,7 +895,7 @@ def _resolve_bool(value: bool | None, *, env_name: str, default: bool) -> bool:
 
 def _safe_ai_error(exc: Exception) -> str:
     """Convert an exception to a safe error string, removing sensitive information."""
-    error_msg = str(exc).strip()
+    error_msg = _sanitize_ai_error_text(str(exc))
     # Remove common sensitive patterns like API keys, auth tokens, URLs with credentials
     sensitive_patterns = [
         r"https?://[^\s]+:[^\s]+@",  # URLs with credentials
@@ -906,6 +907,69 @@ def _safe_ai_error(exc: Exception) -> str:
     for pattern in sensitive_patterns:
         error_msg = re.sub(pattern, "[REDACTED]", error_msg, flags=re.IGNORECASE)
     return error_msg or "Unknown error"
+
+
+def _sanitize_ai_error_text(value: Any) -> str:
+    raw_text = ""
+    if isinstance(value, (bytes, bytearray)):
+        raw_text = value.decode("utf-8", errors="replace")
+    else:
+        raw_text = str(value or "")
+    text = raw_text.strip()
+    if not text:
+        return ""
+    try:
+        payload = json.loads(text)
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            parts = [str(error.get("message") or "").strip()]
+            status = str(error.get("status") or "").strip()
+            retry_after = _extract_retry_delay_seconds(error.get("details") or [])
+            if status:
+                parts.append(f"status={status}")
+            if retry_after:
+                parts.append(f"retry in about {retry_after}s")
+            text = " ".join(part for part in parts if part)
+        else:
+            text = str(payload.get("message") or text)
+    return " ".join(text.split())
+
+
+def _extract_retry_delay_seconds(details: Any) -> int | None:
+    for item in details or []:
+        if not isinstance(item, dict):
+            continue
+        raw_value = str(item.get("retryDelay") or "").strip()
+        if not raw_value:
+            continue
+        match = re.fullmatch(r"(\d+(?:\.\d+)?)s", raw_value)
+        if match:
+            return max(1, int(float(match.group(1))))
+    return None
+
+
+def _parse_model_json_response(text: str, *, provider_name: str) -> dict[str, Any]:
+    candidate_text = str(text or "").strip()
+    if not candidate_text:
+        raise RuntimeError(f"{provider_name} response did not include structured text.")
+    fence_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", candidate_text, re.IGNORECASE | re.DOTALL)
+    if fence_match:
+        candidate_text = fence_match.group(1).strip()
+    try:
+        payload = json.loads(candidate_text)
+    except json.JSONDecodeError:
+        object_match = re.search(r"\{.*\}", candidate_text, re.DOTALL)
+        if not object_match:
+            raise RuntimeError(f"{provider_name} returned invalid JSON.") from None
+        payload = json.loads(object_match.group(0))
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{provider_name} returned a non-object JSON payload.")
+    if _looks_placeholder_ai_result(payload):
+        raise RuntimeError(f"{provider_name} returned placeholder schema values.")
+    return payload
 
 
 def _heuristic_analysis(
@@ -1040,7 +1104,7 @@ def _merge_analysis(
         source=source,
         confidence=max(confidence, fallback.confidence if confidence < 0.45 else 0.0),
         size=fallback.size,
-        reason=_clean_title(ai_result.get("reason")) or fallback.reason,
+        reason=_clean_reason_text(ai_result.get("reason")) or fallback.reason,
     )
 
 
@@ -1217,10 +1281,7 @@ def _ollama_vision_analysis(
     text = str(data.get("response") or "").strip()
     if not text:
         raise RuntimeError("Ollama response did not include text.")
-    result = json.loads(text)
-    if _looks_placeholder_ai_result(result):
-        raise RuntimeError("Ollama returned placeholder schema values.")
-    return result
+    return _parse_model_json_response(text, provider_name="Ollama")
 
 
 def _gemini_vision_analysis(
@@ -1295,12 +1356,16 @@ def _gemini_vision_analysis(
     except urllib.error.URLError as exc:
         raise RuntimeError(f"Gemini API network error: {_sanitize_ai_error_text(str(exc.reason))}") from exc
     data = json.loads(raw or "{}")
+    prompt_feedback = data.get("promptFeedback") or {}
     candidates = data.get("candidates") or []
     parts = ((candidates[0] if candidates else {}).get("content") or {}).get("parts") or []
     text = "\n".join(str(part.get("text") or "").strip() for part in parts if part.get("text")).strip()
     if not text:
+        block_reason = str(prompt_feedback.get("blockReason") or (candidates[0].get("finishReason") if candidates else "") or "").strip()
+        if block_reason:
+            raise RuntimeError(f"Gemini response was blocked or empty: {block_reason}")
         raise RuntimeError("Gemini response did not include structured text.")
-    return json.loads(text)
+    return _parse_model_json_response(text, provider_name="Gemini")
 
 
 def _openai_vision_analysis(
@@ -1405,9 +1470,7 @@ def _openai_vision_analysis(
         raise RuntimeError(f"OpenAI API network error: {exc.reason}") from exc
     data = json.loads(raw or "{}")
     text = _response_text(data)
-    if not text:
-        raise RuntimeError("OpenAI response did not include structured text.")
-    return json.loads(text)
+    return _parse_model_json_response(text, provider_name="OpenAI")
 
 
 def _response_text(payload: dict[str, Any]) -> str:
@@ -1669,6 +1732,10 @@ def _clean_title(value: Any) -> str:
     text = re.sub(r"(?<![a-zA-Z])\d{2,}(?![a-zA-Z])", "", text)
     text = re.sub(r"\s+", " ", text).strip(" -_")
     return text[:160]
+
+
+def _clean_reason_text(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())[:240]
 
 
 def _clean_label(value: Any) -> str | None:
