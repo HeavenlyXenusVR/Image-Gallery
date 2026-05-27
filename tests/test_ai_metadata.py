@@ -81,7 +81,7 @@ def test_gemini_analysis_parses_fenced_json(monkeypatch: pytest.MonkeyPatch) -> 
                     "parts": [
                         {
                             "text": """```json
-{"title":"Aria Blaze","suggested_filename_base":"aria-blaze","tags":["aria-blaze","mlp"],"category_name":"My Little Pony","subcategory_name":"Aria Blaze","is_adult":false,"confidence":0.92,"reason":"Recognized the character visually."}
+{"title":"Aria Blaze","suggested_filename_base":"aria-blaze","tags":["aria-blaze","mlp"],"category_name":"My Little Pony","subcategory_name":"Aria Blaze","subcategory_names":["Equestria Girls","Aria Blaze"],"is_adult":false,"confidence":0.92,"reason":"Recognized the character visually."}
 ```"""
                         }
                     ]
@@ -98,6 +98,7 @@ def test_gemini_analysis_parses_fenced_json(monkeypatch: pytest.MonkeyPatch) -> 
         tags=["fallback"],
         category_name="Wallpapers",
         subcategory_name=None,
+        subcategory_names=[],
         is_adult=False,
         source="heuristic",
         confidence=0.45,
@@ -122,6 +123,7 @@ def test_gemini_analysis_parses_fenced_json(monkeypatch: pytest.MonkeyPatch) -> 
     assert result["title"] == "Aria Blaze"
     assert result["category_name"] == "My Little Pony"
     assert result["subcategory_name"] == "Aria Blaze"
+    assert result["subcategory_names"] == ["Equestria Girls", "Aria Blaze"]
     assert result["confidence"] == pytest.approx(0.92)
 
 
@@ -132,6 +134,7 @@ def test_merge_analysis_preserves_reason_codes() -> None:
         tags=["fallback"],
         category_name="Wallpapers",
         subcategory_name=None,
+        subcategory_names=[],
         is_adult=False,
         source="heuristic",
         confidence=0.45,
@@ -145,6 +148,7 @@ def test_merge_analysis_preserves_reason_codes() -> None:
             "tags": ["rainbow-dash", "mlp"],
             "category_name": "My Little Pony",
             "subcategory_name": "Mane Six",
+            "subcategory_names": ["My Little Pony", "Mane Six", "Rainbow Dash"],
             "is_adult": False,
             "confidence": 0.66,
             "reason": "Primary AI unavailable: Gemini API error 429: retry in about 31s",
@@ -157,6 +161,7 @@ def test_merge_analysis_preserves_reason_codes() -> None:
     )
 
     assert result.reason == "Primary AI unavailable: Gemini API error 429: retry in about 31s"
+    assert result.subcategory_names == ["Mane Six", "Rainbow Dash"]
 
 
 def test_load_settings_defaults_to_gemini_flash(monkeypatch: pytest.MonkeyPatch) -> None:

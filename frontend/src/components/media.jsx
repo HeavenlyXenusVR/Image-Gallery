@@ -7,6 +7,12 @@ import { formatBytes, formatDate, numberish } from "../utils/format.js";
 import { isGifMedia, isPerfLiteRuntime, thumbUrl, videoQualityUrl } from "../utils/media.js";
 import { Avatar, EmptyState, SkeletonGrid, StatsRow } from "./ui.jsx";
 
+function subcategoryNames(item) {
+  if (Array.isArray(item?.subcategory_names) && item.subcategory_names.length) return item.subcategory_names;
+  if (Array.isArray(item?.subcategories) && item.subcategories.length) return item.subcategories.map((row) => row?.name).filter(Boolean);
+  return item?.subcategory_name ? [item.subcategory_name] : [];
+}
+
 export function MediaGrid({ ctx, items, loading = false, emptyTitle = "No media", onItemUpdated }) {
   if (loading) return <SkeletonGrid count={8} />;
   if (!items?.length) return <EmptyState title={emptyTitle} />;
@@ -24,6 +30,7 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
   const mutedPreview = ctx.settings.muted_previews !== false;
   const liveVideoPreview = item.media_kind === "video" && ctx.settings.autoplay_previews && item.url && !isPerfLiteRuntime();
   const previewSrc = liveVideoPreview ? videoQualityUrl(item, "low") : "";
+  const categoryLine = [item.category_name || "Unsorted", ...subcategoryNames(item)].filter(Boolean).join(" / ");
   return (
     <article className={`media-card ${item.locked ? "is-locked" : ""}`}>
       <Link className="media-link" to={`/media/${item.id}`} aria-label={item.title || `Open media ${item.id}`}>
@@ -48,7 +55,7 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
         </div>
         <div className="media-copy">
           <h3>{item.title || "Untitled"}</h3>
-          <p>{item.category_name || "Unsorted"}{item.subcategory_name ? ` / ${item.subcategory_name}` : ""}</p>
+          <p>{categoryLine}</p>
         </div>
       </Link>
       <div className="card-meta">

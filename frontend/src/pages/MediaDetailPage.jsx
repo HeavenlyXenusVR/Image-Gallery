@@ -8,6 +8,12 @@ import { MediaActionPanel, MediaControls } from "../components/media.jsx";
 import { Avatar, ChipRow, EmptyState, Notice, NotFound, Page, SkeletonGrid, StatsRow, UserLine } from "../components/ui.jsx";
 import { imageQualityUrl, isGifMedia, thumbUrl, videoQualityUrl } from "../utils/media.js";
 
+function subcategoryNames(item) {
+  if (Array.isArray(item?.subcategory_names) && item.subcategory_names.length) return item.subcategory_names;
+  if (Array.isArray(item?.subcategories) && item.subcategories.length) return item.subcategories.map((row) => row?.name).filter(Boolean);
+  return item?.subcategory_name ? [item.subcategory_name] : [];
+}
+
 export function MediaDetailPage({ ctx }) {
   const { mediaId } = useParams();
   const [media, setMedia] = useState(null);
@@ -97,6 +103,7 @@ export function MediaDetailPage({ ctx }) {
   const isOwner = ctx.user && Number(ctx.user.id) === Number(media.user_id);
   const gif = isGifMedia(media);
   const videoSrc = media.media_kind === "video" ? videoQualityUrl(media, videoQuality) : "";
+  const metadataChips = [media.category_name, ...subcategoryNames(media), ...(media.tags || [])].filter(Boolean);
 
   return (
     <Page title={media.title || `Media ${media.id}`} eyebrow={media.media_kind || "Media"} actions={(
@@ -144,7 +151,7 @@ export function MediaDetailPage({ ctx }) {
           <UserLine user={media} />
           {media.description ? <p className="description">{media.description}</p> : null}
           <StatsRow item={media} />
-          <ChipRow values={[media.category_name, media.subcategory_name, ...(media.tags || [])]} />
+          <ChipRow values={metadataChips} />
           <MediaActionPanel ctx={ctx} media={media} actions={actions} />
           {isOwner ? <MediaControls ctx={ctx} media={media} onChanged={setMedia} /> : null}
           {ctx.user ? (

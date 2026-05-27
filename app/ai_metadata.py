@@ -27,6 +27,22 @@ STOP_TAGS = {
     "artwork", "fanart", "pic", "photo", "picture",
     "by", "artist", "source", "ai", "enhanced", "upscaled", "upscale", "compressed", "icloud",
 }
+GENERIC_SUBCATEGORY_LABELS = {
+    "wallpaper",
+    "wallpapers",
+    "background",
+    "backgrounds",
+    "desktop background",
+    "desktop backgrounds",
+    "phone background",
+    "phone backgrounds",
+    "image",
+    "images",
+    "art",
+    "artwork",
+    "profile picture",
+    "profile pictures",
+}
 LOW_SIGNAL_RE = re.compile(
     r"^(?:img|dsc|pxl|mvimg|screenshot|image|photo|video|scan|untitled|temp|"
     r"whatsapp image|snapchat|signal)[ _-]*\d*$",
@@ -81,6 +97,7 @@ CHARACTER_RECOGNITION_GUIDE = {
     "KPOP Demon Hunters": ["Huntrix", "Mira", "Zoey", "Rumi"],
 }
 VISION_BACKOFF: dict[str, float] = {}
+MAX_ANALYSIS_SUBCATEGORIES = 3
 
 VISUAL_HASH_BITS = 64
 VISUAL_PHASH_MAX_DISTANCE = int(os.getenv("GALLERY_VISUAL_PHASH_MAX_DISTANCE", "10") or 10)
@@ -190,6 +207,7 @@ class SmartMediaAnalysis:
     tags: list[str]
     category_name: str | None
     subcategory_name: str | None
+    subcategory_names: list[str]
     is_adult: bool
     source: str
     confidence: float
@@ -203,12 +221,66 @@ class SmartMediaAnalysis:
             "tags": list(self.tags),
             "category_name": self.category_name,
             "subcategory_name": self.subcategory_name,
+            "subcategory_names": list(self.subcategory_names),
             "is_adult": bool(self.is_adult),
             "source": self.source,
             "confidence": round(float(self.confidence), 3),
             "size": list(self.size) if self.size else None,
             "reason": self.reason,
         }
+
+
+def _normalize_subcategory_names(values: Any, primary: str | None = None) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for raw in [primary, *(values or [])]:
+        cleaned = _clean_label(raw)
+        if not cleaned:
+            continue
+        lowered = cleaned.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        names.append(cleaned)
+        if len(names) >= MAX_ANALYSIS_SUBCATEGORIES:
+            break
+    return names
+
+
+def _sanitize_subcategory_names(values: Any, *, primary: str | None = None, category_name: str | None = None) -> list[str]:
+    raw_values = list(values or []) if not isinstance(values, str) else [values]
+    if primary:
+        raw_values.append(primary)
+    names = _normalize_subcategory_names(raw_values)
+    if not names:
+        return []
+    blocked = {_compact_label(category_name)}
+    blocked.update(_compact_label(label) for label in GENERIC_SUBCATEGORY_LABELS)
+    sanitized: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        compact = _compact_label(name)
+        if not compact or compact in blocked or compact in seen:
+            continue
+        seen.add(compact)
+        sanitized.append(name)
+        if len(sanitized) >= MAX_ANALYSIS_SUBCATEGORIES:
+            break
+    return sanitized
+
+
+def _vision_prompt_rules() -> str:
+    return (
+        "Never use generic titles like Backgrounds, Wallpaper, Image, Art, or Artwork. "
+        "Never use the filename, upload number, random code, or numeric ID as the title. "
+        "Make the title natural, short, and focused on the visible subject. "
+        "Do not write a description paragraph inside the title or reason. "
+        "Create up to 12 short lowercase tags; skip generic wallpaper/background tags unless they add real search value. "
+        "Use up to 3 ordered subcategories only when each one adds distinct value. "
+        "Order subcategories from broad to specific: series or group first, then character or subject, then variant, form, or context. "
+        "Do not repeat the main category as a subcategory. "
+        "Do not guess names when identity is unclear; use visible traits instead. "
+    )
 
 
 def analyze_media_path(
@@ -589,6 +661,7 @@ def _looks_placeholder_ai_result(payload: dict[str, Any]) -> bool:
     reason = _clean_title(payload.get("reason")).lower()
     category = (_clean_label(payload.get("category_name")) or "").lower()
     subcategory = (_clean_label(payload.get("subcategory_name")) or "").lower()
+    subcategory_names = [name.lower() for name in _normalize_subcategory_names(payload.get("subcategory_names"), payload.get("subcategory_name"))]
     filename_base = _clean_filename_base(payload.get("suggested_filename_base")).lower()
     tags = [tag.lower() for tag in _normalize_tags(payload.get("tags"))]
     return any(
@@ -597,6 +670,7 @@ def _looks_placeholder_ai_result(payload: dict[str, Any]) -> bool:
             reason in {"string", "reason"},
             category in {"string", "category", "category-name"},
             subcategory in {"string", "subcategory", "subcategory-name"},
+            bool(subcategory_names) and all(name in {"subcategory", "subcategories", "string", "subcategory-name"} for name in subcategory_names),
             filename_base in {"string", "filename", "suggested-filename", "suggested_filename"},
             bool(tags) and all(tag in {"tag", "tags", "string"} for tag in tags),
         )
@@ -670,6 +744,7 @@ def _training_lookup_analysis(
         "tags": _merge_tags(tags, fallback.tags),
         "category_name": category,
         "subcategory_name": subcategory,
+        "subcategory_names": _normalize_subcategory_names([], subcategory),
         "is_adult": bool(example.get("corrected_is_adult")) or fallback.is_adult,
         "confidence": score,
         "reason": "Learned from prior gallery correction with matching metadata hints.",
@@ -733,6 +808,7 @@ def _visual_training_match(
         "tags": _merge_tags(tags, fallback.tags),
         "category_name": category,
         "subcategory_name": subcategory,
+        "subcategory_names": _normalize_subcategory_names([], subcategory),
         "is_adult": bool(example.get("corrected_is_adult")) or fallback.is_adult,
         "confidence": score,
         "reason": "Visually matched a learned training image (" + ", ".join(reason_bits) + ").",
@@ -784,10 +860,12 @@ def _domain_hint_analysis_from_text(
     names = [match[0] for match in unique[:4]]
     category = unique[0][1]
     subcategory = unique[0][2]
+    subcategory_names = _normalize_subcategory_names([subcategory, *names])
     if {"Aria Blaze", "Adagio Dazzle", "Sonata Dusk"}.issubset(set(names)) or any(name == "The Dazzlings" for name in names):
         title = "The Dazzlings"
         tags = ["the dazzlings", "aria blaze", "adagio dazzle", "sonata dusk", "mlp", "equestria girls"]
         subcategory = "Equestria Girls"
+        subcategory_names = _normalize_subcategory_names([subcategory, "Aria Blaze", "Adagio Dazzle"])
     elif len(names) > 2:
         title = f"{names[0]}, {names[1]}, and {len(names) - 2} more"
         tags = []
@@ -805,6 +883,7 @@ def _domain_hint_analysis_from_text(
         "tags": tags,
         "category_name": category,
         "subcategory_name": subcategory,
+        "subcategory_names": subcategory_names,
         "is_adult": fallback.is_adult,
         "confidence": 0.66,
         "reason": "Matched a known franchise/character alias from user-provided metadata hints.",
@@ -967,6 +1046,15 @@ def _parse_model_json_response(text: str, *, provider_name: str) -> dict[str, An
         payload = json.loads(object_match.group(0))
     if not isinstance(payload, dict):
         raise RuntimeError(f"{provider_name} returned a non-object JSON payload.")
+    payload["subcategory_names"] = _sanitize_subcategory_names(
+        payload.get("subcategory_names"),
+        primary=payload.get("subcategory_name"),
+        category_name=payload.get("category_name"),
+    )
+    if payload["subcategory_names"] and not _clean_label(payload.get("subcategory_name")):
+        payload["subcategory_name"] = payload["subcategory_names"][0]
+    elif not payload["subcategory_names"]:
+        payload["subcategory_name"] = None
     if _looks_placeholder_ai_result(payload):
         raise RuntimeError(f"{provider_name} returned placeholder schema values.")
     return payload
@@ -1022,6 +1110,7 @@ def _heuristic_analysis(
         tags=tags,
         category_name=category_name,
         subcategory_name=subcategory_name,
+        subcategory_names=_normalize_subcategory_names([], subcategory_name),
         is_adult=_looks_adult(title, description_hint, tags, filename, mime_type),
         source="heuristic",
         confidence=0.45,
@@ -1041,6 +1130,11 @@ def _merge_analysis(
     ai_title = _clean_title(ai_result.get("title"))
     ai_category = _clean_label(ai_result.get("category_name"))
     ai_subcategory = _clean_label(ai_result.get("subcategory_name"))
+    ai_subcategory_names = _sanitize_subcategory_names(
+        ai_result.get("subcategory_names"),
+        primary=ai_subcategory,
+        category_name=ai_category or fallback.category_name,
+    )
     category_name, subcategory_name = canonical_category_pair(
         ai_category or fallback.category_name,
         ai_subcategory or fallback.subcategory_name,
@@ -1048,6 +1142,13 @@ def _merge_analysis(
     if confidence < 0.45:
         category_name = fallback.category_name
         subcategory_name = fallback.subcategory_name
+        subcategory_names = list(fallback.subcategory_names)
+    else:
+        subcategory_names = _sanitize_subcategory_names(
+            ai_subcategory_names,
+            primary=subcategory_name,
+            category_name=category_name,
+        ) or list(fallback.subcategory_names)
 
     tags = _merge_tags(_normalize_tags(ai_result.get("tags")), fallback.tags)
     if not tags:
@@ -1100,6 +1201,7 @@ def _merge_analysis(
         tags=tags,
         category_name=category_name,
         subcategory_name=subcategory_name,
+        subcategory_names=subcategory_names,
         is_adult=bool(ai_result.get("is_adult")) or fallback.is_adult,
         source=source,
         confidence=max(confidence, fallback.confidence if confidence < 0.45 else 0.0),
@@ -1184,6 +1286,7 @@ def _ollama_vision_analysis(
         )
         category_name = _clean_label((domain_hint or {}).get("category_name")) or inferred_category or fallback.category_name or ""
         subcategory_name = _clean_label((domain_hint or {}).get("subcategory_name")) or inferred_subcategory or fallback.subcategory_name or ""
+        subcategory_names = _normalize_subcategory_names((domain_hint or {}).get("subcategory_names"), subcategory_name)
         tags = _normalize_tags([
             *clean_tokens(text),
             *clean_tokens(caption),
@@ -1197,6 +1300,7 @@ def _ollama_vision_analysis(
             "tags": tags[:12],
             "category_name": category_name,
             "subcategory_name": subcategory_name,
+            "subcategory_names": subcategory_names,
             "is_adult": fallback.is_adult,
             "confidence": 0.62,
             "reason": f"Ollama compact caption: {caption}",
@@ -1206,23 +1310,19 @@ def _ollama_vision_analysis(
     training_guide = _training_guide_text(training_examples, limit=12, compact=False)
     prompt = (
         "You analyze media uploads for a personal gallery. Return JSON only.\n"
-        "IMPORTANT: Never use generic titles like 'Backgrounds', 'Wallpaper', 'Image', 'Art', or 'Artwork'.\n"
-        "Never use the filename, a file number, upload number, random code, or numeric ID as the title.\n"
-        "Never use titles like '0703', '0721', 'IMG 1234', or 'Wp15784703'.\n"
+        + _vision_prompt_rules()
+        + "\n"
         "Never copy category_name into title. Category is metadata, not the title.\n"
         "The title must mention the subject, character, franchise, or defining content if visible.\n"
         "If multiple clear named characters appear, title it naturally using both names.\n"
         "If a real person, celebrity, or fictional character is clearly identifiable, include their name in the title and tags.\n"
-        "If identity is uncertain, do not guess. Use descriptive visual details instead.\n"
-        "Create up to 12 short lowercase tags. Do not include numeric file IDs as tags.\n"
-        "Only give a specific character or subcategory if the visual evidence is clear.\n"
         "Prefer these main categories when they fit: " + ", ".join(KNOWN_CATEGORIES) + ".\n"
         "Use this local recognition guide as hints, not proof: " + _character_guide_text() + ".\n"
         + training_guide
         + "If it looks like a phone wallpaper use category 'Phone Backgrounds'. If it looks like a desktop wallpaper use 'Desktop Backgrounds'.\n"
         "If the image is NSFW, set is_adult true.\n"
         "Return exactly this JSON schema:"
-        '{"title":"string","suggested_filename_base":"string","tags":["tag"],"category_name":"string","subcategory_name":"string","is_adult":false,"confidence":0.0,"reason":"string"}\n\n'
+        '{"title":"string","suggested_filename_base":"string","tags":["tag"],"category_name":"string","subcategory_name":"string","subcategory_names":["string"],"is_adult":false,"confidence":0.0,"reason":"string"}\n\n'
         f"Filename: {filename}\n"
         f"MIME type: {mime_type}\n"
         f"Media kind: {media_kind}\n"
@@ -1246,6 +1346,7 @@ def _ollama_vision_analysis(
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "category_name": {"type": "string"},
                 "subcategory_name": {"type": "string"},
+                "subcategory_names": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
                 "is_adult": {"type": "boolean"},
                 "confidence": {"type": "number"},
                 "reason": {"type": "string"},
@@ -1256,6 +1357,7 @@ def _ollama_vision_analysis(
                 "tags",
                 "category_name",
                 "subcategory_name",
+                "subcategory_names",
                 "is_adult",
                 "confidence",
                 "reason",
@@ -1301,10 +1403,9 @@ def _gemini_vision_analysis(
 ) -> dict[str, Any]:
     prompt = (
         "You analyze media uploads for a personal gallery. Return JSON only. "
-        "Identify visible characters, franchises, subjects, and backgrounds when evidence is strong. "
-        "Never use generic titles like Backgrounds, Wallpaper, Image, Art, Artwork, or the filename. "
-        "Do not guess a named character if the identity is unclear; describe visible traits instead. "
-        "Create up to 12 short lowercase tags, including character/franchise/background tags when reliable. "
+        + _vision_prompt_rules()
+        + "Identify visible characters, franchises, subjects, and backgrounds when evidence is strong. "
+        "Create tags for characters, franchises, moods, props, or setting only when they are reliable. "
         "Use this local recognition guide as hints, not proof: "
         + _character_guide_text()
         + ". "
@@ -1313,7 +1414,7 @@ def _gemini_vision_analysis(
         + ", ".join(KNOWN_CATEGORIES)
         + ". If it looks like a phone wallpaper use Phone Backgrounds; desktop wallpaper use Desktop Backgrounds. "
         "Return exactly this JSON schema: "
-        '{"title":"string","suggested_filename_base":"string","tags":["tag"],"category_name":"string","subcategory_name":"string","is_adult":false,"confidence":0.0,"reason":"string"}\n\n'
+        '{"title":"string","suggested_filename_base":"string","tags":["tag"],"category_name":"string","subcategory_name":"string","subcategory_names":["string"],"is_adult":false,"confidence":0.0,"reason":"string"}\n\n'
         f"Filename: {filename}\n"
         f"MIME type: {mime_type}\n"
         f"Media kind: {media_kind}\n"
@@ -1386,13 +1487,11 @@ def _openai_vision_analysis(
 ) -> dict[str, Any]:
     instructions = (
         "You analyze media uploads for a personal gallery. Return structured JSON only. "
-        "Never use generic titles like Backgrounds, Wallpaper, Image, Art, or Artwork. "
+        + _vision_prompt_rules()
+        + " "
         "Make the title natural, concise, and specific to the visible subject. "
         "If a real person, celebrity, or fictional character is clearly identifiable, include their name in the title and tags. "
-        "If identity is uncertain, do not guess. Use descriptive details instead. "
-        "Create up to 12 short lowercase tags. "
         "Choose a broad category when uncertain. "
-        "Only give a specific character or subcategory if the visual evidence is clear. "
         "Use this local recognition guide as hints, not proof: "
         + _character_guide_text()
         + ". "
@@ -1422,6 +1521,7 @@ def _openai_vision_analysis(
             "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
             "category_name": {"type": "string"},
             "subcategory_name": {"type": "string"},
+            "subcategory_names": {"type": "array", "items": {"type": "string"}, "maxItems": 3},
             "is_adult": {"type": "boolean"},
             "confidence": {"type": "number"},
             "reason": {"type": "string"},
@@ -1432,6 +1532,7 @@ def _openai_vision_analysis(
             "tags",
             "category_name",
             "subcategory_name",
+            "subcategory_names",
             "is_adult",
             "confidence",
             "reason",
@@ -1557,6 +1658,7 @@ def _local_clip_analysis(
         "tags": tags[:12],
         "category_name": category_name or "",
         "subcategory_name": fallback.subcategory_name or "",
+        "subcategory_names": list(fallback.subcategory_names),
         "is_adult": False,
         "confidence": confidence,
         "reason": f"Local CLIP fallback matched {label} ({score:.2f})",

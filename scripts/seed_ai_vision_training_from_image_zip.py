@@ -170,6 +170,7 @@ def _fallback_for(path: Path, size: tuple[int, int] | None = None) -> SmartMedia
         tags=["wallpaper"],
         category_name=category,
         subcategory_name=None,
+        subcategory_names=[],
         is_adult=False,
         source="dataset-seed",
         confidence=0.40,

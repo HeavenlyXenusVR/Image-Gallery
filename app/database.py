@@ -119,6 +119,7 @@ AI_TRAINING_COLUMNS = (
     ("training_origin", "VARCHAR(80) NULL"),
     ("training_confidence", "FLOAT NOT NULL DEFAULT 0.72"),
 )
+MAX_MEDIA_SUBCATEGORIES = 3
 MEDIA_CATEGORY_SELECT = (
     "c.name AS category_name, c.slug AS category_slug, "
     "sc.name AS subcategory_name, sc.slug AS subcategory_slug,"
@@ -132,6 +133,44 @@ MEDIA_CATEGORY_JOIN = (
 def slugify(value: str) -> str:
     slug = SLUG_RE.sub("-", value.lower()).strip("-")
     return slug[:80] or "category"
+
+
+def clean_subcategory_name(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())[:80]
+
+
+def normalize_subcategory_names(values: Any, *, limit: int = MAX_MEDIA_SUBCATEGORIES) -> list[str]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for raw in values or []:
+        cleaned = clean_subcategory_name(raw)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(cleaned)
+        if len(names) >= max(1, int(limit or MAX_MEDIA_SUBCATEGORIES)):
+            break
+    return names
+
+
+def normalize_subcategory_ids(values: Any, *, limit: int = MAX_MEDIA_SUBCATEGORIES) -> list[int]:
+    ids: list[int] = []
+    seen: set[int] = set()
+    for raw in values or []:
+        try:
+            subcategory_id = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if subcategory_id <= 0 or subcategory_id in seen:
+            continue
+        seen.add(subcategory_id)
+        ids.append(subcategory_id)
+        if len(ids) >= max(1, int(limit or MAX_MEDIA_SUBCATEGORIES)):
+            break
+    return ids
 
 
 def normalize_username(username: str) -> str:
@@ -608,6 +647,7 @@ class GalleryDatabase:
         await self.ensure_user_columns()
         await self.ensure_subcategory_tables()
         await self.ensure_media_columns()
+        await self.ensure_media_subcategory_links()
         await self.ensure_ai_training_columns()
         await self.ensure_ai_media_learning_tables()
         await self.seed_default_categories()
@@ -704,6 +744,47 @@ class GalleryDatabase:
                         FOREIGN KEY (subcategory_id) REFERENCES subcategories(id) ON DELETE SET NULL
                         """
                     )
+
+    async def ensure_media_subcategory_links(self) -> None:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema=%s AND table_name='media_item_subcategories'
+                    LIMIT 1
+                    """,
+                    (self.settings.db_schema,),
+                )
+                if not await cur.fetchone():
+                    await cur.execute(
+                        """
+                        CREATE TABLE media_item_subcategories (
+                          media_id BIGINT UNSIGNED NOT NULL,
+                          subcategory_id BIGINT UNSIGNED NOT NULL,
+                          position TINYINT UNSIGNED NOT NULL,
+                          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                          PRIMARY KEY (media_id, position),
+                          UNIQUE KEY uniq_media_item_subcategory (media_id, subcategory_id),
+                          KEY idx_media_item_subcategories_subcategory (subcategory_id, media_id),
+                          CONSTRAINT fk_media_item_subcategories_media FOREIGN KEY (media_id) REFERENCES media_items(id) ON DELETE CASCADE,
+                          CONSTRAINT fk_media_item_subcategories_subcategory FOREIGN KEY (subcategory_id) REFERENCES subcategories(id) ON DELETE CASCADE,
+                          CONSTRAINT chk_media_item_subcategories_position CHECK (position BETWEEN 1 AND 3)
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                        """
+                    )
+                try:
+                    await cur.execute(
+                        """
+                        INSERT IGNORE INTO media_item_subcategories (media_id, subcategory_id, position)
+                        SELECT id, subcategory_id, 1
+                        FROM media_items
+                        WHERE subcategory_id IS NOT NULL
+                        """
+                    )
+                except Exception as exc:
+                    log.warning("Could not backfill primary media subcategories into media_item_subcategories: %s", exc)
 
     async def ensure_ai_training_columns(self) -> None:
         """Add visual-fingerprint training columns to existing installations."""
@@ -1088,7 +1169,7 @@ class GalleryDatabase:
                 return await cur.fetchone()
 
     async def create_subcategory(self, category_id: int, name: str, user_id: int | None) -> dict[str, Any]:
-        name = " ".join(str(name or "").strip().split())[:80]
+        name = clean_subcategory_name(name)
         if not name:
             raise ValueError("Subcategory name is required.")
         async with self.pool.acquire() as conn:
@@ -1114,6 +1195,44 @@ class GalleryDatabase:
                 await cur.execute("SELECT * FROM subcategories WHERE id=%s", (cur.lastrowid,))
                 return await cur.fetchone()
 
+    async def resolve_subcategory_ids(
+        self,
+        *,
+        category_id: int,
+        subcategory_ids: list[int] | None = None,
+        subcategory_names: list[str] | None = None,
+        user_id: int | None = None,
+    ) -> list[int]:
+        normalized_category_id = int(category_id or 0)
+        if normalized_category_id <= 0:
+            raise ValueError("Choose a valid category.")
+        resolved_ids = normalize_subcategory_ids(subcategory_ids)
+        pending_names = normalize_subcategory_names(subcategory_names)
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute("SELECT id FROM categories WHERE id=%s", (normalized_category_id,))
+                if not await cur.fetchone():
+                    raise ValueError("Category does not exist.")
+                validated_ids: list[int] = []
+                for subcategory_id in resolved_ids:
+                    await cur.execute(
+                        "SELECT id FROM subcategories WHERE id=%s AND category_id=%s",
+                        (subcategory_id, normalized_category_id),
+                    )
+                    if not await cur.fetchone():
+                        raise ValueError("Subcategory does not belong to that category.")
+                    validated_ids.append(int(subcategory_id))
+        resolved_ids = validated_ids
+        if pending_names:
+            for name in pending_names:
+                subcategory = await self.create_subcategory(normalized_category_id, name, user_id)
+                candidate_id = int(subcategory["id"])
+                if candidate_id not in resolved_ids:
+                    resolved_ids.append(candidate_id)
+                if len(resolved_ids) >= MAX_MEDIA_SUBCATEGORIES:
+                    break
+        return resolved_ids[:MAX_MEDIA_SUBCATEGORIES]
+
     async def resolve_category_ids(
         self,
         *,
@@ -1125,23 +1244,33 @@ class GalleryDatabase:
         normalized_category_id = int(category_id or 0)
         if normalized_category_id <= 0:
             raise ValueError("Choose a valid category.")
-        normalized_subcategory_id = int(subcategory_id or 0) or None
+        subcategory_ids = await self.resolve_subcategory_ids(
+            category_id=normalized_category_id,
+            subcategory_ids=[subcategory_id] if subcategory_id else [],
+            subcategory_names=[subcategory_name] if subcategory_name else [],
+            user_id=user_id,
+        )
+        return normalized_category_id, (subcategory_ids[0] if subcategory_ids else None)
+
+    async def set_media_subcategories(self, media_id: int, subcategory_ids: list[int] | None) -> None:
+        normalized_ids = normalize_subcategory_ids(subcategory_ids)
         async with self.pool.acquire() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute("SELECT id FROM categories WHERE id=%s", (normalized_category_id,))
-                if not await cur.fetchone():
-                    raise ValueError("Category does not exist.")
-                if normalized_subcategory_id:
-                    await cur.execute(
-                        "SELECT id FROM subcategories WHERE id=%s AND category_id=%s",
-                        (normalized_subcategory_id, normalized_category_id),
-                    )
-                    if not await cur.fetchone():
-                        raise ValueError("Subcategory does not belong to that category.")
-        if not normalized_subcategory_id and str(subcategory_name or "").strip():
-            subcategory = await self.create_subcategory(normalized_category_id, str(subcategory_name), user_id)
-            normalized_subcategory_id = int(subcategory["id"])
-        return normalized_category_id, normalized_subcategory_id
+            async with conn.cursor() as cur:
+                await self._write_media_subcategories(cur, int(media_id), normalized_ids)
+
+    async def _write_media_subcategories(self, cur: aiomysql.Cursor, media_id: int, subcategory_ids: list[int] | None) -> None:
+        normalized_ids = normalize_subcategory_ids(subcategory_ids)
+        primary_subcategory_id = normalized_ids[0] if normalized_ids else None
+        await cur.execute("UPDATE media_items SET subcategory_id=%s WHERE id=%s", (primary_subcategory_id, int(media_id)))
+        await cur.execute("DELETE FROM media_item_subcategories WHERE media_id=%s", (int(media_id),))
+        for position, subcategory_id in enumerate(normalized_ids, 1):
+            await cur.execute(
+                """
+                INSERT INTO media_item_subcategories (media_id, subcategory_id, position)
+                VALUES (%s, %s, %s)
+                """,
+                (int(media_id), int(subcategory_id), position),
+            )
 
     async def list_categories(self) -> list[dict[str, Any]]:
         async with self.pool.acquire() as conn:
@@ -1160,7 +1289,8 @@ class GalleryDatabase:
                     """
                     SELECT s.*, COUNT(m.id) AS media_count
                     FROM subcategories s
-                    LEFT JOIN media_items m ON m.subcategory_id = s.id AND m.deleted_at IS NULL
+                    LEFT JOIN media_item_subcategories ms ON ms.subcategory_id = s.id
+                    LEFT JOIN media_items m ON m.id = ms.media_id AND m.deleted_at IS NULL
                     GROUP BY s.id
                     ORDER BY s.name
                     """
@@ -1172,6 +1302,58 @@ class GalleryDatabase:
         for row in categories:
             row["subcategories"] = grouped.get(int(row["id"]), [])
         return categories
+
+    async def _subcategory_map_for_media_ids(self, media_ids: list[int]) -> dict[int, list[dict[str, Any]]]:
+        normalized_ids = [int(media_id) for media_id in media_ids if int(media_id or 0) > 0]
+        if not normalized_ids:
+            return {}
+        placeholders = ", ".join(["%s"] * len(normalized_ids))
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    f"""
+                    SELECT ms.media_id, ms.position, s.id, s.category_id, s.name, s.slug
+                    FROM media_item_subcategories ms
+                    JOIN subcategories s ON s.id = ms.subcategory_id
+                    WHERE ms.media_id IN ({placeholders})
+                    ORDER BY ms.media_id ASC, ms.position ASC
+                    """,
+                    tuple(normalized_ids),
+                )
+                rows = await cur.fetchall()
+        grouped: dict[int, list[dict[str, Any]]] = {}
+        for row in rows:
+            media_id = int(row["media_id"])
+            grouped.setdefault(media_id, []).append(
+                {
+                    "id": int(row["id"]),
+                    "category_id": int(row["category_id"]),
+                    "name": row["name"],
+                    "slug": row["slug"],
+                    "position": int(row["position"]),
+                }
+            )
+        return grouped
+
+    async def _attach_media_subcategories(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not items:
+            return items
+        subcategory_map = await self._subcategory_map_for_media_ids([int(item.get("id") or 0) for item in items])
+        for item in items:
+            media_id = int(item.get("id") or 0)
+            subcategories = list(subcategory_map.get(media_id, []))
+            item["subcategories"] = subcategories
+            item["subcategory_ids"] = [int(subcategory["id"]) for subcategory in subcategories]
+            item["subcategory_names"] = [str(subcategory["name"]) for subcategory in subcategories]
+            if subcategories:
+                primary = subcategories[0]
+                item["subcategory_id"] = int(primary["id"])
+                item["subcategory_name"] = primary["name"]
+                item["subcategory_slug"] = primary["slug"]
+            else:
+                item["subcategory_ids"] = []
+                item["subcategory_names"] = []
+        return items
 
     async def save_media_file(self, *, user_id: int, content: bytes, sha256: str, mime_type: str, original_filename: str, media_kind: str, file_size: int | None = None) -> dict[str, Any]:
         # Large BLOB writes are serialized and chunked so uploads do not depend on
@@ -1343,6 +1525,8 @@ class GalleryDatabase:
 
     async def add_media(self, item: dict[str, Any]) -> dict[str, Any]:
         tags_json = json.dumps(item.get("tags") or [])
+        subcategory_ids = normalize_subcategory_ids(item.get("subcategory_ids"))
+        primary_subcategory_id = subcategory_ids[0] if subcategory_ids else item.get("subcategory_id")
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
@@ -1355,7 +1539,7 @@ class GalleryDatabase:
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE NULL END, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                     """,
                     (
-                        item["user_id"], item["category_id"], item.get("subcategory_id"), item["title"], item.get("description"), tags_json,
+                        item["user_id"], item["category_id"], primary_subcategory_id, item["title"], item.get("description"), tags_json,
                         item["media_kind"], item["mime_type"], item["original_filename"],
                         item.get("storage_path") or f"db://media/{item.get('media_file_id')}", item["file_size"],
                         item.get("media_file_id"), item.get("content_sha256"),
@@ -1371,7 +1555,9 @@ class GalleryDatabase:
                         item.get("moderation_reason"),
                     ),
                 )
-                return await self.get_media(cur.lastrowid, item["user_id"])
+                media_id = int(cur.lastrowid)
+                await self._write_media_subcategories(cur, media_id, subcategory_ids or ([primary_subcategory_id] if primary_subcategory_id else []))
+                return await self.get_media(media_id, item["user_id"])
 
     async def list_media(
         self,
@@ -1401,7 +1587,7 @@ class GalleryDatabase:
             clauses.append("m.category_id=%s")
             params.append(category_id)
         if subcategory_id:
-            clauses.append("m.subcategory_id=%s")
+            clauses.append("EXISTS (SELECT 1 FROM media_item_subcategories ms WHERE ms.media_id=m.id AND ms.subcategory_id=%s)")
             params.append(subcategory_id)
         if query:
             clauses.append("(m.title LIKE %s OR m.description LIKE %s OR m.tags LIKE %s)")
@@ -1464,7 +1650,8 @@ class GalleryDatabase:
                     """,
                     tuple(sql_params),
                 )
-                return [self._decode_media(row) for row in await cur.fetchall()]
+                rows = [self._decode_media(row) for row in await cur.fetchall()]
+        return await self._attach_media_subcategories(rows)
 
     async def list_user_media(self, user_id: int, limit: int = 100, include_deleted: bool = False) -> list[dict[str, Any]]:
         async with self.pool.acquire() as conn:
@@ -1492,7 +1679,8 @@ class GalleryDatabase:
                     """,
                     (user_id, user_id, user_id, 1 if include_deleted else 0, max(1, min(limit, 200))),
                 )
-                return [self._decode_media(row) for row in await cur.fetchall()]
+                rows = [self._decode_media(row) for row in await cur.fetchall()]
+        return await self._attach_media_subcategories(rows)
 
     async def random_media(self, viewer_id: int | None = None) -> dict[str, Any] | None:
         items = await self.list_media(viewer_id=viewer_id, sort="new", limit=100)
@@ -1526,7 +1714,8 @@ class GalleryDatabase:
                     """,
                     (max(1, min(limit, 1200)),),
                 )
-                return [self._decode_media(row) for row in await cur.fetchall()]
+                rows = [self._decode_media(row) for row in await cur.fetchall()]
+        return await self._attach_media_subcategories(rows)
 
     async def tag_cloud(self, limit: int = 30) -> list[dict[str, Any]]:
         async with self.pool.acquire() as conn:
@@ -1579,7 +1768,11 @@ class GalleryDatabase:
                     (viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, media_id),
                 )
                 row = await cur.fetchone()
-                return self._decode_media(row) if row else None
+                if not row:
+                    return None
+                item = self._decode_media(row)
+        rows = await self._attach_media_subcategories([item])
+        return rows[0] if rows else None
 
     async def increment_counter(self, media_id: int, column: str) -> None:
         if column not in {"views", "downloads"}:
@@ -1654,12 +1847,14 @@ class GalleryDatabase:
             if tag and tag.lower() not in {existing.lower() for existing in clean_tags}:
                 clean_tags.append(tag)
         clean_tags = clean_tags[:12]
-        category_id, subcategory_id = await self.resolve_category_ids(
-            category_id=int(payload.get("category_id") or 0),
-            subcategory_id=payload.get("subcategory_id"),
-            subcategory_name=payload.get("subcategory_name"),
+        category_id = int(payload.get("category_id") or 0)
+        subcategory_ids = await self.resolve_subcategory_ids(
+            category_id=category_id,
+            subcategory_ids=(payload.get("subcategory_ids") or ([payload.get("subcategory_id")] if payload.get("subcategory_id") else [])),
+            subcategory_names=(payload.get("subcategory_names") or ([payload.get("subcategory_name")] if payload.get("subcategory_name") else [])),
             user_id=user_id,
         )
+        subcategory_id = subcategory_ids[0] if subcategory_ids else None
         visibility = str(payload.get("visibility") or "public").lower()
         if visibility not in {"public", "unlisted", "private"}:
             raise ValueError("Visibility must be public, unlisted, or private.")
@@ -1690,6 +1885,7 @@ class GalleryDatabase:
                     (title, description, json.dumps(clean_tags), category_id, subcategory_id, visibility, comments_enabled, downloads_enabled,
                      pinned, is_adult, is_adult, is_adult, is_adult, is_adult, media_id, user_id),
                 )
+                await self._write_media_subcategories(cur, media_id, subcategory_ids)
         return await self.get_media(media_id, user_id)
 
     async def set_media_controls(self, media_id: int, user_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -1771,7 +1967,8 @@ class GalleryDatabase:
                     """,
                     (viewer, viewer, viewer, max(1, min(limit, 100)), max(0, offset)),
                 )
-                return [self._decode_media(row) for row in await cur.fetchall()]
+                rows = [self._decode_media(row) for row in await cur.fetchall()]
+        return await self._attach_media_subcategories(rows)
 
     async def list_liked_media(self, user_id: int, limit: int = 80, offset: int = 0) -> list[dict[str, Any]]:
         viewer = int(user_id)
@@ -1800,7 +1997,8 @@ class GalleryDatabase:
                     """,
                     (viewer, viewer, viewer, max(1, min(limit, 100)), max(0, offset)),
                 )
-                return [self._decode_media(row) for row in await cur.fetchall()]
+                rows = [self._decode_media(row) for row in await cur.fetchall()]
+        return await self._attach_media_subcategories(rows)
 
     async def list_profile_media(self, user_id: int, viewer_id: int | None = None, limit: int = 24, offset: int = 0) -> list[dict[str, Any]]:
         viewer = int(viewer_id or 0)
@@ -1833,7 +2031,8 @@ class GalleryDatabase:
                     """,
                     (viewer, viewer, viewer, viewer, viewer, viewer, user_id, viewer, max(1, min(limit, 100)), max(0, offset)),
                 )
-                return [self._decode_media(row) for row in await cur.fetchall()]
+                rows = [self._decode_media(row) for row in await cur.fetchall()]
+        return await self._attach_media_subcategories(rows)
 
     async def list_user_follows(self, user_id: int, mode: str = "followers", viewer_id: int | None = None) -> list[dict[str, Any]]:
         viewer = int(viewer_id or 0)
@@ -1932,7 +2131,8 @@ class GalleryDatabase:
                     """,
                     (user_id, user_id, user_id, max(1, min(limit, 100))),
                 )
-                return [self._decode_media(row) for row in await cur.fetchall()]
+                rows = [self._decode_media(row) for row in await cur.fetchall()]
+        return await self._attach_media_subcategories(rows)
 
     async def create_collection(self, user_id: int, name: str, description: str | None, is_public: bool) -> dict[str, Any]:
         name = self._clean_text(name, 100, required=True)
@@ -2092,7 +2292,8 @@ class GalleryDatabase:
                     """,
                     (viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, collection_id, viewer_id or 0),
                 )
-                return [self._decode_media(row) for row in await cur.fetchall()]
+                rows = [self._decode_media(row) for row in await cur.fetchall()]
+        return await self._attach_media_subcategories(rows)
 
     async def get_public_profile(self, username: str, viewer_id: int | None = None) -> dict[str, Any] | None:
         username = normalize_username(username)
@@ -2840,7 +3041,8 @@ class GalleryDatabase:
                     """,
                     (error_retry_minutes, stale_minutes, limit),
                 )
-                return [self._decode_media(row) for row in await cur.fetchall()]
+                rows = [self._decode_media(row) for row in await cur.fetchall()]
+        return await self._attach_media_subcategories(rows)
 
     async def list_video_thumb_candidates(
         self,
@@ -2868,7 +3070,8 @@ class GalleryDatabase:
                     """,
                     (*params, limit),
                 )
-                return [self._decode_media(row) for row in await cur.fetchall()]
+                rows = [self._decode_media(row) for row in await cur.fetchall()]
+        return await self._attach_media_subcategories(rows)
 
     async def upsert_ai_media_learning_state(
         self,

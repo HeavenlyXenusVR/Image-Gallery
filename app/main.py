@@ -35,7 +35,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .ai_metadata import analyze_media_bytes, is_low_signal_filename, _image_fingerprint
 from .auth import SESSION_COOKIE_NAME, extract_bearer_token, issue_token, require_auth, verify_token
 from .config import ROOT_DIR, load_settings
-from .database import GalleryDatabase
+from .database import GalleryDatabase, MAX_MEDIA_SUBCATEGORIES, normalize_subcategory_names
 from .emailer import EmailDeliveryError, send_verification_email
 from .telegram import TelegramPollingService
 
@@ -191,6 +191,8 @@ class MediaUpdateRequest(BaseModel):
     category_id: int
     subcategory_id: int | None = None
     subcategory_name: str | None = None
+    subcategory_ids: list[int] = []
+    subcategory_names: list[str] = []
     tags: list[str] = []
     is_adult: bool = False
     visibility: str = "public"
@@ -282,6 +284,7 @@ class VisionTrainingRequest(BaseModel):
     title: str
     category_name: str | None = None
     subcategory_name: str | None = None
+    subcategory_names: list[str] = []
     tags: list[str] = []
     is_adult: bool = False
     notes: str | None = None
@@ -403,8 +406,9 @@ def _media_has_curated_metadata(item: dict[str, Any] | None) -> bool:
         return False
     tags = list(item.get("tags") or [])
     description = item.get("description")
+    subcategory_names = _subcategory_names_from_item(item)
     return (
-        bool(subcategory_name)
+        bool(subcategory_name or subcategory_names)
         or len(tags) >= int(getattr(settings, "ai_background_learning_min_training_tags", 3) or 3)
         or not _description_is_placeholder(description)
     )
@@ -422,7 +426,7 @@ def _media_training_source(item: dict[str, Any] | None, *, content: bytes | None
         "original_filename": item.get("original_filename"),
         "title": item.get("title"),
         "category_name": item.get("category_name"),
-        "subcategory_name": item.get("subcategory_name"),
+        "subcategory_name": (_subcategory_names_from_item(item) or [item.get("subcategory_name")])[0] if (_subcategory_names_from_item(item) or [item.get("subcategory_name")]) else None,
         "tags": item.get("tags") or [],
         **(fingerprint or {}),
     }
@@ -436,7 +440,7 @@ def _media_training_corrected(item: dict[str, Any] | VisionTrainingRequest | Non
     return {
         "title": payload.get("title"),
         "category_name": payload.get("category_name"),
-        "subcategory_name": payload.get("subcategory_name"),
+        "subcategory_name": (normalize_subcategory_names(payload.get("subcategory_names") or [payload.get("subcategory_name")], limit=MAX_MEDIA_SUBCATEGORIES) or [None])[0],
         "tags": payload.get("tags") or [],
         "is_adult": bool(payload.get("is_adult")),
     }
@@ -444,7 +448,8 @@ def _media_training_corrected(item: dict[str, Any] | VisionTrainingRequest | Non
 
 async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> dict[str, Any] | None:
     current_category = str(item.get("category_name") or "")
-    current_subcategory = str(item.get("subcategory_name") or "")
+    current_subcategory_names = _subcategory_names_from_item(item)
+    current_subcategory = current_subcategory_names[0] if current_subcategory_names else str(item.get("subcategory_name") or "")
     current_tags = list(item.get("tags") or [])
     current_title = str(item.get("title") or "")
     current_description = str(item.get("description") or "")
@@ -462,8 +467,12 @@ async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> d
     category_id = int(item.get("category_id") or 0)
     subcategory_id = item.get("subcategory_id")
     next_category = current_category
-    next_subcategory = current_subcategory
+    next_subcategory_names = list(current_subcategory_names)
     media_kind = str(item.get("media_kind") or "image")
+    analysis_subcategory_names = normalize_subcategory_names(
+        getattr(analysis, "subcategory_names", None) or [getattr(analysis, "subcategory_name", "")],
+        limit=MAX_MEDIA_SUBCATEGORIES,
+    )
 
     if category_id <= 0 and current_category and not _category_is_generic(current_category):
         existing_category = await db.create_category(current_category, media_kind, int(item["user_id"]))
@@ -473,36 +482,42 @@ async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> d
         category = await db.create_category(str(analysis.category_name), media_kind, int(item["user_id"]))
         category_id = int(category["id"])
         next_category = str(analysis.category_name)
-        next_subcategory = str(getattr(analysis, "subcategory_name", "") or "")
-        category_id, subcategory_id = await db.resolve_category_ids(
+        next_subcategory_names = analysis_subcategory_names
+        resolved_subcategory_ids = await db.resolve_subcategory_ids(
             category_id=category_id,
-            subcategory_id=None,
-            subcategory_name=next_subcategory,
+            subcategory_ids=[],
+            subcategory_names=next_subcategory_names,
             user_id=int(item["user_id"]),
         )
-    elif getattr(analysis, "subcategory_name", "") and not current_subcategory and category_id > 0:
-        next_subcategory = str(analysis.subcategory_name)
-        category_id, subcategory_id = await db.resolve_category_ids(
-            category_id=category_id,
-            subcategory_id=subcategory_id,
-            subcategory_name=next_subcategory,
-            user_id=int(item["user_id"]),
+        subcategory_id = resolved_subcategory_ids[0] if resolved_subcategory_ids else None
+    elif analysis_subcategory_names and category_id > 0:
+        current_normalized = normalize_subcategory_names(current_subcategory_names, limit=MAX_MEDIA_SUBCATEGORIES)
+        can_enrich_subcategories = (
+            not current_normalized
+            or (
+                len(analysis_subcategory_names) > len(current_normalized)
+                and analysis_subcategory_names[: len(current_normalized)] == current_normalized
+            )
         )
+        if can_enrich_subcategories:
+            next_subcategory_names = list(analysis_subcategory_names)
+            resolved_subcategory_ids = await db.resolve_subcategory_ids(
+                category_id=category_id,
+                subcategory_ids=[],
+                subcategory_names=next_subcategory_names,
+                user_id=int(item["user_id"]),
+            )
+            subcategory_id = resolved_subcategory_ids[0] if resolved_subcategory_ids else None
+        else:
+            resolved_subcategory_ids = list(item.get("subcategory_ids") or ([subcategory_id] if subcategory_id else []))
+    else:
+        resolved_subcategory_ids = list(item.get("subcategory_ids") or ([subcategory_id] if subcategory_id else []))
 
     tags = list(current_tags)
     if len(tags) < len(list(getattr(analysis, "tags", []) or [])):
         tags = list(getattr(analysis, "tags", []) or [])[:12]
 
     description = current_description
-    if _description_is_placeholder(current_description):
-        description = _build_media_description(
-            title=title or str(getattr(analysis, "title", "") or current_title),
-            category_name=next_category or str(getattr(analysis, "category_name", "") or current_category),
-            subcategory_name=next_subcategory or str(getattr(analysis, "subcategory_name", "") or current_subcategory),
-            tags=tags or list(getattr(analysis, "tags", []) or [])[:12],
-            source=str(getattr(analysis, "source", "") or ""),
-            reason=str(getattr(analysis, "reason", "") or ""),
-        )
 
     changed = any(
         [
@@ -510,7 +525,7 @@ async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> d
             description != current_description,
             tags != current_tags,
             category_id != int(item.get("category_id") or 0),
-            (subcategory_id or 0) != int(item.get("subcategory_id") or 0),
+            normalize_subcategory_names(next_subcategory_names, limit=MAX_MEDIA_SUBCATEGORIES) != current_subcategory_names,
         ]
     )
     if not changed:
@@ -521,7 +536,9 @@ async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> d
         "tags": tags or current_tags,
         "category_id": category_id,
         "subcategory_id": subcategory_id,
-        "subcategory_name": next_subcategory,
+        "subcategory_ids": list(resolved_subcategory_ids)[:MAX_MEDIA_SUBCATEGORIES],
+        "subcategory_name": next_subcategory_names[0] if next_subcategory_names else "",
+        "subcategory_names": normalize_subcategory_names(next_subcategory_names, limit=MAX_MEDIA_SUBCATEGORIES),
         "visibility": item.get("visibility") or "public",
         "comments_enabled": bool(item.get("comments_enabled", True)),
         "downloads_enabled": bool(item.get("downloads_enabled", True)),
@@ -1208,6 +1225,52 @@ def _optional_form_int(value: Any, field_name: str) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         raise HTTPException(status_code=422, detail=f"{field_name} must be a number.") from None
+
+
+def _parse_form_json_list(value: Any, field_name: str) -> list[Any]:
+    if value in (None, ""):
+        return []
+    parsed = value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=422, detail=f"{field_name} must be valid JSON.") from None
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=422, detail=f"{field_name} must be a list.")
+    return list(parsed)
+
+
+def _parse_form_int_list(value: Any, field_name: str) -> list[int]:
+    items: list[int] = []
+    seen: set[int] = set()
+    for raw in _parse_form_json_list(value, field_name):
+        try:
+            parsed = int(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail=f"{field_name} must contain only numbers.") from None
+        if parsed <= 0 or parsed in seen:
+            continue
+        seen.add(parsed)
+        items.append(parsed)
+        if len(items) >= MAX_MEDIA_SUBCATEGORIES:
+            break
+    return items
+
+
+def _parse_form_subcategory_names(value: Any) -> list[str]:
+    return normalize_subcategory_names(_parse_form_json_list(value, "subcategory_names_json"), limit=MAX_MEDIA_SUBCATEGORIES)
+
+
+def _subcategory_names_from_item(item: dict[str, Any] | None) -> list[str]:
+    payload = dict(item or {})
+    existing = payload.get("subcategory_names")
+    if isinstance(existing, list) and existing:
+        return normalize_subcategory_names(existing, limit=MAX_MEDIA_SUBCATEGORIES)
+    subcategories = payload.get("subcategories")
+    if isinstance(subcategories, list) and subcategories:
+        return normalize_subcategory_names([row.get("name") for row in subcategories if isinstance(row, dict)], limit=MAX_MEDIA_SUBCATEGORIES)
+    return normalize_subcategory_names([payload.get("subcategory_name")], limit=MAX_MEDIA_SUBCATEGORIES)
 
 
 def _merge_upload_tags(primary: list[str], secondary: list[str]) -> list[str]:
@@ -2753,8 +2816,10 @@ async def upload_media(
     description: str = Form(""),
     category_id: str | None = Form(None),
     subcategory_id: str | None = Form(None),
+    subcategory_ids_json: str = Form(""),
     category_name: str = Form(""),
     subcategory_name: str = Form(""),
+    subcategory_names_json: str = Form(""),
     category_kind: str = Form("mixed"),
     tags: str = Form(""),
     is_adult: bool = Form(False),
@@ -2767,6 +2832,13 @@ async def upload_media(
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
     category_id_int = _optional_form_int(category_id, "category_id")
     subcategory_id_int = _optional_form_int(subcategory_id, "subcategory_id")
+    selected_subcategory_ids = _parse_form_int_list(subcategory_ids_json, "subcategory_ids_json")
+    if subcategory_id_int and subcategory_id_int not in selected_subcategory_ids:
+        selected_subcategory_ids = [subcategory_id_int, *selected_subcategory_ids][:MAX_MEDIA_SUBCATEGORIES]
+    submitted_subcategory_names = normalize_subcategory_names(
+        [subcategory_name, *_parse_form_subcategory_names(subcategory_names_json)],
+        limit=MAX_MEDIA_SUBCATEGORIES,
+    )
     media_kind = _detect_media_kind(file)
     visibility = str(visibility or "public").lower()
     if visibility not in {"public", "unlisted", "private"}:
@@ -2793,30 +2865,26 @@ async def upload_media(
     if not title:
         raise HTTPException(status_code=400, detail="Title is required.")
     description_value = description.strip()[:2000] or None
-    if not description_value and float(getattr(analysis, "confidence", 0.0) or 0.0) >= 0.62:
-        description_value = _build_media_description(
-            title=title,
-            category_name=analysis.category_name,
-            subcategory_name=analysis.subcategory_name,
-            tags=list(analysis.tags or [])[:12],
-            source=str(getattr(analysis, "source", "") or ""),
-            reason=str(getattr(analysis, "reason", "") or ""),
-        )
     parsed_tags = _merge_upload_tags(_parse_tags(tags), analysis.tags)
     chosen_category_name = " ".join(category_name.strip().split())[:80] or analysis.category_name or ""
-    chosen_subcategory_name = " ".join(subcategory_name.strip().split())[:80] or analysis.subcategory_name or ""
+    analysis_subcategory_names = normalize_subcategory_names(
+        getattr(analysis, "subcategory_names", None) or [analysis.subcategory_name],
+        limit=MAX_MEDIA_SUBCATEGORIES,
+    )
+    chosen_subcategory_names = submitted_subcategory_names or analysis_subcategory_names
     if not category_id_int:
         if not chosen_category_name:
             raise HTTPException(status_code=400, detail="Category is required.")
         inferred_kind = category_kind if category_kind in {"image", "video", "mixed"} else ("video" if uploaded["media_kind"] == "video" else "image")
         category = await db.create_category(chosen_category_name, inferred_kind, int(auth["id"]))
         category_id_int = int(category["id"])
-    category_id_int, subcategory_id_int = await db.resolve_category_ids(
+    chosen_subcategory_ids = await db.resolve_subcategory_ids(
         category_id=category_id_int,
-        subcategory_id=subcategory_id_int,
-        subcategory_name=chosen_subcategory_name,
+        subcategory_ids=selected_subcategory_ids,
+        subcategory_names=chosen_subcategory_names,
         user_id=int(auth["id"]),
     )
+    subcategory_id_int = chosen_subcategory_ids[0] if chosen_subcategory_ids else None
     stored_filename = uploaded["original_filename"]
     if analysis.suggested_filename and (auto_ai or is_low_signal_filename(stored_filename)):
         if is_low_signal_filename(stored_filename) or not title.strip():
@@ -2836,6 +2904,7 @@ async def upload_media(
             "user_id": int(auth["id"]),
             "category_id": category_id_int,
             "subcategory_id": subcategory_id_int,
+            "subcategory_ids": chosen_subcategory_ids,
             "title": title,
             "description": description_value,
             "tags": parsed_tags,

@@ -42,7 +42,7 @@ const currentUser = {
 };
 
 const categories = [
-  { id: 2, name: "Profile Pictures", slug: "profile-pictures", subcategories: [{ id: 9, name: "Final Fantasy", slug: "final-fantasy" }] },
+  { id: 2, name: "Profile Pictures", slug: "profile-pictures", subcategories: [{ id: 9, name: "Final Fantasy", slug: "final-fantasy" }, { id: 12, name: "Cloud Strife", slug: "cloud-strife" }] },
   { id: 10, name: "Dazzlings", slug: "dazzlings", subcategories: [{ id: 3, name: "Aria Blaze", slug: "aria-blaze" }] },
 ];
 
@@ -66,6 +66,12 @@ function mediaItem(id, overrides = {}) {
     category_name: "Profile Pictures",
     subcategory_id: 9,
     subcategory_name: "Final Fantasy",
+    subcategory_ids: [9, 12],
+    subcategory_names: ["Final Fantasy", "Cloud Strife"],
+    subcategories: [
+      { id: 9, name: "Final Fantasy", slug: "final-fantasy", position: 1 },
+      { id: 12, name: "Cloud Strife", slug: "cloud-strife", position: 2 },
+    ],
     tags: ["cloud", "strife", "mock"],
     thumb_url: `/api/media/${id}/thumb?w=640`,
     preview_url: `/api/media/${id}/preview`,
@@ -163,7 +169,7 @@ async function installMocks(context, options = {}) {
     if (path === "/api/media" && method === "POST") return route.fulfill(json({ media: mediaItem(88, { title: "Uploaded Mock Media" }) }));
     if (path === "/api/media/random" && method === "GET") return route.fulfill(json({ media: ownerMedia }));
     if (path === "/api/media/analyze" && method === "POST") {
-      return route.fulfill(json({ analysis: { media_kind: "image", title: "Analyzed Mock", description: "AI mock", category_name: "Profile Pictures", subcategory_name: "Final Fantasy", tags: ["analyzed", "mock"], is_adult: false } }));
+      return route.fulfill(json({ analysis: { media_kind: "image", title: "Analyzed Mock", description: "AI mock", category_name: "Profile Pictures", subcategory_name: "Final Fantasy", subcategory_names: ["Final Fantasy", "Cloud Strife"], tags: ["analyzed", "mock"], is_adult: false } }));
     }
     const mediaDetail = path.match(/^\/api\/media\/(\d+)$/);
     if (mediaDetail && method === "GET") {
