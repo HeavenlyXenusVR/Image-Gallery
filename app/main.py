@@ -1885,6 +1885,7 @@ async def _video_thumb_warm_loop() -> None:
             await asyncio.sleep(2.0)
 
 
+@asynccontextmanager
 async def lifespan(app: FastAPI):
     global telegram_service
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -1908,39 +1909,41 @@ async def lifespan(app: FastAPI):
     )
     await telegram_service.start()
     await _send_telegram_alert("startup", "Image Gallery online", "Telegram bridge, database health checks, and media services are running.")
-    yield
-    if telegram_service:
-        await telegram_service.close()
-        telegram_service = None
-    migration_task.cancel()
     try:
-        await migration_task
-    except asyncio.CancelledError:
-        pass
-    except Exception as exc:
-        logger.warning("Legacy migration task ended during shutdown: %s", exc)
-    health_task.cancel()
-    try:
-        await health_task
-    except asyncio.CancelledError:
-        pass
-    except Exception as exc:
-        logger.warning("Telegram health watch task ended during shutdown: %s", exc)
-    ai_learning_task.cancel()
-    try:
-        await ai_learning_task
-    except asyncio.CancelledError:
-        pass
-    except Exception as exc:
-        logger.warning("Gallery AI background learning task ended during shutdown: %s", exc)
-    video_thumb_task.cancel()
-    try:
-        await video_thumb_task
-    except asyncio.CancelledError:
-        pass
-    except Exception as exc:
-        logger.warning("Gallery video thumbnail warm task ended during shutdown: %s", exc)
-    await db.close()
+        yield
+    finally:
+        if telegram_service:
+            await telegram_service.close()
+            telegram_service = None
+        migration_task.cancel()
+        try:
+            await migration_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("Legacy migration task ended during shutdown: %s", exc)
+        health_task.cancel()
+        try:
+            await health_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("Telegram health watch task ended during shutdown: %s", exc)
+        ai_learning_task.cancel()
+        try:
+            await ai_learning_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("Gallery AI background learning task ended during shutdown: %s", exc)
+        video_thumb_task.cancel()
+        try:
+            await video_thumb_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("Gallery video thumbnail warm task ended during shutdown: %s", exc)
+        await db.close()
 
 
 async def _auto_migrate_legacy_uploads() -> None:
