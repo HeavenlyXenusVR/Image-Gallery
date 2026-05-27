@@ -175,3 +175,18 @@ def test_load_settings_defaults_to_gemini_flash(monkeypatch: pytest.MonkeyPatch)
 
     assert settings.ai_provider == "gemini"
     assert settings.active_ai_model == "gemini-2.5-flash"
+
+
+def test_load_settings_allows_ai_taxonomy_creation_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GALLERY_AI_ALLOW_TAXONOMY_CREATION", raising=False)
+
+    settings = load_settings()
+
+    assert settings.ai_allow_taxonomy_creation is True
+
+
+def test_vision_prompt_rules_allow_concise_new_taxonomy() -> None:
+    rules = ai_metadata._vision_prompt_rules()
+
+    assert "you may create one new concise category name" in rules.lower()
+    assert "use subcategories for franchise, series, character, form, or context" in rules.lower()

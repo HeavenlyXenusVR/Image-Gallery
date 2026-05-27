@@ -121,6 +121,12 @@ GENERIC_MEDIA_CATEGORIES = {
     "desktop backgrounds",
     "phone backgrounds",
     "profile pictures",
+    "video",
+    "videos",
+    "cartoon",
+    "cartoons",
+    "image",
+    "images",
     "uncategorized",
     "other",
     "misc",
@@ -362,6 +368,10 @@ def _category_is_generic(category_name: Any) -> bool:
     return " ".join(str(category_name or "").strip().lower().split()) in GENERIC_MEDIA_CATEGORIES
 
 
+def _clean_category_label(value: Any) -> str:
+    return " ".join(str(value or "").strip().split())[:80]
+
+
 def _description_is_placeholder(description: Any) -> bool:
     text = " ".join(str(description or "").strip().split()).lower()
     return not text or text in {"description pending", "imported media", "imported image", "imported video"}
@@ -478,6 +488,7 @@ async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> d
     next_category = current_category
     next_subcategory_names = list(current_subcategory_names)
     media_kind = str(item.get("media_kind") or "image")
+    analysis_category_name = _clean_category_label(getattr(analysis, "category_name", ""))
     analysis_subcategory_names = normalize_subcategory_names(
         getattr(analysis, "subcategory_names", None) or [getattr(analysis, "subcategory_name", "")],
         limit=MAX_MEDIA_SUBCATEGORIES,
@@ -487,10 +498,11 @@ async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> d
         existing_category = await db.create_category(current_category, media_kind, int(item["user_id"]))
         category_id = int(existing_category["id"])
 
-    if (_category_is_generic(current_category) or not current_category) and getattr(analysis, "category_name", ""):
-        category = await db.create_category(str(analysis.category_name), media_kind, int(item["user_id"]))
+    allow_taxonomy_creation = bool(getattr(settings, "ai_allow_taxonomy_creation", True))
+    if allow_taxonomy_creation and analysis_category_name and (_category_is_generic(current_category) or not current_category):
+        category = await db.create_category(analysis_category_name, media_kind, int(item["user_id"]))
         category_id = int(category["id"])
-        next_category = str(analysis.category_name)
+        next_category = analysis_category_name
         next_subcategory_names = analysis_subcategory_names
         resolved_subcategory_ids = await db.resolve_subcategory_ids(
             category_id=category_id,
@@ -750,10 +762,10 @@ def _normalized_preview_size(size: str | None) -> str:
 def _preview_options(size: str | None) -> tuple[str, int, int]:
     normalized = _normalized_preview_size(size)
     if normalized == "mini":
-        return normalized, 320, 72
+        return normalized, 360, 78
     if normalized == "detail":
-        return normalized, 1500, 88
-    return normalized, 720, 80
+        return normalized, 1920, 92
+    return normalized, 880, 86
 
 
 def _is_gif_media(item: dict[str, Any]) -> bool:
@@ -872,12 +884,12 @@ def _render_image_preview(content: bytes, mime_type: str | None, digest: str, *,
             try:
                 preview.save(output, format="WEBP", quality=quality, method=6)
                 preview_bytes = output.getvalue()
-                if variant == "detail" and len(content) <= len(preview_bytes) and len(content) <= 1_500_000 and (mime_type or "").startswith("image/"):
+                if variant == "detail" and len(content) <= len(preview_bytes) and len(content) <= 2_500_000 and (mime_type or "").startswith("image/"):
                     return _store_preview(cache_key, (content, mime_type or "image/jpeg"))
                 return _store_preview(cache_key, (preview_bytes, "image/webp"))
             except OSError:
                 output = io.BytesIO()
-                preview.convert("RGB").save(output, format="JPEG", quality=min(quality + 4, 92), optimize=True)
+                preview.convert("RGB").save(output, format="JPEG", quality=min(quality + 2, 94), optimize=True)
                 preview_bytes = output.getvalue()
                 return _store_preview(cache_key, (preview_bytes, "image/jpeg"))
     except Exception:
@@ -912,7 +924,7 @@ def _render_video_placeholder_thumb(item: dict[str, Any], width: int) -> tuple[b
             fill=(255, 255, 255, 170),
         )
         output = io.BytesIO()
-        base.convert("RGB").save(output, format="WEBP", quality=76, method=4)
+        base.convert("RGB").save(output, format="WEBP", quality=84, method=5)
         return _store_preview(cache_key, (output.getvalue(), "image/webp"))
     except Exception:
         svg = (
@@ -941,11 +953,13 @@ def _render_video_frame_thumb(source_path: Path, cache_path: Path, width: int) -
         "-frames:v",
         "1",
         "-vf",
-        f"scale='min({int(width)},iw)':-2",
+        f"scale='min({int(width)},iw)':-2:flags=lanczos",
         "-c:v",
         "libwebp",
+        "-compression_level",
+        "5",
         "-quality",
-        "82",
+        "88",
         str(tmp_path),
     ]
     try:
@@ -3250,7 +3264,7 @@ def _transcode_video_variant(source_path: Path, cache_path: Path, profile: dict[
     tmp_path = cache_path.with_suffix(".tmp.mp4")
     if tmp_path.exists():
         tmp_path.unlink()
-    scale_filter = f"scale='min({int(profile['max_width'])},iw)':-2"
+    scale_filter = f"scale='min({int(profile['max_width'])},iw)':-2:flags=lanczos"
     command = [
         "ffmpeg",
         "-y",
@@ -3268,9 +3282,11 @@ def _transcode_video_variant(source_path: Path, cache_path: Path, profile: dict[
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
+        str(profile.get("preset") or "faster"),
         "-crf",
         str(int(profile["crf"])),
+        "-profile:v",
+        str(profile.get("profile") or "high"),
         "-pix_fmt",
         "yuv420p",
         "-c:a",
@@ -3404,8 +3420,8 @@ THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_CACHE_DIR = settings.uploads_dir / "_video_cache"
 VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_QUALITY_PROFILES = {
-    "medium": {"max_width": 1280, "crf": 23, "audio_bitrate": "160k"},
-    "low": {"max_width": 854, "crf": 28, "audio_bitrate": "96k"},
+    "medium": {"max_width": 1600, "crf": 19, "audio_bitrate": "192k", "preset": "faster", "profile": "high"},
+    "low": {"max_width": 960, "crf": 23, "audio_bitrate": "128k", "preset": "faster", "profile": "high"},
 }
 
 
@@ -3595,7 +3611,7 @@ async def serve_media_thumb(media_id: int, request: Request, access: str | None 
                 frame.thumbnail((width, width), Image.Resampling.LANCZOS)
 
                 tmp = cache_file.with_suffix(".tmp")
-                frame.save(tmp, format="WEBP", quality=78, method=4)
+                frame.save(tmp, format="WEBP", quality=84, method=5)
                 tmp.replace(cache_file)
 
             cached = _thumb_file_response(request, cache_file, headers)

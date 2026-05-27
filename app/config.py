@@ -129,6 +129,7 @@ class Settings:
     ollama_base_url: str
     ollama_model: str
     ai_timeout_seconds: int
+    ai_allow_taxonomy_creation: bool
     ai_auto_train_on_edit: bool
     ai_training_examples_limit: int
     ai_background_learning_enabled: bool
@@ -210,6 +211,7 @@ def load_settings() -> Settings:
         ollama_base_url=(_env("GALLERY_OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/"),
         ollama_model=_env("GALLERY_OLLAMA_MODEL", "qwen2.5vl:3b"),
         ai_timeout_seconds=max(10, int(_env("GALLERY_AI_TIMEOUT_SECONDS", "45"))),
+        ai_allow_taxonomy_creation=_env_bool("GALLERY_AI_ALLOW_TAXONOMY_CREATION", True),
         ai_auto_train_on_edit=_env_bool("GALLERY_AI_AUTO_TRAIN_ON_EDIT", True),
         ai_training_examples_limit=max(0, min(1000, int(_env("GALLERY_AI_TRAINING_EXAMPLES_LIMIT", "300")))),
         ai_background_learning_enabled=_env_bool("GALLERY_AI_BACKGROUND_LEARNING_ENABLED", True),

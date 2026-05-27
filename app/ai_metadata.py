@@ -276,6 +276,11 @@ def _vision_prompt_rules() -> str:
         "Make the title natural, short, and focused on the visible subject. "
         "Do not write a description paragraph inside the title or reason. "
         "Create up to 12 short lowercase tags; skip generic wallpaper/background tags unless they add real search value. "
+        "Prefer existing gallery-style categories when they are clearly the best fit, especially Phone Backgrounds, Desktop Backgrounds, Profile Pictures, Wallpapers, GIFs, and Videos. "
+        "Use subcategories for franchise, series, character, form, or context beneath those broad categories. "
+        "If none of the established categories fits well enough, you may create one new concise category name. "
+        "You may also create new subcategory names when the visible subject is specific and reliable. "
+        "Do not invent brand-new taxonomy when the image is ambiguous or when a broader existing category is still clearly correct. "
         "Use up to 3 ordered subcategories only when each one adds distinct value. "
         "Order subcategories from broad to specific: series or group first, then character or subject, then variant, form, or context. "
         "Do not repeat the main category as a subcategory. "
@@ -1319,7 +1324,8 @@ def _ollama_vision_analysis(
         "Prefer these main categories when they fit: " + ", ".join(KNOWN_CATEGORIES) + ".\n"
         "Use this local recognition guide as hints, not proof: " + _character_guide_text() + ".\n"
         + training_guide
-        + "If it looks like a phone wallpaper use category 'Phone Backgrounds'. If it looks like a desktop wallpaper use 'Desktop Backgrounds'.\n"
+        + "If it looks like a phone wallpaper use category 'Phone Backgrounds' and place the franchise or subject inside subcategories. "
+        "If it looks like a desktop wallpaper use category 'Desktop Backgrounds' and place the franchise or subject inside subcategories.\n"
         "If the image is NSFW, set is_adult true.\n"
         "Return exactly this JSON schema:"
         '{"title":"string","suggested_filename_base":"string","tags":["tag"],"category_name":"string","subcategory_name":"string","subcategory_names":["string"],"is_adult":false,"confidence":0.0,"reason":"string"}\n\n'
@@ -1412,7 +1418,7 @@ def _gemini_vision_analysis(
         + _training_guide_text(training_examples)
         + "Prefer these main categories when they fit: "
         + ", ".join(KNOWN_CATEGORIES)
-        + ". If it looks like a phone wallpaper use Phone Backgrounds; desktop wallpaper use Desktop Backgrounds. "
+        + ". If it looks like a phone wallpaper use Phone Backgrounds and place the franchise or subject inside subcategories; desktop wallpaper use Desktop Backgrounds and place the franchise or subject inside subcategories. "
         "Return exactly this JSON schema: "
         '{"title":"string","suggested_filename_base":"string","tags":["tag"],"category_name":"string","subcategory_name":"string","subcategory_names":["string"],"is_adult":false,"confidence":0.0,"reason":"string"}\n\n'
         f"Filename: {filename}\n"
@@ -1498,7 +1504,7 @@ def _openai_vision_analysis(
         + _training_guide_text(training_examples)
         + "Prefer these main categories when they fit: "
         + ", ".join(KNOWN_CATEGORIES)
-        + ". If nothing specific fits, use Wallpapers, Desktop Backgrounds, Phone Backgrounds, Videos, or Profile Pictures. "
+        + ". If nothing specific fits, use Wallpapers, Desktop Backgrounds, Phone Backgrounds, Videos, or Profile Pictures; otherwise you may create one concise new category and use subcategories for the more specific identity. "
         "Do not invent lore if the image is ambiguous."
     )
     user_text = (
@@ -1714,9 +1720,9 @@ def _preview_base64(content: bytes, filename: str, mime_type: str, media_kind: s
             with Image.open(io.BytesIO(content)) as image:
                 frame = next(ImageSequence.Iterator(image), image)
                 preview = frame.convert("RGB")
-                preview.thumbnail((1400, 1400))
+                preview.thumbnail((1600, 1600))
                 output = io.BytesIO()
-                preview.save(output, format="JPEG", quality=84, optimize=True)
+                preview.save(output, format="JPEG", quality=90, optimize=True)
                 return base64.b64encode(output.getvalue()).decode("ascii")
         except Exception:
             return base64.b64encode(content).decode("ascii")
@@ -1744,9 +1750,10 @@ def _video_preview_base64(content: bytes, filename: str, mime_type: str) -> str 
                     "-v", "error",
                     "-i", handle.name,
                     "-frames:v", "1",
-                    "-vf", "scale='min(1400,iw)':-2",
+                    "-vf", "scale='min(1600,iw)':-2:flags=lanczos",
                     "-f", "image2pipe",
                     "-vcodec", "mjpeg",
+                    "-q:v", "2",
                     "pipe:1",
                 ],
                 capture_output=True,

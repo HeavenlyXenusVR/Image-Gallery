@@ -220,3 +220,12 @@ def test_report_media_load_diagnostic_logs_fallback_event(caplog) -> None:
     assert "fallback-success" in caplog.text
     assert "detail-image-medium" in caplog.text
     assert "thumb" in caplog.text
+
+
+def test_media_quality_profiles_are_upgraded() -> None:
+    assert main._preview_options("mini") == ("mini", 360, 78)
+    assert main._preview_options("card") == ("card", 880, 86)
+    assert main._preview_options("detail") == ("detail", 1920, 92)
+    assert main.VIDEO_QUALITY_PROFILES["medium"]["max_width"] == 1600
+    assert main.VIDEO_QUALITY_PROFILES["medium"]["crf"] == 19
+    assert main.VIDEO_QUALITY_PROFILES["low"]["audio_bitrate"] == "128k"
