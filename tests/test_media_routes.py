@@ -229,3 +229,57 @@ def test_media_quality_profiles_are_upgraded() -> None:
     assert main.VIDEO_QUALITY_PROFILES["medium"]["max_width"] == 1600
     assert main.VIDEO_QUALITY_PROFILES["medium"]["crf"] == 19
     assert main.VIDEO_QUALITY_PROFILES["low"]["audio_bitrate"] == "128k"
+
+
+def test_site_background_returns_rotating_snapshot(monkeypatch) -> None:
+    async def fake_site_background_snapshot(*, force: bool = False):
+        assert force is False
+        return (
+            {
+                "id": 55,
+                "title": "Sunset Drive",
+                "username": "bot",
+                "display_name": "Bot",
+                "category_name": "Desktop Backgrounds",
+                "subcategory_name": "Synthwave",
+                "width": 1920,
+                "height": 1080,
+            },
+            287,
+        )
+
+    monkeypatch.setattr(main, "_site_background_snapshot", fake_site_background_snapshot)
+    main._site_background_state["picked_at"] = 1234567890
+
+    payload = asyncio.run(main.site_background(_request("/api/site/background")))
+
+    assert payload["enabled"] is True
+    assert payload["status"] == "active"
+    assert payload["refresh_after_seconds"] == 287
+    assert payload["background"]["id"] == 55
+    assert payload["background"]["url"].endswith("/api/media/55/thumb?w=1440")
+
+
+def test_site_background_snapshot_avoids_repeating_previous_pick(monkeypatch) -> None:
+    previous_state = dict(main._site_background_state)
+
+    async def fake_background_candidate_rows():
+        return [
+            {"id": 10, "title": "First"},
+            {"id": 20, "title": "Second"},
+        ]
+
+    monkeypatch.setattr(main, "_background_candidate_rows", fake_background_candidate_rows)
+    monkeypatch.setattr(main.random, "choice", lambda pool: pool[0])
+    main._site_background_state["item"] = {"id": 10, "title": "First"}
+    main._site_background_state["picked_at"] = 0.0
+
+    try:
+        picked, refresh_after = asyncio.run(main._site_background_snapshot(force=True))
+    finally:
+        main._site_background_state.clear()
+        main._site_background_state.update(previous_state)
+
+    assert picked is not None
+    assert picked["id"] == 20
+    assert refresh_after == main.SITE_BACKGROUND_ROTATION_SECONDS

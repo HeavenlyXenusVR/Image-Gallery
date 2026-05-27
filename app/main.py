@@ -59,6 +59,7 @@ SITE_OWNER_EMAIL = "heavenlyxenusvr@icloud.com"
 BACKGROUND_ASPECT_RATIO = 16 / 9
 BACKGROUND_ASPECT_TOLERANCE = 0.035
 BACKGROUND_CACHE_SECONDS = 300
+SITE_BACKGROUND_ROTATION_SECONDS = 300
 PREVIEW_CACHE_MAX_ITEMS = 256
 API_CACHE_MAX_ITEMS = max(64, int(os.getenv("GALLERY_API_CACHE_MAX_ITEMS", "512")))
 MEDIA_LIST_CACHE_SECONDS = max(0.0, float(os.getenv("GALLERY_MEDIA_LIST_CACHE_SECONDS", "30") or "30"))
@@ -94,6 +95,8 @@ APP_SHELL_PATHS = {
 REACT_SHELL_PATH = ROOT_DIR / "app" / "static" / "react" / "index.html"
 _background_cache_lock = asyncio.Lock()
 _background_cache: dict[str, Any] = {"built_at": 0.0, "items": []}
+_site_background_lock = asyncio.Lock()
+_site_background_state: dict[str, Any] = {"picked_at": 0.0, "item": None}
 _preview_cache: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
 _api_cache: OrderedDict[str, tuple[float, str, str]] = OrderedDict()
 _thumb_generation_locks: dict[str, asyncio.Lock] = {}
@@ -1094,6 +1097,46 @@ async def _background_candidate_rows() -> list[dict[str, Any]]:
         return eligible
 
 
+async def _site_background_snapshot(*, force: bool = False) -> tuple[dict[str, Any] | None, int]:
+    now = time.time()
+    current = _site_background_state.get("item")
+    picked_at = float(_site_background_state.get("picked_at") or 0.0)
+    remaining = max(1, int(SITE_BACKGROUND_ROTATION_SECONDS - max(0.0, now - picked_at)))
+    if current and not force and (now - picked_at) < SITE_BACKGROUND_ROTATION_SECONDS:
+        return current, remaining
+
+    async with _site_background_lock:
+        now = time.time()
+        current = _site_background_state.get("item")
+        picked_at = float(_site_background_state.get("picked_at") or 0.0)
+        if current and not force and (now - picked_at) < SITE_BACKGROUND_ROTATION_SECONDS:
+            remaining = max(1, int(SITE_BACKGROUND_ROTATION_SECONDS - max(0.0, now - picked_at)))
+            return current, remaining
+        candidates = await _background_candidate_rows()
+        if not candidates:
+            _site_background_state["item"] = None
+            _site_background_state["picked_at"] = 0.0
+            return None, SITE_BACKGROUND_ROTATION_SECONDS
+        previous_id = int((current or {}).get("id") or 0)
+        pool = [item for item in candidates if int(item.get("id") or 0) != previous_id] or candidates
+        picked = dict(random.choice(pool))
+        _site_background_state["item"] = picked
+        _site_background_state["picked_at"] = now
+        return picked, SITE_BACKGROUND_ROTATION_SECONDS
+
+
+async def _site_background_rotation_loop() -> None:
+    await asyncio.sleep(4)
+    while True:
+        try:
+            await _site_background_snapshot(force=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Gallery site background rotation paused after failure: %s", exc)
+        await asyncio.sleep(SITE_BACKGROUND_ROTATION_SECONDS)
+
+
 def _fallback_avatar_svg(user_id: int) -> str:
     initials = f"U{int(user_id)}"[:3]
     return (
@@ -1932,6 +1975,7 @@ async def lifespan(app: FastAPI):
     health_task = asyncio.create_task(_telegram_health_watch_loop())
     ai_learning_task = asyncio.create_task(_ai_background_learning_loop())
     video_thumb_task = asyncio.create_task(_video_thumb_warm_loop())
+    site_background_task = asyncio.create_task(_site_background_rotation_loop())
     telegram_service = TelegramPollingService(
         token=settings.telegram_bot_token,
         name="Image Gallery",
@@ -1981,6 +2025,13 @@ async def lifespan(app: FastAPI):
             pass
         except Exception as exc:
             logger.warning("Gallery video thumbnail warm task ended during shutdown: %s", exc)
+        site_background_task.cancel()
+        try:
+            await site_background_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("Gallery site background rotation task ended during shutdown: %s", exc)
         await db.close()
 
 
@@ -2736,8 +2787,8 @@ async def random_media(request: Request) -> dict[str, Any]:
 
 @app.get("/api/site/background")
 async def site_background(request: Request, exclude: int | None = None) -> dict[str, Any]:
-    candidates = await _background_candidate_rows()
-    if not candidates:
+    picked, refresh_after_seconds = await _site_background_snapshot(force=False)
+    if not picked:
         return {
             "enabled": False,
             "background": None,
@@ -2745,16 +2796,17 @@ async def site_background(request: Request, exclude: int | None = None) -> dict[
             "url": None,
             "updated_at": None,
             "status": "disabled",
-            "refresh_after_seconds": BACKGROUND_CACHE_SECONDS,
+            "refresh_after_seconds": SITE_BACKGROUND_ROTATION_SECONDS,
         }
-    pool = [item for item in candidates if int(item["id"]) != int(exclude or 0)] or candidates
-    picked = random.choice(pool)
     return {
+        "enabled": True,
+        "status": "active",
         "background": {
             **picked,
             "url": str(request.url_for("serve_media_thumb", media_id=int(picked["id"]))) + "?w=1440",
         },
-        "refresh_after_seconds": BACKGROUND_CACHE_SECONDS,
+        "updated_at": int(_site_background_state.get("picked_at") or 0),
+        "refresh_after_seconds": refresh_after_seconds,
     }
 
 

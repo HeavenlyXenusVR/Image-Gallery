@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
-import { apiFetch, cachedApiFetch, clearApiCache, prefetchApi, readStoredUser, readToken, toQuery, writeStoredUser, writeToken } from "./api.js";
+import { apiFetch, cachedApiFetch, clearApiCache, prefetchApi, readStoredUser, readToken, resolveApiUrl, toQuery, writeStoredUser, writeToken } from "./api.js";
 import { Shell } from "./components/Shell.jsx";
 import { NotFound } from "./components/ui.jsx";
 import { DEFAULT_SETTINGS, PAGE_SIZE, setRuntimeMaxUploadBytes } from "./config.js";
@@ -25,6 +25,32 @@ const BOOT_TIPS = [
   "Discover and user search are prefetched while the overlay is up so the first deck lands faster.",
   "Muted preview clips now lean on the lighter video ladder instead of reaching for the largest file first.",
 ];
+const SITE_BACKGROUND_KEY = "image_gallery_site_background";
+const SITE_BACKGROUND_REFRESH_MS = 5 * 60_000;
+
+function readSiteBackground() {
+  try {
+    const raw = localStorage.getItem(SITE_BACKGROUND_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function writeSiteBackground(background) {
+  try {
+    if (background) localStorage.setItem(SITE_BACKGROUND_KEY, JSON.stringify(background));
+    else localStorage.removeItem(SITE_BACKGROUND_KEY);
+  } catch (_error) {
+    // Storage can be unavailable in hardened browser contexts.
+  }
+}
+
+function clearSiteBackground() {
+  writeSiteBackground(null);
+  document.documentElement.style.setProperty("--site-background-image", "none");
+  document.body.dataset.backgroundReady = "0";
+}
 
 function galleryPageSize(settings) {
   const parsed = Number(settings?.items_per_page);
@@ -139,6 +165,75 @@ function App() {
     }, 3200);
     return () => window.clearInterval(timer);
   }, [bootDismissed]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let refreshTimer = 0;
+
+    const scheduleRefresh = (delay) => {
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        void refreshSiteBackground({ force: true });
+      }, Math.max(30_000, Number(delay) || SITE_BACKGROUND_REFRESH_MS));
+    };
+
+    const applySiteBackground = async (background, { persist = true } = {}) => {
+      const rawUrl = String(background?.url || "").trim();
+      if (!rawUrl) return false;
+      const resolvedUrl = await resolveApiUrl(rawUrl);
+      if (!resolvedUrl || cancelled) return false;
+      const withBust = `${resolvedUrl}${resolvedUrl.includes("?") ? "&" : "?"}bg=${background?.id || Date.now()}`;
+      await new Promise((resolve) => {
+        const preload = new Image();
+        preload.decoding = "async";
+        preload.onload = () => {
+          if (!cancelled) {
+            document.documentElement.style.setProperty("--site-background-image", `url("${withBust.replace(/["\\]/g, "\\$&")}")`);
+            document.body.dataset.backgroundReady = "1";
+            if (persist) writeSiteBackground({ ...background, url: rawUrl, appliedAt: Date.now() });
+          }
+          resolve(null);
+        };
+        preload.onerror = () => resolve(null);
+        preload.src = withBust;
+      });
+      return !cancelled;
+    };
+
+    const refreshSiteBackground = async ({ force = false } = {}) => {
+      const cached = readSiteBackground();
+      const cachedAge = Date.now() - Number(cached?.appliedAt || 0);
+      if (!force && cached?.url && cachedAge < SITE_BACKGROUND_REFRESH_MS) {
+        await applySiteBackground(cached, { persist: false });
+        scheduleRefresh(SITE_BACKGROUND_REFRESH_MS - cachedAge);
+        return;
+      }
+      try {
+        const data = await apiFetch("/api/site/background");
+        if (cancelled) return;
+        if (data?.background?.url) {
+          await applySiteBackground(data.background);
+          scheduleRefresh((Number(data.refresh_after_seconds) || 300) * 1000);
+          return;
+        }
+      } catch (_error) {
+        // Background rotation is decorative; the gallery should remain quiet if it fails.
+      }
+      if (cached?.url) {
+        await applySiteBackground(cached, { persist: false });
+        scheduleRefresh(60_000);
+        return;
+      }
+      clearSiteBackground();
+      scheduleRefresh(SITE_BACKGROUND_REFRESH_MS);
+    };
+
+    void refreshSiteBackground();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(refreshTimer);
+    };
+  }, []);
 
   useEffect(() => {
     if (bootDismissed) return;

@@ -23,6 +23,7 @@
   --motion-fast: 140ms cubic-bezier(0.2, 0.8, 0.2, 1);
   --motion-med: 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
   --motion-slow: 520ms cubic-bezier(0.16, 1, 0.3, 1);
+  --site-background-image: none;
 }
 
 * {
@@ -134,12 +135,37 @@ video {
 }
 
 .app-shell {
+  position: relative;
+  isolation: isolate;
   min-height: 100vh;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent) 11%, transparent), transparent 320px),
     linear-gradient(120deg, transparent 62%, rgba(255, 207, 106, 0.06)),
     var(--bg);
   color: var(--text);
+}
+
+.app-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  background-image: var(--site-background-image);
+  background-position: center center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  transition: opacity 520ms ease;
+}
+
+.app-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+body[data-background-ready="1"] .app-shell::before {
+  opacity: 0.2;
 }
 
 .gallery-theme-light {
