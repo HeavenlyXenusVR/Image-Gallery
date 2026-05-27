@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Download, Eye, Folder, Heart, Lock, LogIn, MessageCircle, Sparkles } from "lucide-react";
 import { formatDate, initials, numberish } from "../utils/format.js";
+import { reportMediaLoadDiagnostic } from "../utils/media.js";
 
 export function Page({ title, eyebrow, lede = "", actions, className = "", children }) {
   return (
@@ -101,10 +102,11 @@ export function CollectionCover({ collection }) {
   return <span className="collection-cover">{collection.cover_url && !failed ? <img src={collection.cover_url} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} /> : <Folder size={20} />}</span>;
 }
 
-export function ResilientImage({ sources = [], fallback = null, ...props }) {
+export function ResilientImage({ sources = [], fallback = null, diagnostics = null, ...props }) {
   const usableSources = (sources || []).filter(Boolean);
   const [index, setIndex] = useState(0);
   const externalOnError = props.onError;
+  const externalOnLoad = props.onLoad;
   useEffect(() => {
     setIndex(0);
   }, [usableSources.join("|")]);
@@ -115,8 +117,31 @@ export function ResilientImage({ sources = [], fallback = null, ...props }) {
     <img
       {...props}
       src={src}
+      onLoad={(event) => {
+        if (typeof externalOnLoad === "function") externalOnLoad(event);
+        if (diagnostics && index > 0) {
+          reportMediaLoadDiagnostic({
+            mediaId: diagnostics.mediaId,
+            mediaKind: diagnostics.mediaKind,
+            context: diagnostics.context,
+            outcome: "fallback-success",
+            sourceIndex: index,
+            sources: usableSources,
+          });
+        }
+      }}
       onError={(event) => {
         if (typeof externalOnError === "function") externalOnError(event);
+        if (diagnostics && index + 1 >= usableSources.length) {
+          reportMediaLoadDiagnostic({
+            mediaId: diagnostics.mediaId,
+            mediaKind: diagnostics.mediaKind,
+            context: diagnostics.context,
+            outcome: "all-failed",
+            sourceIndex: index,
+            sources: usableSources,
+          });
+        }
         setIndex((current) => current + 1);
       }}
     />

@@ -127,7 +127,7 @@ export function ProfilePage({ ctx }) {
           <div className="profile-feature-strip">
             {featuredPanel === "collections" ? featuredItems.slice(0, 4).map((collection) => <CollectionMini collection={collection} key={collection.id} />) : null}
             {featuredPanel === "friends" ? featuredItems.slice(0, 6).map((friend) => <UserMini user={friend} key={friend.id} />) : null}
-            {featuredPanel === "uploads" ? featuredItems.slice(0, 4).map((item) => <Link className="profile-media-mini" to={`/media/${item.id}`} key={item.id}><ResilientImage sources={mediaImageSources(item, { width: 420, previewSize: "detail" })} alt="" loading="lazy" decoding="async" /><span>{item.title || "Untitled"}</span></Link>) : null}
+            {featuredPanel === "uploads" ? featuredItems.slice(0, 4).map((item) => <Link className="profile-media-mini" to={`/media/${item.id}`} key={item.id}><ResilientImage sources={mediaImageSources(item, { width: 420, previewSize: "detail" })} diagnostics={{ mediaId: item.id, mediaKind: item.media_kind, context: "profile-featured" }} alt="" loading="lazy" decoding="async" /><span>{item.title || "Untitled"}</span></Link>) : null}
             {!featuredItems.length ? <p>No featured items yet.</p> : null}
           </div>
         </article>

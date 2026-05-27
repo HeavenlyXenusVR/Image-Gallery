@@ -280,6 +280,15 @@ class ReportRequest(BaseModel):
     details: str | None = None
 
 
+class MediaLoadDiagnosticRequest(BaseModel):
+    context: str
+    outcome: str
+    media_kind: str | None = None
+    selected_source: str | None = None
+    failed_sources: list[str] = []
+    source_count: int = 0
+
+
 class VisionTrainingRequest(BaseModel):
     title: str
     category_name: str | None = None
@@ -702,6 +711,21 @@ def _valid_media_access_token(media_id: int, token: str | None) -> bool:
 
 def _append_query(url: str, key: str, value: str) -> str:
     return f"{url}{'&' if '?' in url else '?'}{key}={value}"
+
+
+def _trim_client_text(value: Any, limit: int = 80) -> str:
+    return " ".join(str(value or "").strip().split())[:limit]
+
+
+def _trim_client_labels(values: list[str] | None, *, limit: int = 6, item_limit: int = 32) -> list[str]:
+    cleaned: list[str] = []
+    for value in values or []:
+        label = _trim_client_text(value, item_limit)
+        if label and label not in cleaned:
+            cleaned.append(label)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
 
 
 def _legacy_upload_path(storage_path: str | None) -> Path | None:
@@ -3146,6 +3170,32 @@ async def report_media(media_id: int, payload: ReportRequest, request: Request) 
     return {"report": _jsonable(report)}
 
 
+@app.post("/api/media/{media_id}/diagnostics/load")
+async def report_media_load_diagnostic(media_id: int, payload: MediaLoadDiagnosticRequest, request: Request) -> dict[str, Any]:
+    viewer_id = _user_id(_auth_optional(request))
+    context = _trim_client_text(payload.context, 48).lower()
+    outcome = _trim_client_text(payload.outcome, 32).lower()
+    media_kind = _trim_client_text(payload.media_kind, 16).lower()
+    selected_source = _trim_client_text(payload.selected_source, 32).lower()
+    failed_sources = _trim_client_labels(payload.failed_sources)
+    source_count = max(0, min(int(payload.source_count or 0), 12))
+    request_id = getattr(request.state, "request_id", "")
+    log_method = logger.warning if outcome == "all-failed" else logger.info
+    log_method(
+        "Client media load diagnostic media_id=%s outcome=%s context=%s selected=%s failed=%s source_count=%s media_kind=%s viewer_id=%s request_id=%s",
+        media_id,
+        outcome or "unknown",
+        context or "unknown",
+        selected_source or "none",
+        ">".join(failed_sources) or "none",
+        source_count,
+        media_kind or "unknown",
+        viewer_id or 0,
+        request_id or "none",
+    )
+    return {"ok": True}
+
+
 @app.delete("/api/media/{media_id}")
 async def delete_media(media_id: int, request: Request) -> dict[str, Any]:
     auth = require_auth(request, settings.session_secret, settings.api_token_ttl_seconds)
@@ -3504,6 +3554,12 @@ async def serve_media_thumb(media_id: int, request: Request, access: str | None 
         preview_bytes, preview_mime = await asyncio.to_thread(_render_video_placeholder_thumb, item, width)
         etag = f"\"video-thumb:{int(media_id)}:{width}:{hashlib.sha256(preview_bytes).hexdigest()[:16]}\""
         fallback_headers = {**headers, "ETag": etag, "X-Xenus-Video-Thumb": "placeholder"}
+        logger.info(
+            "Video thumbnail placeholder served for media_id=%s width=%s request_id=%s",
+            media_id,
+            width,
+            getattr(request.state, "request_id", "") or "none",
+        )
         if _etag_matches(request, etag):
             return Response(status_code=304, headers=fallback_headers)
         return Response(content=preview_bytes, media_type=preview_mime, headers=fallback_headers)
@@ -3548,6 +3604,13 @@ async def serve_media_thumb(media_id: int, request: Request, access: str | None 
             return FileResponse(cache_file, media_type="image/webp", headers=headers)
         except Exception:
             # If thumbnailing fails, fall back to the original instead of breaking the UI.
+            logger.warning(
+                "Image thumbnail generation failed; serving original for media_id=%s width=%s request_id=%s",
+                media_id,
+                width,
+                getattr(request.state, "request_id", "") or "none",
+                exc_info=True,
+            )
             return await _serve_media_content(media_id, request, access=access, as_download=False)
 
 

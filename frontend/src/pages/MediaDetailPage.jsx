@@ -152,7 +152,7 @@ export function MediaDetailPage({ ctx }) {
                   </select>
                 </div>
               ) : null}
-              <ResilientImage className={gif ? "gif-full" : ""} sources={detailImageSources} alt={media.title || ""} fallback={<div className="locked-state"><Notice kind="error">Media preview failed to load.</Notice></div>} />
+              <ResilientImage className={gif ? "gif-full" : ""} sources={detailImageSources} diagnostics={{ mediaId: media.id, mediaKind: media.media_kind, context: `detail-image-${imageQuality}` }} alt={media.title || ""} fallback={<div className="locked-state"><Notice kind="error">Media preview failed to load.</Notice></div>} />
             </>
           )}
         </article>

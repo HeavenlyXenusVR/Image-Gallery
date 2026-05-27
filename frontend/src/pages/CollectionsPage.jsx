@@ -161,7 +161,7 @@ export function CollectionsPage({ ctx }) {
                     <div className="collection-candidate-grid">
                       {picker.results.map((item) => (
                         <article className="collection-candidate" key={item.id}>
-                          <ResilientImage sources={mediaImageSources(item, { width: 260, previewSize: "card" })} alt="" loading="lazy" decoding="async" />
+                          <ResilientImage sources={mediaImageSources(item, { width: 260, previewSize: "card" })} diagnostics={{ mediaId: item.id, mediaKind: item.media_kind, context: "collection-picker" }} alt="" loading="lazy" decoding="async" />
                           <div>
                             <strong>{item.title || "Untitled"}</strong>
                             <small>{item.media_kind === "video" ? <Film size={13} /> : <ImageIcon size={13} />}{item.category_name || "Unsorted"} · {formatDate(item.created_at || item.uploaded_at)}</small>

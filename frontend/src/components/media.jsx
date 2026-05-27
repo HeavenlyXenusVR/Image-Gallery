@@ -51,8 +51,8 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
                 playsInline
                 preload="metadata"
               />
-            ) : thumb ? <ResilientImage className={`video-thumb ${ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""}`} sources={videoThumbSources} alt="" loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} fallback={<div className="video-thumb-placeholder"><Film size={34} /></div>} /> : <div className="video-thumb-placeholder"><Film size={34} /></div>
-          ) : <ResilientImage className={isGifMedia(item) ? "gif-thumb" : ""} sources={imageSources} alt={item.title || ""} loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} fallback={<div className="video-thumb-placeholder"><ImageIcon size={34} /></div>} />}
+            ) : thumb ? <ResilientImage className={`video-thumb ${ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""}`} sources={videoThumbSources} diagnostics={{ mediaId: item.id, mediaKind: item.media_kind, context: "grid-video-thumb" }} alt="" loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} fallback={<div className="video-thumb-placeholder"><Film size={34} /></div>} /> : <div className="video-thumb-placeholder"><Film size={34} /></div>
+          ) : <ResilientImage className={isGifMedia(item) ? "gif-thumb" : ""} sources={imageSources} diagnostics={{ mediaId: item.id, mediaKind: item.media_kind, context: "grid-image" }} alt={item.title || ""} loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} fallback={<div className="video-thumb-placeholder"><ImageIcon size={34} /></div>} />}
           <span className="kind-badge">{item.media_kind === "video" ? <Film size={14} /> : <ImageIcon size={14} />}{item.media_kind || "image"}</span>
         </div>
         <div className="media-copy">
@@ -249,8 +249,8 @@ export function StudioItem({ ctx, item, onChanged, onRemoved }) {
     <article className="studio-item">
       <Link to={`/media/${item.id}`} className="studio-thumb">
         {item.media_kind === "video"
-          ? <ResilientImage className={ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""} sources={mediaImageSources(item, { width: 420, previewSize: "card" })} alt="" loading="lazy" decoding="async" fallback={<div className="video-thumb-placeholder"><Film size={34} /></div>} />
-          : <ResilientImage sources={mediaImageSources(item, { width: 640, previewSize: "detail" })} alt="" loading="lazy" decoding="async" fallback={<div className="video-thumb-placeholder"><ImageIcon size={34} /></div>} />}
+          ? <ResilientImage className={ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""} sources={mediaImageSources(item, { width: 420, previewSize: "card" })} diagnostics={{ mediaId: item.id, mediaKind: item.media_kind, context: "studio-video-thumb" }} alt="" loading="lazy" decoding="async" fallback={<div className="video-thumb-placeholder"><Film size={34} /></div>} />
+          : <ResilientImage sources={mediaImageSources(item, { width: 640, previewSize: "detail" })} diagnostics={{ mediaId: item.id, mediaKind: item.media_kind, context: "studio-image" }} alt="" loading="lazy" decoding="async" fallback={<div className="video-thumb-placeholder"><ImageIcon size={34} /></div>} />}
       </Link>
       <div>
         <h3>{item.title || "Untitled"}</h3>

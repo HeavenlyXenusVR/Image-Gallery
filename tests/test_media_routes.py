@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from pathlib import Path
 
 import app.main as main
@@ -198,3 +199,24 @@ def test_serve_media_file_supports_range_streaming_from_db_store(monkeypatch) ->
     assert response.headers["accept-ranges"] == "bytes"
     assert response.headers["x-content-sha256"] == digest
     assert asyncio.run(_read_response_body(response)) == b"cdef"
+
+
+def test_report_media_load_diagnostic_logs_fallback_event(caplog) -> None:
+    request = _request("/api/media/941004/diagnostics/load")
+    payload = main.MediaLoadDiagnosticRequest(
+        context="detail-image-medium",
+        outcome="fallback-success",
+        media_kind="image",
+        selected_source="preview:detail",
+        failed_sources=["thumb"],
+        source_count=3,
+    )
+
+    with caplog.at_level(logging.INFO, logger="image_gallery"):
+        result = asyncio.run(main.report_media_load_diagnostic(941004, payload, request))
+
+    assert result == {"ok": True}
+    assert "Client media load diagnostic media_id=941004" in caplog.text
+    assert "fallback-success" in caplog.text
+    assert "detail-image-medium" in caplog.text
+    assert "thumb" in caplog.text

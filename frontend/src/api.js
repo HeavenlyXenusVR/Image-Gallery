@@ -93,6 +93,21 @@ export async function apiFetch(path, options = {}) {
   return payload;
 }
 
+export function postClientDiagnostic(path, payload) {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  const token = readToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  resolveApiUrl(path)
+    .then((url) => fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload || {}),
+      credentials: "include",
+      keepalive: true,
+    }))
+    .catch(() => {});
+}
+
 function errorMessage(payload, status) {
   const raw = payload?.detail || payload?.message || payload;
   if (!raw) return `Request failed (${status})`;

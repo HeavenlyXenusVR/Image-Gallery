@@ -1,8 +1,11 @@
+import { postClientDiagnostic } from "../api.js";
+
 const preloadedMedia = new Set();
 const preloadQueue = [];
 let activePreloads = 0;
 const MAX_PRELOADS = 2;
 const MAX_SEEN_PRELOADS = 700;
+const reportedMediaDiagnostics = new Set();
 
 export function isPerfLiteRuntime() {
   if (typeof document === "undefined") return false;
@@ -97,6 +100,58 @@ export function mediaImageSources(item, options = {}) {
   push(item.preview_url);
   push(item.url);
   return urls;
+}
+
+function sourceLabel(src) {
+  const value = String(src || "").trim();
+  if (!value) return "missing";
+  try {
+    const parsed = new URL(value, window.location.origin);
+    const path = parsed.pathname.toLowerCase();
+    if (path.includes("/thumb")) return "thumb";
+    if (path.includes("/preview")) return `preview:${parsed.searchParams.get("size") || "card"}`;
+    if (path.includes("/file")) return `file:${parsed.searchParams.get("quality") || "original"}`;
+    if (path.endsWith(".gif")) return "gif";
+    return "original";
+  } catch (_error) {
+    if (value.includes("/thumb")) return "thumb";
+    if (value.includes("/preview")) return "preview";
+    if (value.includes("/file")) return "file";
+    return "original";
+  }
+}
+
+export function reportMediaLoadDiagnostic({
+  mediaId,
+  mediaKind = "",
+  context = "",
+  outcome = "",
+  sourceIndex = 0,
+  sources = [],
+}) {
+  const normalizedMediaId = Number(mediaId || 0);
+  if (!normalizedMediaId || !outcome || !context) return;
+  const labels = (sources || []).map((value) => sourceLabel(typeof value === "string" ? value : value?.src)).filter(Boolean);
+  const chosenSource = labels[sourceIndex] || "";
+  const failedSources = outcome === "all-failed" ? labels : labels.slice(0, Math.max(0, sourceIndex));
+  const signature = [
+    normalizedMediaId,
+    String(context).trim().toLowerCase(),
+    String(outcome).trim().toLowerCase(),
+    chosenSource,
+    failedSources.join(">"),
+  ].join("|");
+  if (reportedMediaDiagnostics.has(signature)) return;
+  reportedMediaDiagnostics.add(signature);
+  if (reportedMediaDiagnostics.size > 800) reportedMediaDiagnostics.clear();
+  postClientDiagnostic(`/api/media/${normalizedMediaId}/diagnostics/load`, {
+    context,
+    outcome,
+    media_kind: mediaKind,
+    selected_source: chosenSource,
+    failed_sources: failedSources,
+    source_count: labels.length,
+  });
 }
 
 export function imageQualityUrl(item, quality = "medium") {
