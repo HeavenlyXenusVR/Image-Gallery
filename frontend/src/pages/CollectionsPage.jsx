@@ -2,9 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { Film, Image as ImageIcon, PlusCircle, RefreshCw, Save, Search } from "lucide-react";
 import { apiFetch, cachedApiFetch, clearApiCache, toQuery } from "../api.js";
 import { MediaGrid } from "../components/media.jsx";
-import { CollectionCover, EmptyState, Notice, Page, Segmented, SkeletonList } from "../components/ui.jsx";
+import { CollectionCover, EmptyState, Notice, Page, ResilientImage, Segmented, SkeletonList } from "../components/ui.jsx";
 import { formatDate } from "../utils/format.js";
-import { preloadMediaAssets, replaceMedia, thumbUrl } from "../utils/media.js";
+import { mediaImageSources, preloadMediaAssets, replaceMedia } from "../utils/media.js";
 
 export function CollectionsPage({ ctx }) {
   const [mine, setMine] = useState(false);
@@ -161,7 +161,7 @@ export function CollectionsPage({ ctx }) {
                     <div className="collection-candidate-grid">
                       {picker.results.map((item) => (
                         <article className="collection-candidate" key={item.id}>
-                          <img src={thumbUrl(item, 260)} alt="" loading="lazy" decoding="async" />
+                          <ResilientImage sources={mediaImageSources(item, { width: 260, previewSize: "card" })} alt="" loading="lazy" decoding="async" />
                           <div>
                             <strong>{item.title || "Untitled"}</strong>
                             <small>{item.media_kind === "video" ? <Film size={13} /> : <ImageIcon size={13} />}{item.category_name || "Unsorted"} · {formatDate(item.created_at || item.uploaded_at)}</small>

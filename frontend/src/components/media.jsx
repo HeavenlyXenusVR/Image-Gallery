@@ -4,8 +4,8 @@ import { Bookmark, Copy, Download, ExternalLink, Film, FolderPlus, Heart, Image 
 import { apiFetch, clearApiCache } from "../api.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
 import { formatBytes, formatDate, numberish } from "../utils/format.js";
-import { isGifMedia, isPerfLiteRuntime, thumbUrl, videoQualityUrl } from "../utils/media.js";
-import { Avatar, EmptyState, SkeletonGrid, StatsRow } from "./ui.jsx";
+import { isGifMedia, isPerfLiteRuntime, mediaImageSources, thumbUrl, videoQualityUrl } from "../utils/media.js";
+import { Avatar, EmptyState, ResilientImage, SkeletonGrid, StatsRow } from "./ui.jsx";
 
 function subcategoryNames(item) {
   if (Array.isArray(item?.subcategory_names) && item.subcategory_names.length) return item.subcategory_names;
@@ -31,6 +31,8 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
   const liveVideoPreview = item.media_kind === "video" && ctx.settings.autoplay_previews && item.url && !isPerfLiteRuntime();
   const previewSrc = liveVideoPreview ? videoQualityUrl(item, "low") : "";
   const categoryLine = [item.category_name || "Unsorted", ...subcategoryNames(item)].filter(Boolean).join(" / ");
+  const imageSources = mediaImageSources(item, { width: eager ? 720 : 640, previewSize: "detail" });
+  const videoThumbSources = mediaImageSources(item, { width: 420, previewSize: "card" });
   return (
     <article className={`media-card ${item.locked ? "is-locked" : ""}`}>
       <Link className="media-link" to={`/media/${item.id}`} aria-label={item.title || `Open media ${item.id}`}>
@@ -49,8 +51,8 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
                 playsInline
                 preload="metadata"
               />
-            ) : thumb ? <img className={`video-thumb ${ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""}`} src={thumb} alt="" loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} /> : <div className="video-thumb-placeholder"><Film size={34} /></div>
-          ) : <img className={isGifMedia(item) ? "gif-thumb" : ""} src={thumb} alt={item.title || ""} loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} />}
+            ) : thumb ? <ResilientImage className={`video-thumb ${ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""}`} sources={videoThumbSources} alt="" loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} fallback={<div className="video-thumb-placeholder"><Film size={34} /></div>} /> : <div className="video-thumb-placeholder"><Film size={34} /></div>
+          ) : <ResilientImage className={isGifMedia(item) ? "gif-thumb" : ""} sources={imageSources} alt={item.title || ""} loading={eager ? "eager" : "lazy"} decoding="async" fetchPriority={eager ? "high" : "auto"} fallback={<div className="video-thumb-placeholder"><ImageIcon size={34} /></div>} />}
           <span className="kind-badge">{item.media_kind === "video" ? <Film size={14} /> : <ImageIcon size={14} />}{item.media_kind || "image"}</span>
         </div>
         <div className="media-copy">
@@ -245,7 +247,11 @@ export function StudioItem({ ctx, item, onChanged, onRemoved }) {
 
   return (
     <article className="studio-item">
-      <Link to={`/media/${item.id}`} className="studio-thumb">{item.media_kind === "video" ? <img className={ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""} src={thumbUrl(item, 420)} alt="" loading="lazy" decoding="async" /> : <img src={thumbUrl(item)} alt="" loading="lazy" decoding="async" />}</Link>
+      <Link to={`/media/${item.id}`} className="studio-thumb">
+        {item.media_kind === "video"
+          ? <ResilientImage className={ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""} sources={mediaImageSources(item, { width: 420, previewSize: "card" })} alt="" loading="lazy" decoding="async" fallback={<div className="video-thumb-placeholder"><Film size={34} /></div>} />
+          : <ResilientImage sources={mediaImageSources(item, { width: 640, previewSize: "detail" })} alt="" loading="lazy" decoding="async" fallback={<div className="video-thumb-placeholder"><ImageIcon size={34} /></div>} />}
+      </Link>
       <div>
         <h3>{item.title || "Untitled"}</h3>
         <p>{item.visibility || "public"} / {formatBytes(item.file_size)} / {formatDate(item.created_at || item.uploaded_at)}</p>

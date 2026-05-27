@@ -5,7 +5,7 @@ import { apiFetch } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
 import { MediaActionPanel, MediaControls } from "../components/media.jsx";
-import { Avatar, ChipRow, EmptyState, Notice, NotFound, Page, SkeletonGrid, StatsRow, UserLine } from "../components/ui.jsx";
+import { Avatar, ChipRow, EmptyState, Notice, NotFound, Page, ResilientImage, SkeletonGrid, StatsRow, UserLine } from "../components/ui.jsx";
 import { imageQualityUrl, isGifMedia, thumbUrl, videoQualityUrl } from "../utils/media.js";
 
 function subcategoryNames(item) {
@@ -104,6 +104,15 @@ export function MediaDetailPage({ ctx }) {
   const gif = isGifMedia(media);
   const videoSrc = media.media_kind === "video" ? videoQualityUrl(media, videoQuality) : "";
   const metadataChips = [media.category_name, ...subcategoryNames(media), ...(media.tags || [])].filter(Boolean);
+  const detailImageSources = gif
+    ? [media.url, media.preview_url, media.thumb_url].filter(Boolean)
+    : (
+        imageQuality === "high"
+          ? [media.url, imageQualityUrl(media, "medium"), imageQualityUrl(media, "low")]
+          : imageQuality === "low"
+            ? [imageQualityUrl(media, "low"), imageQualityUrl(media, "medium"), media.url]
+            : [imageQualityUrl(media, "medium"), imageQualityUrl(media, "low"), media.url]
+      ).filter(Boolean);
 
   return (
     <Page title={media.title || `Media ${media.id}`} eyebrow={media.media_kind || "Media"} actions={(
@@ -143,7 +152,7 @@ export function MediaDetailPage({ ctx }) {
                   </select>
                 </div>
               ) : null}
-              <img className={gif ? "gif-full" : ""} src={imageQualityUrl(media, imageQuality)} alt={media.title || ""} />
+              <ResilientImage className={gif ? "gif-full" : ""} sources={detailImageSources} alt={media.title || ""} fallback={<div className="locked-state"><Notice kind="error">Media preview failed to load.</Notice></div>} />
             </>
           )}
         </article>

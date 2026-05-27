@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Download, Eye, Folder, Heart, Lock, LogIn, MessageCircle, Sparkles } from "lucide-react";
 import { formatDate, initials, numberish } from "../utils/format.js";
@@ -99,6 +99,28 @@ export function ChipRow({ values }) {
 export function CollectionCover({ collection }) {
   const [failed, setFailed] = useState(false);
   return <span className="collection-cover">{collection.cover_url && !failed ? <img src={collection.cover_url} alt="" loading="lazy" decoding="async" onError={() => setFailed(true)} /> : <Folder size={20} />}</span>;
+}
+
+export function ResilientImage({ sources = [], fallback = null, ...props }) {
+  const usableSources = (sources || []).filter(Boolean);
+  const [index, setIndex] = useState(0);
+  const externalOnError = props.onError;
+  useEffect(() => {
+    setIndex(0);
+  }, [usableSources.join("|")]);
+  if (index >= usableSources.length) return fallback;
+  const src = usableSources[index] || "";
+  if (!src) return fallback;
+  return (
+    <img
+      {...props}
+      src={src}
+      onError={(event) => {
+        if (typeof externalOnError === "function") externalOnError(event);
+        setIndex((current) => current + 1);
+      }}
+    />
+  );
 }
 
 export function CollectionMini({ collection }) {

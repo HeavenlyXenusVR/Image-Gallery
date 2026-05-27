@@ -777,10 +777,13 @@ class GalleryDatabase:
                 try:
                     await cur.execute(
                         """
-                        INSERT IGNORE INTO media_item_subcategories (media_id, subcategory_id, position)
-                        SELECT id, subcategory_id, 1
-                        FROM media_items
-                        WHERE subcategory_id IS NOT NULL
+                        INSERT INTO media_item_subcategories (media_id, subcategory_id, position)
+                        SELECT m.id, m.subcategory_id, 1
+                        FROM media_items m
+                        LEFT JOIN media_item_subcategories ms
+                          ON ms.media_id = m.id AND ms.position = 1
+                        WHERE m.subcategory_id IS NOT NULL
+                          AND ms.media_id IS NULL
                         """
                     )
                 except Exception as exc:

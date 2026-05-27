@@ -41,10 +41,9 @@ function pumpPreloadQueue() {
 export function thumbUrl(item, width = defaultThumbWidth()) {
   if (!item || item.locked) return "";
   if (isGifMedia(item)) return item.url || item.preview_url || "";
-  if (item.thumb_url) return item.thumb_url;
-  if (item.media_kind === "image" && item.preview_url) return item.preview_url;
-  if (item.media_kind === "image" && item.id) return `/api/media/${item.id}/thumb?w=${width}`;
-  if (item.media_kind === "video" && item.id) return `/api/media/${item.id}/thumb?w=${width}`;
+  if (item.thumb_url) return withQuery(item.thumb_url, { w: width });
+  if (item.media_kind === "image" && item.preview_url) return withQuery(item.preview_url, { size: "card" });
+  if ((item.media_kind === "image" || item.media_kind === "video") && item.id) return `/api/media/${item.id}/thumb?w=${width}`;
   return "";
 }
 
@@ -67,6 +66,37 @@ function withQuery(url, params) {
     const separator = url.includes("?") ? "&" : "?";
     return `${url}${separator}${new URLSearchParams(params).toString()}`;
   }
+}
+
+export function mediaImageSources(item, options = {}) {
+  if (!item || item.locked) return [];
+  const width = options.width || defaultThumbWidth();
+  const urls = [];
+  const push = (value) => {
+    const url = String(value || "").trim();
+    if (!url || urls.includes(url)) return;
+    urls.push(url);
+  };
+  if (isGifMedia(item)) {
+    push(item.url);
+    push(item.preview_url);
+    push(item.thumb_url);
+    return urls;
+  }
+  if (item.media_kind === "video") {
+    push(item.thumb_url ? withQuery(item.thumb_url, { w: width }) : (item.id ? `/api/media/${item.id}/thumb?w=${width}` : ""));
+    return urls;
+  }
+  if (item.media_kind === "image") {
+    push(item.thumb_url ? withQuery(item.thumb_url, { w: width }) : (item.id ? `/api/media/${item.id}/thumb?w=${width}` : ""));
+    push(withQuery(item.preview_url || (item.id ? `/api/media/${item.id}/preview` : ""), { size: options.previewSize || "detail" }));
+    push(item.url || (item.id ? `/api/media/${item.id}/file` : ""));
+    return urls;
+  }
+  push(item.thumb_url);
+  push(item.preview_url);
+  push(item.url);
+  return urls;
 }
 
 export function imageQualityUrl(item, quality = "medium") {
