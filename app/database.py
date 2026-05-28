@@ -4,6 +4,7 @@ import asyncio
 import re
 import hashlib
 import mimetypes
+import random
 from pathlib import Path
 from datetime import date
 from decimal import Decimal
@@ -1427,20 +1428,68 @@ class GalleryDatabase:
 
     async def get_media_file_prefix(self, media_id: int, limit: int = 1048576) -> bytes:
         """Read only the first bytes needed for cheap dimension sniffing."""
-        info = await self.get_media_file_info(media_id)
-        if not info:
-            return b""
-        file_id = int(info["id"])
+        return (await self.get_media_file_prefixes([int(media_id)], limit=limit)).get(int(media_id), b"")
+
+    async def get_media_file_prefixes(self, media_ids: list[int], limit: int = 1048576) -> dict[int, bytes]:
+        """Read cheap file prefixes for many media rows without one query per item."""
+        normalized_ids: list[int] = []
+        seen: set[int] = set()
+        for media_id in media_ids or []:
+            normalized_id = int(media_id or 0)
+            if normalized_id <= 0 or normalized_id in seen:
+                continue
+            seen.add(normalized_id)
+            normalized_ids.append(normalized_id)
+        if not normalized_ids:
+            return {}
         max_bytes = max(4096, min(int(limit or 1048576), 2 * 1024 * 1024))
+        prefixes: dict[int, bytes] = {}
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                if int(info.get("inline_size") or 0) > 0:
-                    await cur.execute("SELECT SUBSTRING(content, 1, %s) AS content FROM media_files WHERE id=%s", (max_bytes, file_id))
-                    row = await cur.fetchone() or {}
-                    return bytes(row.get("content") or b"")
-                await cur.execute("SELECT content FROM media_file_chunks WHERE file_id=%s ORDER BY chunk_index ASC LIMIT 1", (file_id,))
-                row = await cur.fetchone() or {}
-                return bytes(row.get("content") or b"")[:max_bytes]
+                for offset in range(0, len(normalized_ids), 120):
+                    batch = normalized_ids[offset:offset + 120]
+                    placeholders = ", ".join(["%s"] * len(batch))
+                    await cur.execute(
+                        f"""
+                        SELECT m.id AS media_id, f.id AS file_id, OCTET_LENGTH(f.content) AS inline_size,
+                               SUBSTRING(f.content, 1, %s) AS content
+                        FROM media_items m
+                        JOIN media_files f ON m.media_file_id=f.id
+                        WHERE m.id IN ({placeholders})
+                        """,
+                        (max_bytes, *batch),
+                    )
+                    chunk_file_map: dict[int, int] = {}
+                    for row in await cur.fetchall():
+                        media_id = int(row.get("media_id") or 0)
+                        file_id = int(row.get("file_id") or 0)
+                        if int(row.get("inline_size") or 0) > 0:
+                            prefixes[media_id] = bytes(row.get("content") or b"")
+                        elif file_id > 0:
+                            chunk_file_map[file_id] = media_id
+                    if not chunk_file_map:
+                        continue
+                    file_ids = list(chunk_file_map)
+                    file_placeholders = ", ".join(["%s"] * len(file_ids))
+                    await cur.execute(
+                        f"""
+                        SELECT c.file_id, SUBSTRING(c.content, 1, %s) AS content
+                        FROM media_file_chunks c
+                        JOIN (
+                            SELECT file_id, MIN(chunk_index) AS chunk_index
+                            FROM media_file_chunks
+                            WHERE file_id IN ({file_placeholders})
+                            GROUP BY file_id
+                        ) first_chunk
+                          ON first_chunk.file_id=c.file_id AND first_chunk.chunk_index=c.chunk_index
+                        """,
+                        (max_bytes, *file_ids),
+                    )
+                    for row in await cur.fetchall():
+                        media_id = chunk_file_map.get(int(row.get("file_id") or 0))
+                        if media_id:
+                            prefixes[media_id] = bytes(row.get("content") or b"")
+        return prefixes
 
     async def stream_media_file_content(self, file_id: int, start: int | None = None, end: int | None = None):
         """Yield DB-backed media content in chunks for StreamingResponse."""
@@ -1686,14 +1735,10 @@ class GalleryDatabase:
         return await self._attach_media_subcategories(rows)
 
     async def random_media(self, viewer_id: int | None = None) -> dict[str, Any] | None:
-        items = await self.list_media(viewer_id=viewer_id, sort="new", limit=100)
+        items = await self.list_media(viewer_id=viewer_id, sort="new", adult="show", limit=100)
         if not items:
             return None
-        async with self.pool.acquire() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute("SELECT id FROM media_items ORDER BY RAND() LIMIT 1")
-                row = await cur.fetchone()
-        return await self.get_media(int(row["id"]), viewer_id) if row else items[0]
+        return random.choice(items)
 
     async def list_public_background_candidates(self, limit: int = 600) -> list[dict[str, Any]]:
         async with self.pool.acquire() as conn:

@@ -283,3 +283,113 @@ def test_site_background_snapshot_avoids_repeating_previous_pick(monkeypatch) ->
     assert picked is not None
     assert picked["id"] == 20
     assert refresh_after == main.SITE_BACKGROUND_ROTATION_SECONDS
+
+
+def test_background_candidates_use_batched_prefix_reads(monkeypatch) -> None:
+    previous_cache = dict(main._background_cache)
+    calls: list[list[int]] = []
+    png_header = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + (1920).to_bytes(4, "big") + (1080).to_bytes(4, "big")
+
+    async def fake_list_public_background_candidates(limit: int = 900):
+        assert limit == 900
+        return [
+            {
+                "id": 101,
+                "title": "Wide One",
+                "mime_type": "image/png",
+                "original_filename": "wide-one.png",
+                "username": "xenus",
+                "display_name": "Xenus",
+                "category_name": "Desktop Backgrounds",
+                "subcategory_name": "Wide",
+                "storage_path": "db://media/1",
+            },
+            {
+                "id": 102,
+                "title": "Tall One",
+                "mime_type": "image/png",
+                "original_filename": "tall-one.png",
+                "username": "xenus",
+                "display_name": "Xenus",
+                "category_name": "Phone Backgrounds",
+                "subcategory_name": "Tall",
+                "storage_path": "db://media/2",
+            },
+        ]
+
+    async def fake_get_media_file_prefixes(media_ids: list[int]):
+        calls.append(list(media_ids))
+        tall_header = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + (1080).to_bytes(4, "big") + (1920).to_bytes(4, "big")
+        return {101: png_header, 102: tall_header}
+
+    monkeypatch.setattr(main.db, "list_public_background_candidates", fake_list_public_background_candidates)
+    monkeypatch.setattr(main.db, "get_media_file_prefixes", fake_get_media_file_prefixes)
+    main._background_cache["items"] = []
+    main._background_cache["built_at"] = 0.0
+
+    try:
+        rows = asyncio.run(main._background_candidate_rows())
+    finally:
+        main._background_cache.clear()
+        main._background_cache.update(previous_cache)
+
+    assert calls == [[101, 102]]
+    assert [row["id"] for row in rows] == [101]
+    assert rows[0]["width"] == 1920
+    assert rows[0]["height"] == 1080
+
+
+def test_background_candidate_cache_remembers_empty_results(monkeypatch) -> None:
+    previous_cache = dict(main._background_cache)
+    calls = 0
+
+    async def fake_list_public_background_candidates(limit: int = 900):
+        nonlocal calls
+        calls += 1
+        return []
+
+    async def fake_get_media_file_prefixes(media_ids: list[int]):
+        return {}
+
+    monkeypatch.setattr(main.db, "list_public_background_candidates", fake_list_public_background_candidates)
+    monkeypatch.setattr(main.db, "get_media_file_prefixes", fake_get_media_file_prefixes)
+    main._background_cache["items"] = []
+    main._background_cache["built_at"] = 0.0
+
+    try:
+        first = asyncio.run(main._background_candidate_rows())
+        second = asyncio.run(main._background_candidate_rows())
+    finally:
+        main._background_cache.clear()
+        main._background_cache.update(previous_cache)
+
+    assert first == []
+    assert second == []
+    assert calls == 1
+
+
+def test_site_background_snapshot_caches_empty_rotation(monkeypatch) -> None:
+    previous_state = dict(main._site_background_state)
+    calls = 0
+
+    async def fake_background_candidate_rows():
+        nonlocal calls
+        calls += 1
+        return []
+
+    monkeypatch.setattr(main, "_background_candidate_rows", fake_background_candidate_rows)
+    main._site_background_state["item"] = None
+    main._site_background_state["picked_at"] = 0.0
+
+    try:
+        first, first_refresh = asyncio.run(main._site_background_snapshot(force=False))
+        second, second_refresh = asyncio.run(main._site_background_snapshot(force=False))
+    finally:
+        main._site_background_state.clear()
+        main._site_background_state.update(previous_state)
+
+    assert first is None
+    assert second is None
+    assert first_refresh == main.SITE_BACKGROUND_ROTATION_SECONDS
+    assert 1 <= second_refresh <= main.SITE_BACKGROUND_ROTATION_SECONDS
+    assert calls == 1

@@ -1054,20 +1054,21 @@ async def _background_candidate_rows() -> list[dict[str, Any]]:
     now = time.time()
     cached_items = _background_cache.get("items") or []
     built_at = float(_background_cache.get("built_at") or 0.0)
-    if cached_items and (now - built_at) < BACKGROUND_CACHE_SECONDS:
+    if built_at > 0 and (now - built_at) < BACKGROUND_CACHE_SECONDS:
         return cached_items
     async with _background_cache_lock:
         cached_items = _background_cache.get("items") or []
         built_at = float(_background_cache.get("built_at") or 0.0)
-        if cached_items and (time.time() - built_at) < BACKGROUND_CACHE_SECONDS:
+        if built_at > 0 and (time.time() - built_at) < BACKGROUND_CACHE_SECONDS:
             return cached_items
         rows = await db.list_public_background_candidates(limit=900)
+        prefixes = await db.get_media_file_prefixes([int(row.get("id") or 0) for row in rows])
         eligible: list[dict[str, Any]] = []
         for row in rows:
             if row.get("mime_type") and not str(row["mime_type"]).startswith("image/"):
                 continue
             media_id = int(row["id"])
-            prefix = await db.get_media_file_prefix(media_id)
+            prefix = prefixes.get(media_id, b"")
             if prefix:
                 dimensions = _background_dimensions_from_bytes(prefix)
             else:
@@ -1104,6 +1105,8 @@ async def _site_background_snapshot(*, force: bool = False) -> tuple[dict[str, A
     remaining = max(1, int(SITE_BACKGROUND_ROTATION_SECONDS - max(0.0, now - picked_at)))
     if current and not force and (now - picked_at) < SITE_BACKGROUND_ROTATION_SECONDS:
         return current, remaining
+    if current is None and picked_at > 0 and not force and (now - picked_at) < SITE_BACKGROUND_ROTATION_SECONDS:
+        return None, remaining
 
     async with _site_background_lock:
         now = time.time()
@@ -1112,10 +1115,13 @@ async def _site_background_snapshot(*, force: bool = False) -> tuple[dict[str, A
         if current and not force and (now - picked_at) < SITE_BACKGROUND_ROTATION_SECONDS:
             remaining = max(1, int(SITE_BACKGROUND_ROTATION_SECONDS - max(0.0, now - picked_at)))
             return current, remaining
+        if current is None and picked_at > 0 and not force and (now - picked_at) < SITE_BACKGROUND_ROTATION_SECONDS:
+            remaining = max(1, int(SITE_BACKGROUND_ROTATION_SECONDS - max(0.0, now - picked_at)))
+            return None, remaining
         candidates = await _background_candidate_rows()
         if not candidates:
             _site_background_state["item"] = None
-            _site_background_state["picked_at"] = 0.0
+            _site_background_state["picked_at"] = now
             return None, SITE_BACKGROUND_ROTATION_SECONDS
         previous_id = int((current or {}).get("id") or 0)
         pool = [item for item in candidates if int(item.get("id") or 0) != previous_id] or candidates
