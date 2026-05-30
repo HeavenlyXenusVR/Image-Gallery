@@ -66,7 +66,7 @@ export function MediaDetailPage({ ctx }) {
 
   async function addComment(event) {
     event.preventDefault();
-    if (!commentBody.trim()) return;
+    if (!media || !commentBody.trim()) return;
     try {
       const data = await apiFetch(`/api/media/${media.id}/comments`, {
         method: "POST",

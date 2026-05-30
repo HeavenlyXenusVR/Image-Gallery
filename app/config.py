@@ -207,7 +207,7 @@ def load_settings() -> Settings:
         ai_provider=ai_provider,
         ai_api_key=gemini_api_key if ai_provider in {"gemini", "google", "google-gemini"} else ai_api_key,
         ai_base_url=(_env("GALLERY_AI_BASE_URL") or _env("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/"),
-        ai_model=_env("GALLERY_GEMINI_MODEL") or _env("GEMINI_MODEL") or _env("GALLERY_AI_MODEL", "gemini-2.5-flash" if ai_provider in {"gemini", "google", "google-gemini"} else "gpt-5.4-nano"),
+        ai_model=_env("GALLERY_GEMINI_MODEL") or _env("GEMINI_MODEL") or _env("GALLERY_AI_MODEL", "gemini-2.5-flash" if ai_provider in {"gemini", "google", "google-gemini"} else "gpt-4o-mini"),
         ollama_base_url=(_env("GALLERY_OLLAMA_BASE_URL", "http://127.0.0.1:11434")).rstrip("/"),
         ollama_model=_env("GALLERY_OLLAMA_MODEL", "qwen2.5vl:3b"),
         ai_timeout_seconds=max(10, int(_env("GALLERY_AI_TIMEOUT_SECONDS", "45"))),

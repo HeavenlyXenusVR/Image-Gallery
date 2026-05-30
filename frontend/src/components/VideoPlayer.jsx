@@ -80,7 +80,14 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     const onDurationChange = () => setDuration(video.duration || 0);
     const onWaiting = () => setBuffering(true);
     const onCanPlay = () => setBuffering(false);
-    const onError = () => setError("Playback error — the video could not be loaded.");
+    const onError = () => {
+      const video = videoRef.current;
+      const code = video?.error?.code;
+      if (code === 2) setError("Network error — check your connection and try again.");
+      else if (code === 3) setError("Decoding error — the video format may not be supported.");
+      else if (code === 4) setError("Source not supported — the video format or codec is unavailable.");
+      else setError("Playback error — the video could not be loaded.");
+    };
     const onEnded = () => { setPlaying(false); setShowControls(true); };
     const onVolumeChange = () => { setVolume(video.volume); setMuted(video.muted); };
     const onFullscreenChange = () => setFullscreen(Boolean(document.fullscreenElement));

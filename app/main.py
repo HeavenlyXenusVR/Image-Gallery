@@ -48,7 +48,7 @@ IMAGE_MIME_PREFIXES = ("image/",)
 VIDEO_MIME_PREFIXES = ("video/",)
 SAFE_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif", ".bmp",
-    ".mp4", ".webm", ".mov", ".m4v", ".ogg",
+    ".mp4", ".webm", ".mov", ".m4v", ".ogg", ".flv", ".mkv",
 }
 ADULT_KEYWORDS = {
     "18plus", "18+", "adult", "nsfw", "not safe for work", "nude", "nudity",
@@ -967,10 +967,16 @@ def _render_video_frame_thumb(source_path: Path, cache_path: Path, width: int) -
         str(tmp_path),
     ]
     try:
-        subprocess.run(command, check=True, timeout=60)
+        result = subprocess.run(command, check=True, timeout=60, capture_output=True, text=True)
         if tmp_path.exists() and tmp_path.stat().st_size > 0:
             tmp_path.replace(cache_path)
             return True
+    except subprocess.CalledProcessError as exc:
+        logger.debug("Video thumbnail ffmpeg error for %s: %s", source_path, (exc.stderr or "").strip()[-500:])
+    except subprocess.TimeoutExpired:
+        logger.debug("Video thumbnail ffmpeg timed out for %s", source_path)
+    except FileNotFoundError:
+        logger.warning("ffmpeg not found — cannot generate video thumbnails")
     except Exception:
         logger.debug("Video thumbnail extraction failed for %s", source_path, exc_info=True)
     finally:
@@ -1414,6 +1420,7 @@ MAGIC_SIGNATURES = (
     (b"GIF89a", "image/gif", "image"),
     (b"\x1aE\xdf\xa3", "video/webm", "video"),
     (b"OggS", "video/ogg", "video"),
+    (b"FLV\x01", "video/x-flv", "video"),
 )
 RATE_BUCKETS: dict[str, list[float]] = {}
 TRUSTED_PROXY_NETS = tuple(
@@ -1617,7 +1624,7 @@ def _security_headers(request: Request, response: Response) -> None:
 
 
 def _sniff_magic(data: bytes) -> tuple[str, str]:
-    head = data[:64]
+    head = data[:128]
     if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
         return "image/webp", "image"
     if len(head) >= 12 and head[4:8] == b"ftyp":
@@ -1625,6 +1632,10 @@ def _sniff_magic(data: bytes) -> tuple[str, str]:
         if brands[:4] in {b"avif", b"avis"} or b"avif" in brands or b"avis" in brands:
             return "image/avif", "image"
         return "video/mp4", "video"
+    # EBML/Matroska magic is shared by WebM and MKV — scan the DocType element to distinguish.
+    if head.startswith(b"\x1aE\xdf\xa3"):
+        mime = "video/x-matroska" if b"matroska" in data[:256].lower() else "video/webm"
+        return mime, "video"
     for prefix, mime, kind in MAGIC_SIGNATURES:
         if head.startswith(prefix):
             return mime, kind
@@ -3323,6 +3334,10 @@ def _transcode_video_variant(source_path: Path, cache_path: Path, profile: dict[
     tmp_path = cache_path.with_suffix(".tmp.mp4")
     if tmp_path.exists():
         tmp_path.unlink()
+    valid_presets = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower"}
+    preset = str(profile.get("preset") or "faster")
+    if preset not in valid_presets:
+        preset = "faster"
     scale_filter = f"scale='min({int(profile['max_width'])},iw)':-2:flags=lanczos"
     command = [
         "ffmpeg",
@@ -3341,11 +3356,13 @@ def _transcode_video_variant(source_path: Path, cache_path: Path, profile: dict[
         "-c:v",
         "libx264",
         "-preset",
-        str(profile.get("preset") or "faster"),
+        preset,
         "-crf",
         str(int(profile["crf"])),
         "-profile:v",
         str(profile.get("profile") or "high"),
+        "-level",
+        "4.1",
         "-pix_fmt",
         "yuv420p",
         "-c:a",
@@ -3356,8 +3373,22 @@ def _transcode_video_variant(source_path: Path, cache_path: Path, profile: dict[
         "+faststart",
         str(tmp_path),
     ]
-    subprocess.run(command, check=True, timeout=900)
-    tmp_path.replace(cache_path)
+    try:
+        result = subprocess.run(command, check=True, timeout=900, capture_output=True, text=True)
+        tmp_path.replace(cache_path)
+    except subprocess.CalledProcessError as exc:
+        err_tail = (exc.stderr or "").strip()[-800:]
+        logger.error("Video transcode failed for %s -> %s: %s", source_path, cache_path, err_tail)
+        raise
+    except subprocess.TimeoutExpired:
+        logger.error("Video transcode timed out after 900s for %s", source_path)
+        raise
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except Exception:
+            pass
 
 
 async def _video_variant_response(media_id: int, item: dict[str, Any], file_info: dict[str, Any] | None, legacy: Path | None, quality: str) -> Response | None:
