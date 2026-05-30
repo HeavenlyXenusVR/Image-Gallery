@@ -476,7 +476,9 @@ start_named_cloudflare_tunnel() {
   }
 
   wait "${TUNNEL_PID}"
-  exit $?
+  local _exit=$?
+  TUNNEL_PID=""
+  return ${_exit}
 }
 
 CLOUDFLARED="$(cloudflared_bin)"
@@ -511,72 +513,107 @@ if ! backend_ready; then
   exit 1
 fi
 
-# Mark the local config offline while the public tunnel is still being created,
-# but do not push this temporary state to GitHub Pages. This avoids an
-# unnecessary offline commit/push immediately before the live URL commit.
+# Write offline config locally before acquiring the public URL so the frontend
+# does not keep hitting a stale URL while a new tunnel is being negotiated.
 write_offline_config
 
 if [[ "${TUNNEL_PROVIDER}" == "cloudflare" || "${TUNNEL_PROVIDER}" == "auto" ]]; then
-  if start_named_cloudflare_tunnel "${CLOUDFLARE_PUBLIC_URL}" "${CLOUDFLARE_TUNNEL_TOKEN}" "/api/health"; then
-    exit 0
+  # --- Named tunnel: stable URL, reconnect loop on drops ---
+  if [[ -n "${CLOUDFLARE_TUNNEL_TOKEN}" && -n "${CLOUDFLARE_PUBLIC_URL}" ]]; then
+    while true; do
+      start_named_cloudflare_tunnel "${CLOUDFLARE_PUBLIC_URL}" "${CLOUDFLARE_TUNNEL_TOKEN}" "/api/health" || true
+      echo "Named Cloudflare tunnel exited; reconnecting in 10s..." >&2
+      sleep 10
+      if ! backend_ready; then
+        echo "Backend not responding after named tunnel exit; waiting up to 60s..." >&2
+        for _ in {1..30}; do backend_ready && break; sleep 2; done
+      fi
+      if ! backend_ready; then
+        echo "Backend did not recover; exiting so systemd can restart cleanly." >&2
+        exit 1
+      fi
+    done
   fi
 
-  for ((attempt=1; attempt<=MAX_TUNNEL_START_ATTEMPTS; attempt++)); do
-    acquire_global_tunnel_slot
-    echo "Opening Cloudflare quick tunnel to http://127.0.0.1:${PORT} (attempt ${attempt}/${MAX_TUNNEL_START_ATTEMPTS})"
-    : > "${TUNNEL_LOG}"
-    "${CLOUDFLARED}" tunnel --no-autoupdate --protocol "${CLOUDFLARE_PROTOCOL}" --url "http://127.0.0.1:${PORT}" >"${TUNNEL_LOG}" 2>&1 &
-    TUNNEL_PID="$!"
+  # --- Quick tunnel: outer reconnect loop so a died tunnel is immediately retried ---
+  while true; do
+    TUNNEL_CONNECTED_AND_DIED=0
+    for ((attempt=1; attempt<=MAX_TUNNEL_START_ATTEMPTS; attempt++)); do
+      acquire_global_tunnel_slot
+      echo "Opening Cloudflare quick tunnel to http://127.0.0.1:${PORT} (attempt ${attempt}/${MAX_TUNNEL_START_ATTEMPTS})"
+      : > "${TUNNEL_LOG}"
+      "${CLOUDFLARED}" tunnel --no-autoupdate --protocol "${CLOUDFLARE_PROTOCOL}" --url "http://127.0.0.1:${PORT}" >"${TUNNEL_LOG}" 2>&1 &
+      TUNNEL_PID="$!"
 
-    GALLERY_URL=""
-    for _ in $(seq 1 "${QUICK_TUNNEL_URL_ATTEMPTS}"); do
-      if ! kill -0 "${TUNNEL_PID}" >/dev/null 2>&1; then
-        break
-      fi
-      GALLERY_URL="$(grep -Eo 'https://[-a-zA-Z0-9.]+trycloudflare\.com' "${TUNNEL_LOG}" | tail -1 || true)"
-      if [[ -n "${GALLERY_URL}" ]]; then
-        break
-      fi
-      sleep 1
-    done
+      GALLERY_URL=""
+      for _ in $(seq 1 "${QUICK_TUNNEL_URL_ATTEMPTS}"); do
+        if ! kill -0 "${TUNNEL_PID}" >/dev/null 2>&1; then
+          break
+        fi
+        GALLERY_URL="$(grep -Eo 'https://[-a-zA-Z0-9.]+trycloudflare\.com' "${TUNNEL_LOG}" | tail -1 || true)"
+        if [[ -n "${GALLERY_URL}" ]]; then
+          break
+        fi
+        sleep 1
+      done
 
-    if [[ -z "${GALLERY_URL}" ]]; then
-      log_tunnel_failure_details
-      if tunnel_was_rate_limited; then
-        set_global_tunnel_cooldown "${GLOBAL_RATE_LIMIT_COOLDOWN_SECONDS}"
-      else
-        set_global_tunnel_cooldown "${GLOBAL_FAILURE_COOLDOWN_SECONDS}"
-      fi
-      release_global_tunnel_slot
-    else
-      set_global_tunnel_cooldown "${GLOBAL_SUCCESS_COOLDOWN_SECONDS}"
-      release_global_tunnel_slot
-      announce_live_url "${GALLERY_URL}"
-      wait_for_public_readiness "${GALLERY_URL}" "/api/health" || {
-        echo "Cloudflare quick tunnel died before it became reachable." >&2
-        tail -80 "${TUNNEL_LOG}" >&2 || true
-        publish_offline_config
+      if [[ -z "${GALLERY_URL}" ]]; then
+        log_tunnel_failure_details
         if tunnel_was_rate_limited; then
           set_global_tunnel_cooldown "${GLOBAL_RATE_LIMIT_COOLDOWN_SECONDS}"
         else
           set_global_tunnel_cooldown "${GLOBAL_FAILURE_COOLDOWN_SECONDS}"
         fi
-        continue
-      }
+        release_global_tunnel_slot
+      else
+        set_global_tunnel_cooldown "${GLOBAL_SUCCESS_COOLDOWN_SECONDS}"
+        release_global_tunnel_slot
+        announce_live_url "${GALLERY_URL}"
+        wait_for_public_readiness "${GALLERY_URL}" "/api/health" || {
+          echo "Cloudflare quick tunnel died before it became reachable." >&2
+          tail -80 "${TUNNEL_LOG}" >&2 || true
+          publish_offline_config
+          if tunnel_was_rate_limited; then
+            set_global_tunnel_cooldown "${GLOBAL_RATE_LIMIT_COOLDOWN_SECONDS}"
+          else
+            set_global_tunnel_cooldown "${GLOBAL_FAILURE_COOLDOWN_SECONDS}"
+          fi
+          continue
+        }
 
-      wait "${TUNNEL_PID}"
-      exit $?
-    fi
+        # Tunnel was live and has now exited — immediately try a new one.
+        wait "${TUNNEL_PID}"
+        TUNNEL_PID=""
+        TUNNEL_CONNECTED_AND_DIED=1
+        echo "Cloudflare quick tunnel exited; requesting a new tunnel URL..." >&2
+        write_offline_config
+        if ! backend_ready; then
+          echo "Backend not responding after quick tunnel exit; waiting up to 60s..." >&2
+          for _ in {1..30}; do backend_ready && break; sleep 2; done
+        fi
+        if ! backend_ready; then
+          echo "Backend did not recover; exiting so systemd can restart cleanly." >&2
+          exit 1
+        fi
+        break  # break inner for-loop; outer while-true retries immediately
+      fi
 
-    if (( attempt < MAX_TUNNEL_START_ATTEMPTS )); then
-      retry_delay="$(tunnel_retry_delay "${attempt}")"
-      echo "Retrying Cloudflare quick tunnel startup in ${retry_delay}s..."
-      sleep "${retry_delay}"
+      if (( attempt < MAX_TUNNEL_START_ATTEMPTS )); then
+        retry_delay="$(tunnel_retry_delay "${attempt}")"
+        echo "Retrying Cloudflare quick tunnel startup in ${retry_delay}s..."
+        sleep "${retry_delay}"
+      fi
+    done
+
+    # If we exhausted all attempts without ever connecting, pause before retrying.
+    if (( !TUNNEL_CONNECTED_AND_DIED )); then
+      echo "Exceeded Cloudflare quick tunnel startup attempts; waiting 300s before full retry..." >&2
+      publish_offline_config
+      sleep 300
     fi
   done
 fi
 
 publish_offline_config
-echo "Exceeded Cloudflare tunnel startup retries." >&2
-tail -80 "${TUNNEL_LOG}" >&2 || true
+echo "Tunnel provider not configured or all retry paths exhausted." >&2
 exit 1
