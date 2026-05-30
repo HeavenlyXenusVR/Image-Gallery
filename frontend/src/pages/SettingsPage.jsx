@@ -53,9 +53,9 @@ export function SettingsPage({ ctx }) {
         ...profile,
         featured_tags: profile.featured_tags.split(",").map((tag) => tag.trim()).filter(Boolean),
       };
-      let data = await apiFetch("/api/me/profile", { method: "PATCH", body: JSON.stringify(profilePayload) });
-      data = await apiFetch("/api/me/settings", { method: "PATCH", body: JSON.stringify(prefs) });
-      ctx.setSessionUser(data.user);
+      const profileData = await apiFetch("/api/me/profile", { method: "PATCH", body: JSON.stringify(profilePayload) });
+      const prefsData = await apiFetch("/api/me/settings", { method: "PATCH", body: JSON.stringify(prefs) });
+      ctx.setSessionUser(prefsData.user ?? profileData.user);
       ctx.showToast("Settings saved.", "success");
     } catch (error) {
       ctx.showToast(error.message, "error");
@@ -156,7 +156,7 @@ export function SettingsPage({ ctx }) {
             <div className="section-head"><h2>Command Snapshot</h2></div>
             <div className="settings-status-grid">
               <div><strong>{profile.public_profile ? "Public" : "Private"}</strong><span>Visibility</span></div>
-              <div><strong>{ctx.user.age_verified ? "Verified" : "Pending"}</strong><span>Age Gate</span></div>
+              <div><strong>{ctx.user.age_verified_at ? "Verified" : "Pending"}</strong><span>Age Gate</span></div>
               <div><strong>{prefs.autoplay_previews ? "Auto" : "Manual"}</strong><span>Preview Motion</span></div>
               <div><strong>{prefs.open_original_in_new_tab ? "New Tab" : "Inline"}</strong><span>Originals</span></div>
             </div>
@@ -273,7 +273,7 @@ export function SettingsPage({ ctx }) {
               <label className="field"><span>Code</span><input value={emailCode} onChange={(event) => setEmailCode(event.target.value)} /></label>
               <div className="form-actions settings-actions"><button type="submit"><Check size={16} />Verify</button></div>
             </form>
-            {ctx.user.age_verified ? (
+            {ctx.user.age_verified_at ? (
               <div className="verified-state"><ShieldCheck size={18} /><strong>Age Verified</strong><span>Adult-content access is enabled for this account.</span></div>
             ) : (
               <form className="mini-form settings-inline-form" onSubmit={saveAge}>

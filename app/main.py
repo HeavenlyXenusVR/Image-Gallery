@@ -20,7 +20,7 @@ import urllib.request
 import urllib.error
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -1169,17 +1169,17 @@ def _wants_json(request: Request) -> bool:
     return "application/json" in accept and "text/html" not in accept
 
 
-def _send_verification_or_error(request: Request, user: dict[str, Any], email_token: str) -> bool:
+async def _send_verification_or_error(request: Request, user: dict[str, Any], email_token: str) -> bool:
     try:
-        send_verification_email(settings, user["email"], _verification_url(request, email_token), email_token)
+        await send_verification_email(settings, user["email"], _verification_url(request, email_token), email_token)
         return True
     except EmailDeliveryError as exc:
         raise HTTPException(status_code=502, detail=f"Email verification could not be sent: {exc}") from None
 
 
-def _try_send_verification(request: Request, user: dict[str, Any], email_token: str) -> tuple[bool, str | None]:
+async def _try_send_verification(request: Request, user: dict[str, Any], email_token: str) -> tuple[bool, str | None]:
     try:
-        send_verification_email(settings, user["email"], _verification_url(request, email_token), email_token)
+        await send_verification_email(settings, user["email"], _verification_url(request, email_token), email_token)
         return True, None
     except EmailDeliveryError as exc:
         return False, str(exc)
@@ -2170,7 +2170,7 @@ async def health(request: Request) -> dict[str, Any]:
         "media_page_limit": settings.media_page_limit,
         "max_tags_per_upload": settings.max_tags_per_upload,
         "request_id": getattr(request.state, "request_id", ""),
-        "server_time": datetime.utcnow().isoformat() + "Z",
+        "server_time": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -2234,7 +2234,7 @@ async def live_checks(request: Request) -> dict[str, Any]:
             "storage_backend": settings.storage_backend,
             "max_upload_bytes": settings.max_upload_bytes,
             "media_page_limit": settings.media_page_limit,
-            "server_time": datetime.utcnow().isoformat() + "Z",
+            "server_time": datetime.now(timezone.utc).isoformat(),
         }
     except Exception as exc:
         if "Packet sequence number wrong" in str(exc):
@@ -2252,7 +2252,7 @@ async def live_checks(request: Request) -> dict[str, Any]:
             "storage_backend": settings.storage_backend,
             "max_upload_bytes": settings.max_upload_bytes,
             "media_page_limit": settings.media_page_limit,
-            "server_time": datetime.utcnow().isoformat() + "Z",
+            "server_time": datetime.now(timezone.utc).isoformat(),
         }
 
 
@@ -2324,7 +2324,7 @@ async def register(payload: RegisterRequest, request: Request, response: Respons
     verification_sent = False
     email_error = None
     if user.get("email") and email_token:
-        verification_sent, email_error = _try_send_verification(request, user, email_token)
+        verification_sent, email_error = await _try_send_verification(request, user, email_token)
     token = issue_token(settings.session_secret, user)
     _set_session_cookie(response, token, request)
     return {
@@ -2360,7 +2360,7 @@ async def resend_verification(request: Request) -> dict[str, Any]:
         return {"ok": True, "email_verification_sent": False, "already_verified": True}
     email_token = _verification_code()
     user = await db.issue_email_verification_token(int(auth["id"]), email_token)
-    verification_sent = bool(user and _send_verification_or_error(request, user, email_token))
+    verification_sent = bool(user and await _send_verification_or_error(request, user, email_token))
     return {"ok": verification_sent, "email_verification_sent": verification_sent, "already_verified": False}
 
 
@@ -2376,7 +2376,7 @@ async def update_email(payload: EmailUpdateRequest, request: Request) -> dict[st
     if user and user.get("email"):
         email_token = _verification_code()
         user = await db.issue_email_verification_token(int(auth["id"]), email_token)
-        verification_sent = bool(user and _send_verification_or_error(request, user, email_token))
+        verification_sent = bool(user and await _send_verification_or_error(request, user, email_token))
     return {"ok": True, "user": _jsonable(user), "email_verification_sent": verification_sent}
 
 

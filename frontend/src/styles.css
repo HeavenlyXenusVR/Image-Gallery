@@ -168,6 +168,11 @@ body[data-background-ready="1"] .app-shell::before {
   opacity: 0.2;
 }
 
+.gallery-theme-light body[data-background-ready="1"] .app-shell::before,
+.gallery-theme-system body[data-background-ready="1"] .app-shell::before {
+  opacity: 0.08;
+}
+
 .gallery-theme-light {
   color-scheme: light;
   --bg: #f7f9fc;
@@ -220,7 +225,7 @@ body[data-background-ready="1"] .app-shell::before {
 
 .gallery-loading-screen.is-leaving {
   opacity: 0;
-  visibility: hidden;
+  pointer-events: none;
 }
 
 .gallery-loading-backdrop {

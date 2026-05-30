@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { MessageCircle, RefreshCw, Search, Send } from "lucide-react";
 import { apiFetch, cachedApiFetch, toQuery } from "../api.js";
@@ -16,6 +16,7 @@ export function MessagesPage({ ctx }) {
   const [loading, setLoading] = useState(true);
 
   const selectedId = selectedUser?.user_id || selectedUser?.id;
+  const didAutoSelect = useRef(false);
 
   const loadThreads = useCallback(async ({ background = false } = {}) => {
     if (!ctx.user) return;
@@ -23,13 +24,16 @@ export function MessagesPage({ ctx }) {
     try {
       const data = await apiFetch("/api/messages/threads");
       setThreads(data.threads || []);
-      if (!selectedUser && data.threads?.length) setSelectedUser(data.threads[0]);
+      if (!didAutoSelect.current && data.threads?.length) {
+        didAutoSelect.current = true;
+        setSelectedUser(data.threads[0]);
+      }
     } catch (error) {
       if (!background) ctx.showToast(error.message, "error");
     } finally {
       if (!background) setLoading(false);
     }
-  }, [ctx, selectedUser]);
+  }, [ctx]);
 
   const loadMessages = useCallback(async ({ background = false } = {}) => {
     if (!selectedId) return;
@@ -40,7 +44,7 @@ export function MessagesPage({ ctx }) {
     } catch (error) {
       if (!background) ctx.showToast(error.message, "error");
     }
-  }, [ctx, loadThreads, selectedId]);
+  }, [ctx, selectedId, loadThreads]);
 
   useEffect(() => {
     loadThreads();

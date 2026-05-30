@@ -192,6 +192,7 @@ export function MediaControls({ ctx, media, onChanged }) {
     try {
       await apiFetch(`/api/media/${media.id}`, { method: "DELETE" });
       ctx.showToast("Post deleted.", "success");
+      onChanged(null);
     } catch (error) {
       ctx.showToast(error.message, "error");
     }

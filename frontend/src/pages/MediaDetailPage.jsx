@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Bookmark, Copy, Download, Heart, Link as LinkIcon, Lock, MessageCircle, Trash2 } from "lucide-react";
 import { apiFetch } from "../api.js";
@@ -25,28 +25,35 @@ export function MediaDetailPage({ ctx }) {
   const [imageQuality, setImageQuality] = useState("medium");
   const [videoQuality, setVideoQuality] = useState("high");
   const actions = useMediaActions(ctx, (updated) => setMedia(updated));
+  const abortRef = useRef(null);
 
   const loadDetail = useCallback(async ({ background = false } = {}) => {
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     if (!background) {
       setLoading(true);
       setError("");
     }
     try {
-      const data = await apiFetch(`/api/media/${mediaId}`);
+      const data = await apiFetch(`/api/media/${mediaId}`, { signal: controller.signal });
+      if (controller.signal.aborted) return;
       setMedia(data.media);
       setComments(data.comments || []);
     } catch (fetchError) {
+      if (controller.signal.aborted) return;
       if (!background) {
         setError(fetchError.message);
         setMedia(null);
       }
     } finally {
-      if (!background) setLoading(false);
+      if (!controller.signal.aborted && !background) setLoading(false);
     }
   }, [mediaId]);
 
   useEffect(() => {
     loadDetail();
+    return () => { if (abortRef.current) abortRef.current.abort(); };
   }, [loadDetail]);
 
   useEffect(() => {

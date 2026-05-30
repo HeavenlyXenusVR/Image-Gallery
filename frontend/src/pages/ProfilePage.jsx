@@ -6,7 +6,7 @@ import { MediaGrid } from "../components/media.jsx";
 import { ProfileActions } from "../components/social.jsx";
 import { Avatar, ChipRow, CollectionMini, Notice, NotFound, Page, PresencePill, ResilientImage, SkeletonGrid, UserMini } from "../components/ui.jsx";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
-import { formatDate, numberish } from "../utils/format.js";
+import { formatDate, numberish, safeExternalUrl } from "../utils/format.js";
 import { profileClassName, profileStyle } from "../utils/appearance.js";
 import { mediaImageSources, preloadMediaAssets } from "../utils/media.js";
 

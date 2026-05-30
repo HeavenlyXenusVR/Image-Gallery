@@ -901,8 +901,13 @@ def _image_fingerprint(content: bytes, filename: str, mime_type: str, media_kind
         return None
     try:
         from PIL import Image, ImageOps
+        _prev_max_pixels = Image.MAX_IMAGE_PIXELS
         Image.MAX_IMAGE_PIXELS = None
-        with Image.open(io.BytesIO(content)) as image:
+        try:
+            img_obj = Image.open(io.BytesIO(content))
+        finally:
+            Image.MAX_IMAGE_PIXELS = _prev_max_pixels
+        with img_obj as image:
             image = ImageOps.exif_transpose(image).convert("RGB")
             width, height = image.size
             return {

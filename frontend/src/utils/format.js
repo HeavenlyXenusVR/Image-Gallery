@@ -25,6 +25,19 @@ export function safeColor(value) {
   return /^#[0-9a-f]{6}$/i.test(value || "") ? value : "#37c9a7";
 }
 
+export function safeExternalUrl(value) {
+  if (!value || typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
 export function friendLabel(status) {
   if (status === "friends") return "Friends";
   if (status === "pending_out") return "Pending";

@@ -143,7 +143,7 @@ class TelegramPollingService:
                 await self.send_message(normalized_chat_id, reply)
         except Exception as exc:
             logger.exception("%s Telegram handler failed: %s", self.name, exc)
-            await self.send_message(normalized_chat_id, f"Telegram command failed: {exc}")
+            await self.send_message(normalized_chat_id, "Command failed. Please try again.")
 
     async def _api(self, method: str, params: dict[str, Any] | None = None, *, timeout: int = 20) -> dict[str, Any]:
         return await asyncio.to_thread(self._api_sync, method, params or {}, timeout)

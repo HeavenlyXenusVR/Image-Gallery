@@ -478,14 +478,6 @@ function readStorageValue(key) {
   }
 }
 
-function writeStorageValue(key, value) {
-  try {
-    if (value) localStorage.setItem(key, value);
-    else localStorage.removeItem(key);
-  } catch (_error) {
-    // Storage can be unavailable in hardened browser contexts.
-  }
-}
 
 function safeStorage(storage) {
   try {

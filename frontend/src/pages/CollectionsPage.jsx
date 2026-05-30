@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Film, Image as ImageIcon, PlusCircle, RefreshCw, Save, Search } from "lucide-react";
 import { apiFetch, cachedApiFetch, clearApiCache, toQuery } from "../api.js";
 import { MediaGrid } from "../components/media.jsx";
@@ -17,33 +17,9 @@ export function CollectionsPage({ ctx }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const loadCollections = useCallback(async ({ fresh = false } = {}) => {
-    setLoading(true);
-    setError("");
-    try {
-      const path = `/api/collections${mine ? "?mine=true" : ""}`;
-      const data = fresh
-        ? await apiFetch(path)
-        : await cachedApiFetch(path, { ttl: 20_000, staleTtl: 5 * 60_000 });
-      const rows = data.collections || [];
-      setCollections(rows);
-      if (!selected && rows[0]) openCollection(rows[0].id, { fresh });
-    } catch (fetchError) {
-      setError(fetchError.message);
-    } finally {
-      setLoading(false);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mine]);
+  const didAutoOpen = useRef(false);
 
-  useEffect(() => {
-    setSelected(null);
-    setMedia([]);
-    setPicker((current) => ({ ...current, results: [] }));
-    loadCollections();
-  }, [mine, loadCollections]);
-
-  async function openCollection(id, { fresh = false } = {}) {
+  const openCollection = useCallback(async (id, { fresh = false } = {}) => {
     try {
       const data = fresh
         ? await apiFetch(`/api/collections/${id}`)
@@ -54,7 +30,36 @@ export function CollectionsPage({ ctx }) {
     } catch (openError) {
       ctx.showToast(openError.message, "error");
     }
-  }
+  }, [ctx]);
+
+  const loadCollections = useCallback(async ({ fresh = false } = {}) => {
+    setLoading(true);
+    setError("");
+    try {
+      const path = `/api/collections${mine ? "?mine=true" : ""}`;
+      const data = fresh
+        ? await apiFetch(path)
+        : await cachedApiFetch(path, { ttl: 20_000, staleTtl: 5 * 60_000 });
+      const rows = data.collections || [];
+      setCollections(rows);
+      if (!didAutoOpen.current && rows[0]) {
+        didAutoOpen.current = true;
+        openCollection(rows[0].id, { fresh });
+      }
+    } catch (fetchError) {
+      setError(fetchError.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [mine, openCollection]);
+
+  useEffect(() => {
+    didAutoOpen.current = false;
+    setSelected(null);
+    setMedia([]);
+    setPicker((current) => ({ ...current, results: [] }));
+    loadCollections();
+  }, [mine, loadCollections]);
 
   async function createCollection(event) {
     event.preventDefault();

@@ -21,7 +21,7 @@ export function StudioPage({ ctx }) {
     } finally {
       if (!background) setLoading(false);
     }
-  }, [ctx]);
+  }, [ctx.user, ctx.showToast]);
 
   useEffect(() => {
     loadStudio();

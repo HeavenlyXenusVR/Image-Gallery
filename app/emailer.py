@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import smtplib
 import ssl
@@ -62,8 +63,9 @@ def send_email(settings: Settings, to_email: str, subject: str, body: str) -> No
         raise EmailDeliveryError(f"Could not connect to SMTP server: {exc}") from exc
 
 
-def send_verification_email(settings: Settings, to_email: str, verify_url: str, code: str) -> None:
-    send_email(
+async def send_verification_email(settings: Settings, to_email: str, verify_url: str, code: str) -> None:
+    await asyncio.to_thread(
+        send_email,
         settings,
         to_email,
         "Verify your Image Gallery email",
