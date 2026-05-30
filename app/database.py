@@ -39,6 +39,8 @@ def mysql_error_code(exc: Exception) -> int | None:
 DEFAULT_USER_SETTINGS = {
     "theme_mode": "system",
     "accent_color": "#37c9a7",
+    "accent_secondary": "",
+    "gallery_bg_color": "",
     "grid_density": "comfortable",
     "default_sort": "new",
     "items_per_page": 24,
@@ -65,6 +67,16 @@ DEFAULT_USER_SETTINGS = {
     "profile_backdrop_image_url": "",
     "profile_backdrop_strength": 0.18,
     "profile_show_joined_date": True,
+    "profile_name_style": "display",
+    "profile_header_style": "solid",
+    "profile_bg_color": "",
+    "card_hover_effect": "lift",
+    "card_aspect_ratio": "free",
+    "media_border_style": "none",
+    "gallery_font": "system",
+    "card_info_display": "below",
+    "column_gap": "normal",
+    "watermark_text": "",
 }
 USER_COLUMNS = (
     ("email", "VARCHAR(255) NULL"),
@@ -73,6 +85,7 @@ USER_COLUMNS = (
     ("email_verification_sent_at", "TIMESTAMP NULL DEFAULT NULL"),
     ("last_seen_at", "TIMESTAMP NULL DEFAULT NULL"),
     ("bio", "VARCHAR(500) NULL"),
+    ("profile_quote", "VARCHAR(200) NULL"),
     ("website_url", "VARCHAR(300) NULL"),
     ("location_label", "VARCHAR(80) NULL"),
     ("profile_headline", "VARCHAR(120) NULL"),
@@ -1013,6 +1026,7 @@ class GalleryDatabase:
         fields = {
             "display_name": self._clean_text(payload.get("display_name"), 80, required=True),
             "bio": self._clean_text(payload.get("bio"), 500),
+            "profile_quote": self._clean_text(payload.get("profile_quote"), 200),
             "website_url": self._clean_text(payload.get("website_url"), 300),
             "location_label": self._clean_text(payload.get("location_label"), 80),
             "profile_headline": self._clean_text(payload.get("profile_headline"), 120),
@@ -1031,7 +1045,7 @@ class GalleryDatabase:
                 await cur.execute(
                     """
                     UPDATE users
-                    SET display_name=%s, bio=%s, website_url=%s, location_label=%s,
+                    SET display_name=%s, bio=%s, profile_quote=%s, website_url=%s, location_label=%s,
                         profile_headline=%s, featured_tags=%s, profile_color=%s,
                         public_profile=%s, show_liked_count=%s, show_collections=%s,
                         show_recent_uploads=%s, show_friends=%s
@@ -1040,6 +1054,7 @@ class GalleryDatabase:
                     (
                         fields["display_name"],
                         fields["bio"],
+                        fields["profile_quote"],
                         fields["website_url"],
                         fields["location_label"],
                         fields["profile_headline"],
@@ -1089,7 +1104,17 @@ class GalleryDatabase:
             "profile_surface_style": {"standard", "quiet", "contrast", "editorial"},
             "profile_social_layout": {"rail", "cards", "compact"},
             "profile_featured_panel": {"uploads", "collections", "friends"},
+            "profile_name_style": {"display", "gradient", "glow", "outline"},
+            "profile_header_style": {"solid", "glass", "blur", "transparent", "gradient"},
+            "card_hover_effect": {"lift", "zoom", "reveal", "glow", "none"},
+            "card_aspect_ratio": {"16:9", "4:3", "1:1", "3:4", "free"},
+            "media_border_style": {"none", "soft", "crisp", "glow", "neon"},
+            "gallery_font": {"system", "serif", "mono", "rounded"},
+            "card_info_display": {"overlay", "below", "hidden", "minimal"},
+            "column_gap": {"tight", "normal", "wide", "none"},
         }
+        color_fields = {"accent_color", "accent_secondary", "gallery_bg_color", "profile_bg_color"}
+        url_fields = {"profile_backdrop_image_url"}
         for key in DEFAULT_USER_SETTINGS:
             if key not in payload:
                 continue
@@ -1098,17 +1123,20 @@ class GalleryDatabase:
                 if value not in allowed_choices[key]:
                     raise ValueError(f"Invalid {key}.")
                 settings[key] = value
-            elif key == "accent_color":
-                settings[key] = self._clean_color(value)
+            elif key in color_fields:
+                settings[key] = self._clean_color(value) if value else ""
             elif key == "items_per_page":
                 settings[key] = max(12, min(int(value or 24), 60))
-            elif key == "profile_backdrop_image_url":
+            elif key in url_fields:
                 settings[key] = self._clean_optional_url(value, max_length=500) or ""
             elif key == "profile_backdrop_strength":
                 try:
                     settings[key] = max(0.0, min(float(value if value is not None else 0.18), 0.55))
                 except (TypeError, ValueError):
                     raise ValueError("Backdrop strength must be a number.") from None
+            elif key == "watermark_text":
+                text = str(value or "").strip()[:40]
+                settings[key] = text
             else:
                 settings[key] = bool(value)
         async with self.pool.acquire() as conn:

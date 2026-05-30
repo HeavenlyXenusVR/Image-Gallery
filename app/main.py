@@ -221,6 +221,7 @@ class MediaControlRequest(BaseModel):
 class ProfileUpdateRequest(BaseModel):
     display_name: str
     bio: str | None = None
+    profile_quote: str | None = None
     website_url: str | None = None
     location_label: str | None = None
     profile_headline: str | None = None

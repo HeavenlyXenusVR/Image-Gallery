@@ -8,6 +8,7 @@ function profileFromUser(user, settings) {
   return {
     display_name: user?.display_name || user?.username || "",
     bio: user?.bio || "",
+    profile_quote: user?.profile_quote || "",
     website_url: user?.website_url || "",
     location_label: user?.location_label || "",
     profile_headline: user?.profile_headline || "",
@@ -170,6 +171,7 @@ export function SettingsPage({ ctx }) {
             <label className="field"><span>Display name</span><input value={profile.display_name} onChange={(event) => updateProfile("display_name", event.target.value)} required /></label>
             <label className="field"><span>Headline</span><input value={profile.profile_headline} onChange={(event) => updateProfile("profile_headline", event.target.value)} placeholder="What should your profile lead with?" /></label>
             <label className="field"><span>Bio</span><textarea value={profile.bio} onChange={(event) => updateProfile("bio", event.target.value)} rows={4} /></label>
+            <label className="field"><span>Signature / Quote <small>(shown under your name)</small></span><input value={profile.profile_quote} onChange={(event) => updateProfile("profile_quote", event.target.value)} placeholder="A line that captures your vibe or aesthetic" maxLength={200} /></label>
             <div className="two-col">
               <label className="field"><span>Website</span><input value={profile.website_url} onChange={(event) => updateProfile("website_url", event.target.value)} /></label>
               <label className="field"><span>Location</span><input value={profile.location_label} onChange={(event) => updateProfile("location_label", event.target.value)} /></label>
@@ -200,6 +202,10 @@ export function SettingsPage({ ctx }) {
               <label className="field color-field settings-color-field"><span>Accent</span><input value={prefs.accent_color || "#37c9a7"} onChange={(event) => updatePrefs("accent_color", event.target.value)} type="color" /></label>
             </div>
             <div className="two-col">
+              <label className="field color-field settings-color-field"><span>Secondary Accent <small>(gradient end)</small></span><input value={prefs.accent_secondary || ""} onChange={(event) => updatePrefs("accent_secondary", event.target.value)} type="color" /></label>
+              <label className="field color-field settings-color-field"><span>Gallery Background</span><input value={prefs.gallery_bg_color || ""} onChange={(event) => updatePrefs("gallery_bg_color", event.target.value)} type="color" /></label>
+            </div>
+            <div className="two-col">
               <label className="field"><span>Grid</span><select value={prefs.grid_density} onChange={(event) => updatePrefs("grid_density", event.target.value)}><option value="compact">Compact</option><option value="comfortable">Comfortable</option><option value="wide">Wide</option></select></label>
               <label className="field"><span>Sort</span><select value={prefs.default_sort} onChange={(event) => updatePrefs("default_sort", event.target.value)}><option value="new">Newest</option><option value="popular">Popular</option><option value="views">Views</option><option value="downloads">Downloads</option><option value="old">Oldest</option></select></label>
             </div>
@@ -207,6 +213,30 @@ export function SettingsPage({ ctx }) {
               <label className="field"><span>Items</span><input type="number" min="12" max="60" value={prefs.items_per_page} onChange={(event) => updatePrefs("items_per_page", Number(event.target.value))} /></label>
               <label className="field"><span>Profile layout</span><select value={prefs.profile_layout} onChange={(event) => updatePrefs("profile_layout", event.target.value)}><option value="spotlight">Spotlight</option><option value="magazine">Magazine</option><option value="stack">Stack</option><option value="split">Split</option><option value="mosaic">Mosaic</option><option value="timeline">Timeline</option></select></label>
             </div>
+          </div>
+            <div className="settings-cluster">
+            <div className="settings-cluster-head"><h3>Gallery Personality</h3><p>How cards look, feel, and animate in the feed — pick a style that matches how you present your work.</p></div>
+            <div className="two-col">
+              <label className="field"><span>Card Hover Effect</span><select value={prefs.card_hover_effect ?? "lift"} onChange={(event) => updatePrefs("card_hover_effect", event.target.value)}><option value="lift">Lift</option><option value="zoom">Zoom</option><option value="reveal">Reveal</option><option value="glow">Glow</option><option value="none">None</option></select></label>
+              <label className="field"><span>Card Aspect Ratio</span><select value={prefs.card_aspect_ratio ?? "free"} onChange={(event) => updatePrefs("card_aspect_ratio", event.target.value)}><option value="free">Free</option><option value="16:9">16:9 Widescreen</option><option value="4:3">4:3 Standard</option><option value="1:1">1:1 Square</option><option value="3:4">3:4 Portrait</option></select></label>
+            </div>
+            <div className="two-col">
+              <label className="field"><span>Media Border</span><select value={prefs.media_border_style ?? "none"} onChange={(event) => updatePrefs("media_border_style", event.target.value)}><option value="none">None</option><option value="soft">Soft</option><option value="crisp">Crisp</option><option value="glow">Glow</option><option value="neon">Neon</option></select></label>
+              <label className="field"><span>Card Info</span><select value={prefs.card_info_display ?? "below"} onChange={(event) => updatePrefs("card_info_display", event.target.value)}><option value="below">Below</option><option value="overlay">Overlay</option><option value="minimal">Minimal</option><option value="hidden">Hidden</option></select></label>
+            </div>
+            <div className="two-col">
+              <label className="field"><span>Gallery Font</span><select value={prefs.gallery_font ?? "system"} onChange={(event) => updatePrefs("gallery_font", event.target.value)}><option value="system">System</option><option value="serif">Serif</option><option value="mono">Mono</option><option value="rounded">Rounded</option></select></label>
+              <label className="field"><span>Column Gap</span><select value={prefs.column_gap ?? "normal"} onChange={(event) => updatePrefs("column_gap", event.target.value)}><option value="none">None</option><option value="tight">Tight</option><option value="normal">Normal</option><option value="wide">Wide</option></select></label>
+            </div>
+          </div>
+            <div className="settings-cluster">
+            <div className="settings-cluster-head"><h3>Profile Signature</h3><p>Fine-tune how your public profile header looks and what name style carries your brand.</p></div>
+            <div className="two-col">
+              <label className="field"><span>Name Style</span><select value={prefs.profile_name_style ?? "display"} onChange={(event) => updatePrefs("profile_name_style", event.target.value)}><option value="display">Display</option><option value="gradient">Gradient</option><option value="glow">Glow</option><option value="outline">Outline</option></select></label>
+              <label className="field"><span>Header Style</span><select value={prefs.profile_header_style ?? "solid"} onChange={(event) => updatePrefs("profile_header_style", event.target.value)}><option value="solid">Solid</option><option value="glass">Glass</option><option value="blur">Blur</option><option value="transparent">Transparent</option><option value="gradient">Gradient</option></select></label>
+            </div>
+            <label className="field color-field settings-color-field"><span>Profile Background Color</span><input value={prefs.profile_bg_color || ""} onChange={(event) => updatePrefs("profile_bg_color", event.target.value)} type="color" /></label>
+            <label className="field"><span>Watermark / Signature Text <small>(overlaid on your uploads)</small></span><input value={prefs.watermark_text ?? ""} onChange={(event) => updatePrefs("watermark_text", event.target.value)} placeholder="Optional text on your uploads (e.g. @handle)" maxLength={40} /></label>
           </div>
             <div className="settings-cluster">
             <div className="settings-cluster-head"><h3>Profile Language</h3><p>Decide how the public profile should frame your work and social presence.</p></div>
