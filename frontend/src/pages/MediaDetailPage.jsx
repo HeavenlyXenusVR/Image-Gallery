@@ -5,6 +5,7 @@ import { apiFetch } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
 import { MediaActionPanel, MediaControls } from "../components/media.jsx";
+import { VideoPlayer } from "../components/VideoPlayer.jsx";
 import { Avatar, ChipRow, EmptyState, Notice, NotFound, Page, ResilientImage, SkeletonGrid, StatsRow, UserLine } from "../components/ui.jsx";
 import { imageQualityUrl, isGifMedia, thumbUrl, videoQualityUrl } from "../utils/media.js";
 
@@ -136,17 +137,15 @@ export function MediaDetailPage({ ctx }) {
           {media.locked ? (
             <div className="locked-state"><Lock size={38} /><h2>Age verification required</h2></div>
           ) : media.media_kind === "video" ? (
-            <>
-              <div className="quality-bar">
-                <span>Video quality</span>
-                <select value={videoQuality} onChange={(event) => setVideoQuality(event.target.value)}>
-                  <option value="high">Original / full</option>
-                  <option value="medium">Medium</option>
-                  <option value="low">Low / fast</option>
-                </select>
-              </div>
-              <video key={videoSrc} controls playsInline preload="metadata" src={videoSrc} poster={thumbUrl(media, 640)} />
-            </>
+            <VideoPlayer
+              key={videoSrc}
+              src={videoSrc}
+              poster={thumbUrl(media, 640)}
+              quality={videoQuality}
+              onQualityChange={setVideoQuality}
+              qualityOptions={[["high", "Original / Full"], ["medium", "Medium"], ["low", "Low / Fast"]]}
+              title={media.title}
+            />
           ) : (
             <>
               {!gif ? (
