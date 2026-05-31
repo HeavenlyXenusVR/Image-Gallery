@@ -1,4 +1,4 @@
-import { postClientDiagnostic } from "../api.js";
+import { apiUrl, postClientDiagnostic } from "../api.js";
 
 const preloadedMedia = new Set();
 const preloadQueue = [];
@@ -46,7 +46,7 @@ export function thumbUrl(item, width = defaultThumbWidth()) {
   if (isGifMedia(item)) return item.url || item.preview_url || "";
   if (item.thumb_url) return withQuery(item.thumb_url, { w: width });
   if (item.media_kind === "image" && item.preview_url) return withQuery(item.preview_url, { size: "card" });
-  if ((item.media_kind === "image" || item.media_kind === "video") && item.id) return `/api/media/${item.id}/thumb?w=${width}`;
+  if ((item.media_kind === "image" || item.media_kind === "video") && item.id) return apiUrl(`/api/media/${item.id}/thumb?w=${width}`);
   return "";
 }
 
@@ -87,13 +87,13 @@ export function mediaImageSources(item, options = {}) {
     return urls;
   }
   if (item.media_kind === "video") {
-    push(item.thumb_url ? withQuery(item.thumb_url, { w: width }) : (item.id ? `/api/media/${item.id}/thumb?w=${width}` : ""));
+    push(item.thumb_url ? withQuery(item.thumb_url, { w: width }) : (item.id ? apiUrl(`/api/media/${item.id}/thumb?w=${width}`) : ""));
     return urls;
   }
   if (item.media_kind === "image") {
-    push(item.thumb_url ? withQuery(item.thumb_url, { w: width }) : (item.id ? `/api/media/${item.id}/thumb?w=${width}` : ""));
-    push(withQuery(item.preview_url || (item.id ? `/api/media/${item.id}/preview` : ""), { size: options.previewSize || "detail" }));
-    push(item.url || (item.id ? `/api/media/${item.id}/file` : ""));
+    push(item.thumb_url ? withQuery(item.thumb_url, { w: width }) : (item.id ? apiUrl(`/api/media/${item.id}/thumb?w=${width}`) : ""));
+    push(withQuery(item.preview_url || (item.id ? apiUrl(`/api/media/${item.id}/preview`) : ""), { size: options.previewSize || "detail" }));
+    push(item.url || (item.id ? apiUrl(`/api/media/${item.id}/file`) : ""));
     return urls;
   }
   push(item.thumb_url);
