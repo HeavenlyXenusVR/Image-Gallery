@@ -3395,13 +3395,16 @@ async def _stream_transcode_and_cache(
     except Exception:
         pass
 
+    # Initialise stderr_task to None so the finally block is safe even if
+    # create_subprocess_exec raises before the variable is assigned.
+    stderr_task: "asyncio.Task[bytes] | None" = None
     process = await asyncio.create_subprocess_exec(
         *command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     # Drain stderr concurrently so it never blocks stdout.
-    stderr_task: asyncio.Task[bytes] = asyncio.create_task(process.stderr.read(4096))
+    stderr_task = asyncio.create_task(process.stderr.read(4096))
     succeeded = False
     try:
         with open(tmp_cache, "wb") as fh:
@@ -3439,7 +3442,7 @@ async def _stream_transcode_and_cache(
                 tmp_dir.cleanup()
             except Exception:
                 pass
-        if not stderr_task.done():
+        if stderr_task is not None and not stderr_task.done():
             stderr_task.cancel()
 
 

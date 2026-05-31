@@ -661,6 +661,7 @@ class GalleryDatabase:
         await self.ensure_user_columns()
         await self.ensure_subcategory_tables()
         await self.ensure_media_columns()
+        await self.ensure_media_indexes()
         await self.ensure_media_subcategory_links()
         await self.ensure_ai_training_columns()
         await self.ensure_ai_media_learning_tables()
@@ -763,6 +764,41 @@ class GalleryDatabase:
                         FOREIGN KEY (subcategory_id) REFERENCES subcategories(id) ON DELETE SET NULL
                         """
                     )
+
+    async def ensure_media_indexes(self) -> None:
+        """Idempotently add composite performance indexes to media_items and media_likes.
+
+        These cover the hot query paths in list_media (deleted_at + visibility +
+        pinned_at + created_at, kind + created_at, category + created_at,
+        user + created_at, file_size filters) and the liked-by-me lookup on media_likes.
+        Error code 1061 = ER_DUP_KEYNAME (index already exists) — silently ignored.
+        """
+        index_ddls = [
+            ("idx_media_items_perf_main",
+             "CREATE INDEX idx_media_items_perf_main ON media_items (deleted_at, visibility, pinned_at, created_at)"),
+            ("idx_media_items_perf_kind_created",
+             "CREATE INDEX idx_media_items_perf_kind_created ON media_items (media_kind, created_at)"),
+            ("idx_media_items_perf_category_created",
+             "CREATE INDEX idx_media_items_perf_category_created ON media_items (category_id, created_at)"),
+            ("idx_media_items_perf_user_created",
+             "CREATE INDEX idx_media_items_perf_user_created ON media_items (user_id, created_at)"),
+            ("idx_media_items_perf_size",
+             "CREATE INDEX idx_media_items_perf_size ON media_items (file_size)"),
+            ("idx_media_items_perf_adult",
+             "CREATE INDEX idx_media_items_perf_adult ON media_items (is_adult, created_at)"),
+            ("idx_media_items_user_deleted",
+             "CREATE INDEX idx_media_items_user_deleted ON media_items (user_id, deleted_at, created_at)"),
+            ("idx_media_likes_media_user",
+             "CREATE INDEX idx_media_likes_media_user ON media_likes (media_id, user_id)"),
+        ]
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                for _name, ddl in index_ddls:
+                    try:
+                        await cur.execute(ddl)
+                    except Exception as exc:
+                        if mysql_error_code(exc) != 1061:
+                            log.warning("Could not create index (%s): %s", _name, exc)
 
     async def ensure_media_subcategory_links(self) -> None:
         async with self.pool.acquire() as conn:
