@@ -3,6 +3,12 @@ import { safeColor } from "./format.js";
 const CHOICES = {
   theme_mode: new Set(["system", "dark", "light"]),
   grid_density: new Set(["compact", "comfortable", "wide"]),
+  card_hover_effect: new Set(["lift", "zoom", "reveal", "glow", "none"]),
+  media_border_style: new Set(["none", "soft", "crisp", "glow", "neon"]),
+  card_info_display: new Set(["below", "overlay", "minimal", "hidden"]),
+  gallery_font: new Set(["system", "serif", "mono", "rounded"]),
+  profile_name_style: new Set(["display", "gradient", "glow", "outline"]),
+  profile_header_style: new Set(["solid", "glass", "blur", "transparent", "gradient"]),
   profile_layout: new Set(["spotlight", "magazine", "stack", "split", "mosaic", "timeline"]),
   profile_banner_style: new Set(["gradient", "mesh", "frame", "aurora", "spotlight", "poster"]),
   profile_card_style: new Set(["glass", "solid", "outline", "elevated", "soft", "edge"]),
@@ -21,10 +27,73 @@ function choice(settings, key, fallback) {
   return CHOICES[key]?.has(value) ? value : fallback;
 }
 
+const CARD_ASPECT_MAP = {
+  "16:9": "16 / 9",
+  "4:3": "4 / 3",
+  "1:1": "1 / 1",
+  "3:4": "3 / 4",
+  free: "",
+};
+
+const FONT_MAP = {
+  serif: "'Georgia', 'Times New Roman', serif",
+  mono: "'Fira Code', 'Consolas', monospace",
+  rounded: "'Nunito', 'Varela Round', system-ui, sans-serif",
+  system: "",
+};
+
+const COLUMN_GAP_MAP = {
+  none: "0px",
+  tight: "8px",
+  normal: "14px",
+  wide: "24px",
+};
+
 export function galleryStyle(settings) {
-  return {
+  const style = {
     "--accent": safeColor(settings?.accent_color || "#37c9a7"),
   };
+
+  // Accent secondary for gradients
+  const secondaryRaw = String(settings?.accent_secondary || "").trim();
+  if (/^#[0-9a-f]{6}$/i.test(secondaryRaw)) {
+    style["--accent-secondary"] = secondaryRaw;
+  }
+
+  // Gallery background color override
+  const bgRaw = String(settings?.gallery_bg_color || "").trim();
+  if (/^#[0-9a-f]{6}$/i.test(bgRaw)) {
+    style["--gallery-bg-override"] = bgRaw;
+  }
+
+  // Card hover effect — expressed as CSS classes but also as a variable for CSS consumers
+  const hoverEffect = String(settings?.card_hover_effect || "lift").trim().toLowerCase();
+  if (["lift", "zoom", "reveal", "glow", "none"].includes(hoverEffect)) {
+    style["--card-hover-effect"] = hoverEffect;
+  }
+
+  // Card aspect ratio
+  const aspectKey = String(settings?.card_aspect_ratio || "free").trim();
+  const aspectValue = CARD_ASPECT_MAP[aspectKey];
+  if (aspectValue) style["--card-aspect-ratio"] = aspectValue;
+
+  // Media border style — expressed as variable for CSS consumers
+  const borderStyle = String(settings?.media_border_style || "none").trim().toLowerCase();
+  if (["none", "soft", "crisp", "glow", "neon"].includes(borderStyle)) {
+    style["--media-border-style"] = borderStyle;
+  }
+
+  // Gallery font
+  const fontKey = String(settings?.gallery_font || "system").trim().toLowerCase();
+  const fontValue = FONT_MAP[fontKey];
+  if (fontValue) style["--gallery-font"] = fontValue;
+
+  // Column gap
+  const gapKey = String(settings?.column_gap || "normal").trim().toLowerCase();
+  const gapValue = COLUMN_GAP_MAP[gapKey];
+  if (gapValue !== undefined) style["--media-grid-gap"] = gapValue || "14px";
+
+  return style;
 }
 
 function safeImage(value) {
@@ -40,17 +109,38 @@ function clamp(value, fallback, min, max) {
 }
 
 export function profileStyle(settings, fallbackAccent = "#37c9a7") {
-  return {
+  const style = {
     "--accent": safeColor(settings?.accent_color || fallbackAccent),
     "--profile-backdrop": safeImage(settings?.profile_backdrop_image_url),
     "--profile-backdrop-strength": `${Math.round(clamp(settings?.profile_backdrop_strength, 0.18, 0, 0.55) * 100)}%`,
   };
+
+  const profileBgRaw = String(settings?.profile_bg_color || "").trim();
+  if (/^#[0-9a-f]{6}$/i.test(profileBgRaw)) {
+    style["--profile-bg-override"] = profileBgRaw;
+  }
+
+  const nameStyle = String(settings?.profile_name_style || "display").trim().toLowerCase();
+  if (["display", "gradient", "glow", "outline"].includes(nameStyle)) {
+    style["--profile-name-style"] = nameStyle;
+  }
+
+  const headerStyle = String(settings?.profile_header_style || "solid").trim().toLowerCase();
+  if (["solid", "glass", "blur", "transparent", "gradient"].includes(headerStyle)) {
+    style["--profile-header-style"] = headerStyle;
+  }
+
+  return style;
 }
 
 export function galleryClassName(settings) {
   return [
     `gallery-theme-${choice(settings, "theme_mode", "system")}`,
     `gallery-grid-${choice(settings, "grid_density", "comfortable")}`,
+    `gallery-hover-${choice(settings, "card_hover_effect", "lift")}`,
+    `gallery-border-${choice(settings, "media_border_style", "none")}`,
+    `gallery-info-${choice(settings, "card_info_display", "below")}`,
+    `gallery-font-${choice(settings, "gallery_font", "system")}`,
     settings?.reduce_motion ? "gallery-motion-reduced" : "",
   ].filter(Boolean).join(" ");
 }
@@ -68,5 +158,7 @@ export function profileClassName(settings) {
     `profile-surface-${choice(settings, "profile_surface_style", "standard")}`,
     `profile-social-${choice(settings, "profile_social_layout", "rail")}`,
     `profile-feature-${choice(settings, "profile_featured_panel", "uploads")}`,
+    `profile-name-${choice(settings, "profile_name_style", "display")}`,
+    `profile-header-${choice(settings, "profile_header_style", "solid")}`,
   ].join(" ");
 }

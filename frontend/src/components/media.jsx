@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useMemo, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Bookmark, Copy, Download, ExternalLink, Film, FolderPlus, Heart, Image as ImageIcon, Link as LinkIcon, Lock, RefreshCw, Save, Trash2 } from "lucide-react";
 import { apiFetch, clearApiCache } from "../api.js";
@@ -26,13 +26,13 @@ export function MediaGrid({ ctx, items, loading = false, emptyTitle = "No media"
 
 export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onItemUpdated }) {
   const actions = useMediaActions(ctx, onItemUpdated);
-  const thumb = item.media_kind === "video" ? thumbUrl(item, 420) : thumbUrl(item);
+  const thumb = useMemo(() => (item.media_kind === "video" ? thumbUrl(item, 420) : thumbUrl(item)), [item]);
   const mutedPreview = ctx.settings.muted_previews !== false;
   const liveVideoPreview = item.media_kind === "video" && ctx.settings.autoplay_previews && item.url && !isPerfLiteRuntime();
-  const previewSrc = liveVideoPreview ? videoQualityUrl(item, "low") : "";
-  const categoryLine = [item.category_name || "Unsorted", ...subcategoryNames(item)].filter(Boolean).join(" / ");
-  const imageSources = mediaImageSources(item, { width: eager ? 720 : 640, previewSize: "detail" });
-  const videoThumbSources = mediaImageSources(item, { width: 420, previewSize: "card" });
+  const previewSrc = useMemo(() => (liveVideoPreview ? videoQualityUrl(item, "low") : ""), [liveVideoPreview, item]);
+  const categoryLine = useMemo(() => [item.category_name || "Unsorted", ...subcategoryNames(item)].filter(Boolean).join(" / "), [item]);
+  const imageSources = useMemo(() => mediaImageSources(item, { width: eager ? 720 : 640, previewSize: "detail" }), [item, eager]);
+  const videoThumbSources = useMemo(() => mediaImageSources(item, { width: 420, previewSize: "card" }), [item]);
   return (
     <article className={`media-card ${item.locked ? "is-locked" : ""}`}>
       <Link className="media-link" to={`/media/${item.id}`} aria-label={item.title || `Open media ${item.id}`}>

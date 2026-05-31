@@ -10,18 +10,21 @@ export function StudioPage({ ctx }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
 
+  const showToast = ctx.showToast;
+  const userId = ctx.user?.id;
+
   const loadStudio = useCallback(async ({ background = false } = {}) => {
-    if (!ctx.user) return;
+    if (!userId) return;
     if (!background) setLoading(true);
     try {
       const data = await apiFetch("/api/me/media?include_deleted=true");
       setItems(data.media || []);
     } catch (error) {
-      if (!background) ctx.showToast(error.message, "error");
+      if (!background) showToast(error.message, "error");
     } finally {
       if (!background) setLoading(false);
     }
-  }, [ctx.user, ctx.showToast]);
+  }, [userId, showToast]);
 
   useEffect(() => {
     loadStudio();

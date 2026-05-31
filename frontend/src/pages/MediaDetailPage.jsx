@@ -151,7 +151,7 @@ export function MediaDetailPage({ ctx }) {
               {!gif ? (
                 <div className="quality-bar">
                   <span>Image quality</span>
-                  <select value={imageQuality} onChange={(event) => setImageQuality(event.target.value)}>
+                  <select value={imageQuality} onChange={(event) => setImageQuality(event.target.value)} aria-label="Image quality">
                     <option value="high">High / full</option>
                     <option value="medium">Medium</option>
                     <option value="low">Low</option>

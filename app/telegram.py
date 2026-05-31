@@ -149,11 +149,17 @@ class TelegramPollingService:
         return await asyncio.to_thread(self._api_sync, method, params or {}, timeout)
 
     def _api_sync(self, method: str, params: dict[str, Any], timeout: int) -> dict[str, Any]:
+        # Never expose the bot token in logs or error messages.
         url = f"https://api.telegram.org/bot{self.token}/{method}"
         data = urllib.parse.urlencode(params).encode("utf-8") if params else None
         request = urllib.request.Request(url, data=data, method="POST" if data else "GET")
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            # Mask the token from any exception string that might contain the URL.
+            safe = str(exc).replace(self.token, "[BOT_TOKEN]") if self.token else str(exc)
+            raise RuntimeError(f"Telegram {method} network error: {safe}") from exc
         if not payload.get("ok"):
             raise RuntimeError(str(payload.get("description") or f"Telegram {method} failed"))
         return payload

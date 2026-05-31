@@ -332,7 +332,17 @@ function App() {
           tip={BOOT_TIPS[bootTipIndex]}
         />
       ) : null}
-      {toast ? <div className={`toast toast-${toast.kind}`} role="status">{toast.message}</div> : null}
+      {toast ? (
+        <div className={`toast toast-${toast.kind}`} role="status" aria-live="polite">
+          <span className="toast-message">{toast.message}</span>
+          <button
+            className="toast-dismiss"
+            type="button"
+            aria-label="Dismiss notification"
+            onClick={() => setToast(null)}
+          >×</button>
+        </div>
+      ) : null}
     </Shell>
   );
 }

@@ -29,14 +29,17 @@ def send_email(settings: Settings, to_email: str, subject: str, body: str) -> No
     message.set_content(body)
 
     context = ssl.create_default_context()
+    # Port 465 uses implicit SSL (SMTP_SSL); STARTTLS is only for plain SMTP connections
+    # (typically port 587). Never try STARTTLS on a connection already wrapped in SSL.
+    use_ssl_wrap = settings.smtp_port == 465
     try:
-        if settings.smtp_port == 465:
+        if use_ssl_wrap:
             smtp_context = smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=20, context=context)
         else:
             smtp_context = smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20)
         with smtp_context as smtp:
             smtp.ehlo()
-            if settings.smtp_use_tls:
+            if not use_ssl_wrap and settings.smtp_use_tls:
                 smtp.starttls(context=context)
                 smtp.ehlo()
             if settings.smtp_username:

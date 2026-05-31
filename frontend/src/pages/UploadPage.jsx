@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Upload, WandSparkles } from "lucide-react";
-import { apiFetch, clearApiCache } from "../api.js";
+import { apiFetch, clearApiCache, readToken, resolveApiUrl } from "../api.js";
 import { MAX_UPLOAD_BYTES } from "../config.js";
 import { ChipRow, Page, RequireLogin } from "../components/ui.jsx";
 
@@ -37,7 +37,10 @@ export function UploadPage({ ctx }) {
   });
   const [preview, setPreview] = useState("");
   const [busy, setBusy] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0); // 0–100
+  const [dragActive, setDragActive] = useState(false);
   const [analysis, setAnalysis] = useState(null);
+  const dropZoneRef = useRef(null);
 
   useEffect(() => {
     if (!form.file) {
@@ -50,6 +53,33 @@ export function UploadPage({ ctx }) {
   }, [form.file]);
 
   if (!ctx.user) return <RequireLogin />;
+
+  function handleDragOver(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    setDragActive(true);
+  }
+
+  function handleDragLeave(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    // Only deactivate if we've left the drop zone entirely
+    if (!dropZoneRef.current?.contains(event.relatedTarget)) {
+      setDragActive(false);
+    }
+  }
+
+  function handleDrop(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    setDragActive(false);
+    const file = event.dataTransfer?.files?.[0];
+    if (file && (file.type.startsWith("image/") || file.type.startsWith("video/"))) {
+      update("file", file);
+    } else if (file) {
+      ctx.showToast("Only image and video files are accepted.", "error");
+    }
+  }
 
   function update(key, value) {
     setForm((current) => ({ ...current, [key]: value }));
@@ -97,6 +127,7 @@ export function UploadPage({ ctx }) {
     if (!form.file) return ctx.showToast("Choose a file first.", "error");
     if (form.file.size > MAX_UPLOAD_BYTES) return ctx.showToast("Upload is over the configured size limit.", "error");
     setBusy(true);
+    setUploadProgress(0);
     try {
       const body = new FormData();
       if (form.file) body.set("file", form.file);
@@ -118,13 +149,51 @@ export function UploadPage({ ctx }) {
       body.set("downloads_enabled", String(form.downloads_enabled));
       body.set("pinned", String(form.pinned));
       body.set("auto_ai", String(form.auto_ai));
-      const data = await apiFetch("/api/media", { method: "POST", body });
+
+      // Use XHR for upload progress tracking
+      const data = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        const token = readToken();
+        resolveApiUrl("/api/media").then((url) => {
+          xhr.open("POST", url, true);
+          if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+          xhr.setRequestHeader("Accept", "application/json");
+          xhr.withCredentials = true;
+          xhr.upload.addEventListener("progress", (progressEvent) => {
+            if (progressEvent.lengthComputable) {
+              setUploadProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
+            }
+          });
+          xhr.addEventListener("load", () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                resolve(JSON.parse(xhr.responseText));
+              } catch {
+                reject(new Error("Invalid server response."));
+              }
+            } else {
+              let message = `Upload failed (${xhr.status})`;
+              try {
+                const payload = JSON.parse(xhr.responseText);
+                if (payload?.detail) message = Array.isArray(payload.detail) ? payload.detail.map((item) => item?.msg || item).join("; ") : String(payload.detail);
+                else if (payload?.message) message = payload.message;
+              } catch { /* ignore parse errors */ }
+              reject(new Error(message));
+            }
+          });
+          xhr.addEventListener("error", () => reject(new Error("Network error during upload.")));
+          xhr.addEventListener("abort", () => reject(new Error("Upload cancelled.")));
+          xhr.send(body);
+        }).catch(reject);
+      });
+
       clearApiCache();
       ctx.refreshLookups();
       ctx.showToast("Upload saved.", "success");
       navigate(`/media/${data.media.id}`);
     } catch (error) {
       ctx.showToast(error.message, "error");
+      setUploadProgress(0);
     } finally {
       setBusy(false);
     }
@@ -139,12 +208,30 @@ export function UploadPage({ ctx }) {
   return (
     <Page title="Upload" eyebrow="Create">
       <form className="upload-layout" onSubmit={submit}>
-        <section className="upload-drop">
+        <section
+          ref={dropZoneRef}
+          className={`upload-drop${dragActive ? " drag-active" : ""}`}
+          onDragOver={handleDragOver}
+          onDragEnter={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
           <label className="file-picker">
             <input type="file" accept="image/*,video/*" onChange={(event) => update("file", event.target.files?.[0] || null)} />
-            {preview ? (form.file?.type?.startsWith("video/") ? <video src={preview} muted playsInline /> : <img src={preview} alt="" />) : <Upload size={42} />}
-            <span>{form.file?.name || "Choose media"}</span>
+            {preview ? (form.file?.type?.startsWith("video/") ? <video src={preview} muted playsInline /> : <img src={preview} alt="" />) : (
+              <>
+                <Upload size={42} />
+                <span className="file-picker-hint">{dragActive ? "Drop to upload" : "Click or drag a file here"}</span>
+              </>
+            )}
+            <span>{form.file?.name || ""}</span>
           </label>
+          {busy && uploadProgress > 0 && uploadProgress < 100 ? (
+            <div className="upload-progress-wrap" aria-label={`Upload progress: ${uploadProgress}%`}>
+              <div className="upload-progress-bar" style={{ width: `${uploadProgress}%` }} />
+              <span className="upload-progress-label">{uploadProgress}%</span>
+            </div>
+          ) : null}
           {analysis ? <ChipRow values={analysisChips} /> : null}
           {analysis?.reason ? <p className="muted small">{analysis.reason}</p> : null}
         </section>

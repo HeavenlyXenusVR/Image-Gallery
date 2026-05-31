@@ -107,9 +107,12 @@ export function ResilientImage({ sources = [], fallback = null, diagnostics = nu
   const [index, setIndex] = useState(0);
   const externalOnError = props.onError;
   const externalOnLoad = props.onLoad;
+  // Reset to first source whenever the source list changes
+  const sourcesKey = usableSources.join("|");
   useEffect(() => {
     setIndex(0);
-  }, [usableSources.join("|")]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourcesKey]);
   if (index >= usableSources.length) return fallback;
   const src = usableSources[index] || "";
   if (!src) return fallback;
@@ -199,11 +202,11 @@ export function SkeletonGrid({ count = 8 }) {
   return (
     <div>
       <div className="loading-tip">{tips[count % tips.length]}</div>
-      <div className="media-grid skeleton-grid">{Array.from({ length: count }, (_, index) => <div className="skeleton-card" key={index} />)}</div>
+      <div className="media-grid skeleton-grid">{Array.from({ length: count }, (_, index) => <div className="skeleton-card" key={`sk-${index}`} aria-hidden="true" />)}</div>
     </div>
   );
 }
 
 export function SkeletonList() {
-  return <div className="skeleton-list">{Array.from({ length: 6 }, (_, index) => <div className="skeleton-row" key={index} />)}</div>;
+  return <div className="skeleton-list">{Array.from({ length: 6 }, (_, index) => <div className="skeleton-row" key={`skr-${index}`} aria-hidden="true" />)}</div>;
 }

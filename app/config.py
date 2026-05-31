@@ -1,3 +1,4 @@
+import logging
 import os
 import secrets
 import socket
@@ -5,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+_cfg_log = logging.getLogger(__name__)
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -25,7 +28,8 @@ def _env_or_file(name: str, default: str = "") -> str:
     if file_path:
         try:
             return Path(file_path).read_text(encoding="utf-8").strip()
-        except Exception:
+        except Exception as exc:
+            _cfg_log.warning("Could not read secret file for %s (%s): %s", name, file_path, exc)
             return default
     return default
 

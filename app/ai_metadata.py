@@ -902,7 +902,7 @@ def _image_fingerprint(content: bytes, filename: str, mime_type: str, media_kind
     try:
         from PIL import Image, ImageOps
         _prev_max_pixels = Image.MAX_IMAGE_PIXELS
-        Image.MAX_IMAGE_PIXELS = None
+        Image.MAX_IMAGE_PIXELS = 200_000_000  # 200 MP cap — prevents decompression bombs
         try:
             img_obj = Image.open(io.BytesIO(content))
         finally:
@@ -1624,7 +1624,13 @@ def _local_clip_analysis(
                 timeout=45,
                 check=True,
             )
-        except Exception:
+        except subprocess.TimeoutExpired:
+            import logging as _logging
+            _logging.getLogger(__name__).debug("Local vision classifier timed out for %s", handle.name)
+            return None
+        except Exception as _exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug("Local vision classifier failed: %s", _exc)
             return None
 
     report = result.stdout or ""
@@ -1681,9 +1687,13 @@ def _media_size(content: bytes, filename: str, mime_type: str, media_kind: str) 
     if media_kind == "image":
         try:
             from PIL import Image
-            Image.MAX_IMAGE_PIXELS = None
-            with Image.open(io.BytesIO(content)) as image:
-                return tuple(int(part) for part in image.size)
+            _prev = Image.MAX_IMAGE_PIXELS
+            Image.MAX_IMAGE_PIXELS = 200_000_000  # 200 MP cap — prevents decompression bombs
+            try:
+                with Image.open(io.BytesIO(content)) as image:
+                    return tuple(int(part) for part in image.size)
+            finally:
+                Image.MAX_IMAGE_PIXELS = _prev
         except Exception:
             return None
     return _video_size(content, filename, mime_type) if media_kind == "video" else None
@@ -1721,14 +1731,18 @@ def _preview_base64(content: bytes, filename: str, mime_type: str, media_kind: s
     if media_kind == "image":
         try:
             from PIL import Image, ImageSequence
-            Image.MAX_IMAGE_PIXELS = None
-            with Image.open(io.BytesIO(content)) as image:
-                frame = next(ImageSequence.Iterator(image), image)
-                preview = frame.convert("RGB")
-                preview.thumbnail((1600, 1600))
-                output = io.BytesIO()
-                preview.save(output, format="JPEG", quality=90, optimize=True)
-                return base64.b64encode(output.getvalue()).decode("ascii")
+            _prev = Image.MAX_IMAGE_PIXELS
+            Image.MAX_IMAGE_PIXELS = 200_000_000  # 200 MP cap — prevents decompression bombs
+            try:
+                with Image.open(io.BytesIO(content)) as image:
+                    frame = next(ImageSequence.Iterator(image), image)
+                    preview = frame.convert("RGB")
+                    preview.thumbnail((1600, 1600))
+                    output = io.BytesIO()
+                    preview.save(output, format="JPEG", quality=90, optimize=True)
+                    return base64.b64encode(output.getvalue()).decode("ascii")
+            finally:
+                Image.MAX_IMAGE_PIXELS = _prev
         except Exception:
             return base64.b64encode(content).decode("ascii")
     if media_kind == "video":

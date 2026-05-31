@@ -684,8 +684,13 @@ class GalleryDatabase:
                 try:
                     await cur.execute("CREATE UNIQUE INDEX uniq_users_email ON users (email)")
                 except Exception as exc:
-                    if mysql_error_code(exc) != 1061:
-                        log.warning("Could not create uniq_users_email; duplicate or invalid existing email data may need cleanup: %s", exc)
+                    code = mysql_error_code(exc)
+                    if code == 1061:
+                        pass  # Index already exists — expected on repeat startups.
+                    elif code == 1062:
+                        log.warning("Could not create uniq_users_email: duplicate email values in existing data. Run a deduplication query before the index can be added: %s", exc)
+                    else:
+                        log.warning("Could not create uniq_users_email: %s", exc)
 
     async def ensure_subcategory_tables(self) -> None:
         async with self.pool.acquire() as conn:
@@ -909,18 +914,29 @@ class GalleryDatabase:
         token_hash = verification_token_hash(token)
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute("SELECT id FROM users WHERE email_verification_token_hash=%s LIMIT 1", (token_hash,))
-                row = await cur.fetchone()
-                if not row:
-                    return None
-                await cur.execute(
-                    """
-                    UPDATE users
-                    SET email_verified_at=CURRENT_TIMESTAMP, email_verification_token_hash=NULL
-                    WHERE id=%s
-                    """,
-                    (row["id"],),
-                )
+                await conn.begin()
+                try:
+                    # SELECT … FOR UPDATE prevents a double-verification race.
+                    await cur.execute(
+                        "SELECT id FROM users WHERE email_verification_token_hash=%s LIMIT 1 FOR UPDATE",
+                        (token_hash,),
+                    )
+                    row = await cur.fetchone()
+                    if not row:
+                        await conn.rollback()
+                        return None
+                    await cur.execute(
+                        """
+                        UPDATE users
+                        SET email_verified_at=CURRENT_TIMESTAMP, email_verification_token_hash=NULL
+                        WHERE id=%s AND email_verification_token_hash=%s
+                        """,
+                        (row["id"], token_hash),
+                    )
+                    await conn.commit()
+                except Exception:
+                    await conn.rollback()
+                    raise
                 return await self.get_user(row["id"])
 
     async def issue_email_verification_token(self, user_id: int, token: str) -> dict[str, Any] | None:
@@ -1288,7 +1304,13 @@ class GalleryDatabase:
         normalized_ids = normalize_subcategory_ids(subcategory_ids)
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cur:
-                await self._write_media_subcategories(cur, int(media_id), normalized_ids)
+                await conn.begin()
+                try:
+                    await self._write_media_subcategories(cur, int(media_id), normalized_ids)
+                    await conn.commit()
+                except Exception:
+                    await conn.rollback()
+                    raise
 
     async def _write_media_subcategories(self, cur: aiomysql.Cursor, media_id: int, subcategory_ids: list[int] | None) -> None:
         normalized_ids = normalize_subcategory_ids(subcategory_ids)
@@ -1311,7 +1333,7 @@ class GalleryDatabase:
                     """
                     SELECT c.*, COUNT(m.id) AS media_count
                     FROM categories c
-                    LEFT JOIN media_items m ON m.category_id = c.id
+                    LEFT JOIN media_items m ON m.category_id = c.id AND m.deleted_at IS NULL
                     GROUP BY c.id
                     ORDER BY c.name
                     """
@@ -1525,12 +1547,24 @@ class GalleryDatabase:
         end = int(end) if end is not None else None
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute("SELECT content FROM media_files WHERE id=%s", (file_id,))
+                # Use SUBSTRING to avoid loading the full BLOB when only a range is needed.
+                if end is not None:
+                    length = end - start + 1
+                    await cur.execute(
+                        "SELECT SUBSTRING(content, %s, %s) AS content, OCTET_LENGTH(content) AS inline_size FROM media_files WHERE id=%s",
+                        (start + 1, length, file_id),  # MySQL SUBSTRING is 1-indexed
+                    )
+                else:
+                    await cur.execute(
+                        "SELECT SUBSTRING(content, %s) AS content, OCTET_LENGTH(content) AS inline_size FROM media_files WHERE id=%s",
+                        (start + 1, file_id),
+                    )
                 row = await cur.fetchone() or {}
+                inline_size = int(row.get("inline_size") or 0)
                 inline = row.get("content")
-                if inline:
-                    payload = bytes(inline)
-                    yield payload[start:(end + 1) if end is not None else None]
+                if inline_size > 0:
+                    if inline:
+                        yield bytes(inline)
                     return
                 await cur.execute(
                     "SELECT content FROM media_file_chunks WHERE file_id=%s ORDER BY chunk_index ASC",
@@ -1609,35 +1643,46 @@ class GalleryDatabase:
         primary_subcategory_id = subcategory_ids[0] if subcategory_ids else item.get("subcategory_id")
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(
-                    """
-                    INSERT INTO media_items
-                      (user_id, category_id, subcategory_id, title, description, tags, media_kind, mime_type, original_filename,
-                       storage_path, file_size, media_file_id, content_sha256, visibility, comments_enabled, downloads_enabled, pinned_at,
-                       is_adult, adult_marked_by_user, adult_marked_by_ai,
-                       moderation_status, moderation_score, moderation_reason, moderated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE NULL END, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                    """,
-                    (
-                        item["user_id"], item["category_id"], primary_subcategory_id, item["title"], item.get("description"), tags_json,
-                        item["media_kind"], item["mime_type"], item["original_filename"],
-                        item.get("storage_path") or f"db://media/{item.get('media_file_id')}", item["file_size"],
-                        item.get("media_file_id"), item.get("content_sha256"),
-                        item.get("visibility") if item.get("visibility") in {"public", "unlisted", "private"} else "public",
-                        1 if item.get("comments_enabled", True) else 0,
-                        1 if item.get("downloads_enabled", True) else 0,
-                        1 if item.get("pinned") else 0,
-                        1 if item.get("is_adult") else 0,
-                        1 if item.get("adult_marked_by_user") else 0,
-                        1 if item.get("adult_marked_by_ai") else 0,
-                        item.get("moderation_status") or "clear",
-                        float(item.get("moderation_score") or 0),
-                        item.get("moderation_reason"),
-                    ),
-                )
-                media_id = int(cur.lastrowid)
-                await self._write_media_subcategories(cur, media_id, subcategory_ids or ([primary_subcategory_id] if primary_subcategory_id else []))
+                await conn.begin()
+                try:
+                    await cur.execute(
+                        """
+                        INSERT INTO media_items
+                          (user_id, category_id, subcategory_id, title, description, tags, media_kind, mime_type, original_filename,
+                           storage_path, file_size, media_file_id, content_sha256, visibility, comments_enabled, downloads_enabled, pinned_at,
+                           is_adult, adult_marked_by_user, adult_marked_by_ai,
+                           moderation_status, moderation_score, moderation_reason, moderated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE NULL END, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        """,
+                        (
+                            item["user_id"], item["category_id"], primary_subcategory_id, item["title"], item.get("description"), tags_json,
+                            item["media_kind"], item["mime_type"], item["original_filename"],
+                            item.get("storage_path") or f"db://media/{item.get('media_file_id')}", item["file_size"],
+                            item.get("media_file_id"), item.get("content_sha256"),
+                            item.get("visibility") if item.get("visibility") in {"public", "unlisted", "private"} else "public",
+                            1 if item.get("comments_enabled", True) else 0,
+                            1 if item.get("downloads_enabled", True) else 0,
+                            1 if item.get("pinned") else 0,
+                            1 if item.get("is_adult") else 0,
+                            1 if item.get("adult_marked_by_user") else 0,
+                            1 if item.get("adult_marked_by_ai") else 0,
+                            item.get("moderation_status") or "clear",
+                            float(item.get("moderation_score") or 0),
+                            item.get("moderation_reason"),
+                        ),
+                    )
+                    media_id = int(cur.lastrowid)
+                    await self._write_media_subcategories(cur, media_id, subcategory_ids or ([primary_subcategory_id] if primary_subcategory_id else []))
+                    await conn.commit()
+                except Exception:
+                    await conn.rollback()
+                    raise
                 return await self.get_media(media_id, item["user_id"])
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        """Escape LIKE wildcard characters so user input is treated as a literal string."""
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     async def list_media(
         self,
@@ -1670,12 +1715,12 @@ class GalleryDatabase:
             clauses.append("EXISTS (SELECT 1 FROM media_item_subcategories ms WHERE ms.media_id=m.id AND ms.subcategory_id=%s)")
             params.append(subcategory_id)
         if query:
-            clauses.append("(m.title LIKE %s OR m.description LIKE %s OR m.tags LIKE %s)")
-            needle = f"%{query}%"
+            clauses.append("(m.title LIKE %s ESCAPE '\\\\' OR m.description LIKE %s ESCAPE '\\\\' OR m.tags LIKE %s ESCAPE '\\\\')")
+            needle = f"%{self._escape_like(query)}%"
             params.extend([needle, needle, needle])
         if uploader:
-            clauses.append("(u.username LIKE %s OR u.display_name LIKE %s)")
-            needle = f"%{uploader}%"
+            clauses.append("(u.username LIKE %s ESCAPE '\\\\' OR u.display_name LIKE %s ESCAPE '\\\\')")
+            needle = f"%{self._escape_like(uploader)}%"
             params.extend([needle, needle])
         if min_size is not None:
             clauses.append("m.file_size >= %s")
@@ -1763,10 +1808,43 @@ class GalleryDatabase:
         return await self._attach_media_subcategories(rows)
 
     async def random_media(self, viewer_id: int | None = None) -> dict[str, Any] | None:
-        items = await self.list_media(viewer_id=viewer_id, sort="new", adult="show", limit=100)
-        if not items:
-            return None
-        return random.choice(items)
+        # Use ORDER BY RAND() with a small LIMIT to avoid loading 100 rows just to pick one.
+        viewer = viewer_id or 0
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    f"""
+                    SELECT m.*, {MEDIA_CATEGORY_SELECT}
+                           u.username,
+                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
+                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
+                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
+                           u.profile_color, u.public_profile,
+                           COUNT(DISTINCT l.user_id) AS like_count,
+                           COUNT(DISTINCT cm.id) AS comment_count,
+                           MAX(CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END) AS bookmarked_by_me,
+                           MAX(CASE WHEN l2.user_id IS NULL THEN 0 ELSE 1 END) AS liked_by_me
+                    FROM media_items m
+                    {MEDIA_CATEGORY_JOIN}
+                    JOIN users u ON u.id = m.user_id
+                    LEFT JOIN media_likes l ON l.media_id = m.id
+                    LEFT JOIN media_likes l2 ON l2.media_id = m.id AND l2.user_id = %s
+                    LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id = %s
+                    LEFT JOIN media_comments cm ON cm.media_id = m.id
+                    WHERE m.deleted_at IS NULL AND m.visibility='public'
+                    GROUP BY m.id
+                    ORDER BY RAND()
+                    LIMIT 1
+                    """,
+                    (viewer, viewer, viewer, viewer, viewer, viewer),
+                )
+                row = await cur.fetchone()
+                if not row:
+                    return None
+                item = self._decode_media(row)
+        rows = await self._attach_media_subcategories([item])
+        return rows[0] if rows else None
 
     async def list_public_background_candidates(self, limit: int = 600) -> list[dict[str, Any]]:
         async with self.pool.acquire() as conn:
@@ -1893,7 +1971,9 @@ class GalleryDatabase:
                 )
                 return await cur.fetchone()
 
-    async def list_comments(self, media_id: int) -> list[dict[str, Any]]:
+    async def list_comments(self, media_id: int, limit: int = 80, offset: int = 0) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit or 80), 200))
+        offset = max(0, int(offset or 0))
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
@@ -1903,10 +1983,10 @@ class GalleryDatabase:
                            CASE WHEN u.public_profile=1 THEN u.avatar_path ELSE NULL END AS user_avatar_path
                     FROM media_comments cm JOIN users u ON u.id = cm.user_id
                     WHERE cm.media_id=%s
-                    ORDER BY cm.created_at DESC
-                    LIMIT 80
+                    ORDER BY cm.created_at ASC
+                    LIMIT %s OFFSET %s
                     """,
-                    (media_id,),
+                    (media_id, limit, offset),
                 )
                 return list(await cur.fetchall())
 
@@ -1940,28 +2020,36 @@ class GalleryDatabase:
         pinned = 1 if payload.get("pinned") else 0
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute("SELECT user_id FROM media_items WHERE id=%s AND deleted_at IS NULL", (media_id,))
-                row = await cur.fetchone()
-                if not row:
-                    return None
-                if int(row["user_id"]) != int(user_id):
-                    raise PermissionError("Only the uploader can edit this post.")
-                await cur.execute(
-                    """
-                    UPDATE media_items
-                    SET title=%s, description=%s, tags=%s, category_id=%s, subcategory_id=%s,
-                        visibility=%s, comments_enabled=%s, downloads_enabled=%s,
-                        pinned_at=CASE WHEN %s=1 THEN COALESCE(pinned_at, CURRENT_TIMESTAMP) ELSE NULL END,
-                        is_adult=%s, adult_marked_by_user=%s,
-                        moderation_status=CASE WHEN %s=1 THEN 'adult' ELSE moderation_status END,
-                        moderation_reason=CASE WHEN %s=1 THEN 'Uploader marked this post as 18+.' ELSE moderation_reason END,
-                        moderated_at=CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE moderated_at END
-                    WHERE id=%s AND user_id=%s
-                    """,
-                    (title, description, json.dumps(clean_tags), category_id, subcategory_id, visibility, comments_enabled, downloads_enabled,
-                     pinned, is_adult, is_adult, is_adult, is_adult, is_adult, media_id, user_id),
-                )
-                await self._write_media_subcategories(cur, media_id, subcategory_ids)
+                await conn.begin()
+                try:
+                    await cur.execute("SELECT user_id FROM media_items WHERE id=%s AND deleted_at IS NULL FOR UPDATE", (media_id,))
+                    row = await cur.fetchone()
+                    if not row:
+                        await conn.rollback()
+                        return None
+                    if int(row["user_id"]) != int(user_id):
+                        await conn.rollback()
+                        raise PermissionError("Only the uploader can edit this post.")
+                    await cur.execute(
+                        """
+                        UPDATE media_items
+                        SET title=%s, description=%s, tags=%s, category_id=%s, subcategory_id=%s,
+                            visibility=%s, comments_enabled=%s, downloads_enabled=%s,
+                            pinned_at=CASE WHEN %s=1 THEN COALESCE(pinned_at, CURRENT_TIMESTAMP) ELSE NULL END,
+                            is_adult=%s, adult_marked_by_user=%s,
+                            moderation_status=CASE WHEN %s=1 THEN 'adult' ELSE moderation_status END,
+                            moderation_reason=CASE WHEN %s=1 THEN 'Uploader marked this post as 18+.' ELSE moderation_reason END,
+                            moderated_at=CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE moderated_at END
+                        WHERE id=%s AND user_id=%s
+                        """,
+                        (title, description, json.dumps(clean_tags), category_id, subcategory_id, visibility, comments_enabled, downloads_enabled,
+                         pinned, is_adult, is_adult, is_adult, is_adult, is_adult, media_id, user_id),
+                    )
+                    await self._write_media_subcategories(cur, media_id, subcategory_ids)
+                    await conn.commit()
+                except Exception:
+                    await conn.rollback()
+                    raise
         return await self.get_media(media_id, user_id)
 
     async def set_media_controls(self, media_id: int, user_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -1975,6 +2063,7 @@ class GalleryDatabase:
                 raise ValueError("Visibility must be public, unlisted, or private.")
             updates.append("visibility=%s")
             params.append(visibility)
+        # Enumerate explicitly — never build column names from user-supplied keys.
         for key in ("comments_enabled", "downloads_enabled"):
             if key in payload:
                 updates.append(f"{key}=%s")
@@ -3431,11 +3520,11 @@ class GalleryDatabase:
             "user": self._decode_user(user),
         }
 
-    def _clean_text(self, value: Any, max_length: int, required: bool = False) -> str | None:
+    def _clean_text(self, value: Any, max_length: int, required: bool = False, field_name: str = "Field") -> str | None:
         text = " ".join(str(value or "").strip().split())
         if not text:
             if required:
-                raise ValueError("Display name is required.")
+                raise ValueError(f"{field_name} is required.")
             return None
         return text[:max_length]
 

@@ -1162,9 +1162,11 @@ def _fallback_avatar_svg(user_id: int) -> str:
 
 def _verification_url(request: Request, token: str) -> str:
     url = str(request.url_for("verify_email"))
-    if request.url.hostname not in {"127.0.0.1", "localhost"}:
-        url = url.replace("http://", "https://", 1)
-    return f"{url}?token={token}"
+    # If the backend sees the request as HTTP but a trusted proxy already handles
+    # TLS, force the link to https so the user gets a working URL.
+    if _request_is_https(request) and url.startswith("http://"):
+        url = "https://" + url[7:]
+    return f"{url}?token={quote(str(token), safe='')}"
 
 
 def _verification_code() -> str:
@@ -1484,6 +1486,11 @@ async def _rate_limit(key: str, *, limit: int, window_seconds: int) -> None:
         raise HTTPException(status_code=429, detail="Too many attempts. Try again later.")
     bucket.append(now)
     RATE_BUCKETS[clean_key] = bucket
+    # Prevent unbounded growth of the fallback dict (evict expired entries periodically).
+    if len(RATE_BUCKETS) > 4096:
+        expired = [k for k, v in list(RATE_BUCKETS.items()) if not any(now - t < window_seconds for t in v)]
+        for k in expired[:1024]:
+            RATE_BUCKETS.pop(k, None)
 
 
 def _bounded_query_limit(value: Any, *, default: int = 60, max_limit: int | None = None) -> int:
@@ -1506,6 +1513,11 @@ def _request_id_for(request: Request) -> str:
     incoming = request.headers.get("x-request-id") or request.headers.get("x-correlation-id")
     cleaned = REQUEST_ID_RE.sub("", str(incoming or ""))[:80]
     return cleaned or secrets.token_hex(12)
+
+
+def _safe_public_error(exc: Exception) -> str:
+    """Return a safe, non-sensitive string representation of an exception."""
+    return str(exc)[:240]
 
 
 def _set_no_store_headers(response: Response) -> None:
@@ -1712,14 +1724,26 @@ def _filesystem_media_storage_path(sha256: str, filename: str, mime_type: str) -
 def _write_filesystem_media(storage_path: str, content: bytes) -> None:
     target = (settings.uploads_dir / storage_path).resolve()
     uploads_root = settings.uploads_dir.resolve()
-    if uploads_root not in target.parents:
+    # Verify the resolved path is strictly inside uploads_dir (path traversal protection).
+    try:
+        target.relative_to(uploads_root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid media storage path.") from None
+    if target == uploads_root:
         raise HTTPException(status_code=400, detail="Invalid media storage path.")
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists() and target.stat().st_size == len(content):
         return
     tmp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    tmp.write_bytes(content)
-    tmp.replace(target)
+    try:
+        tmp.write_bytes(content)
+        tmp.replace(target)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 async def _store_uploaded_media(user_id: int, uploaded: dict[str, Any], stored_filename: str) -> dict[str, Any]:
@@ -2258,7 +2282,7 @@ async def live_checks(request: Request) -> dict[str, Any]:
             "ok": False,
             "status": "offline",
             "backend": "image_gallery",
-            "checks": [{"id": "db", "label": "Database reachable", "ok": False, "severity": "error", "detail": str(exc)[:240]}],
+            "checks": [{"id": "db", "label": "Database reachable", "ok": False, "severity": "error", "detail": "Database is unreachable."}],
             "check_map": {"api": True, "db": False, "database": False},
             "snapshot": {},
             "storage_backend": settings.storage_backend,
@@ -2295,7 +2319,8 @@ async def migrate_legacy_files(request: Request) -> dict[str, Any]:
                 await db.reconnect()
             except Exception:
                 pass
-        raise HTTPException(status_code=500, detail=f"Migration failed: {str(exc)[:220]}") from None
+        logger.exception("Legacy file migration failed.")
+        raise HTTPException(status_code=500, detail="Migration failed. Check the server logs for details.") from None
 
 
 def _request_is_https(request: Request) -> bool:
@@ -3406,7 +3431,7 @@ async def _video_variant_response(media_id: int, item: dict[str, Any], file_info
                 with tempfile.TemporaryDirectory(prefix="gallery-video-") as tmp_dir:
                     safe_name = Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
                     source_path = Path(tmp_dir) / safe_name
-                    source_path.write_bytes(file_row["content"])
+                    source_path.write_bytes(bytes(file_row["content"]))
                     await asyncio.to_thread(_transcode_video_variant, source_path, cache_file, profile)
             elif legacy:
                 await asyncio.to_thread(_transcode_video_variant, legacy, cache_file, profile)
@@ -3516,7 +3541,10 @@ VIDEO_QUALITY_PROFILES = {
 
 
 def _video_thumb_cache_file(media_id: int, width: int) -> Path:
-    return THUMB_CACHE_DIR / f"{int(media_id)}_{int(width)}.webp"
+    # Shard into sub-directories by the last two hex digits of the media_id to avoid
+    # huge flat directories when there are many videos.
+    shard = f"{int(media_id) % 256:02x}"
+    return THUMB_CACHE_DIR / shard / f"{int(media_id)}_{int(width)}.webp"
 
 
 def _normalize_video_thumb_widths(widths: tuple[int, ...] | list[int] | None = None) -> tuple[int, ...]:
@@ -3564,7 +3592,7 @@ async def _ensure_video_thumb_cache(
         with tempfile.TemporaryDirectory(prefix="gallery-video-thumb-") as tmp_dir:
             safe_name = Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
             source_path = Path(tmp_dir) / safe_name
-            source_path.write_bytes(file_row["content"])
+            source_path.write_bytes(bytes(file_row["content"]))
             return await _extract_from_source(source_path)
 
     legacy = _legacy_upload_path(item.get("storage_path"))
@@ -3673,8 +3701,14 @@ async def serve_media_thumb(media_id: int, request: Request, access: str | None 
     if str(item.get("media_kind") or "").lower() != "image":
         return await _serve_media_content(media_id, request, access=access, as_download=False)
 
-    lock_key = f"{int(media_id)}:{width}"
+    lock_key = f"img:{int(media_id)}:{width}"
     lock = _thumb_generation_locks.setdefault(lock_key, asyncio.Lock())
+    # Prune stale unlocked entries to prevent unbounded growth (images are
+    # generated once and then served from disk, so the lock is only needed once).
+    if len(_thumb_generation_locks) > 2048:
+        stale = [k for k, lk in list(_thumb_generation_locks.items()) if not lk.locked() and k != lock_key]
+        for k in stale[:512]:
+            _thumb_generation_locks.pop(k, None)
     async with lock:
         cached = _thumb_file_response(request, cache_file, headers)
         if cached:
@@ -3695,7 +3729,11 @@ async def serve_media_thumb(media_id: int, request: Request, access: str | None 
             from PIL import Image, ImageSequence
             Image.MAX_IMAGE_PIXELS = 90_000_000
 
-            with Image.open(io.BytesIO(file_row["content"])) as image:
+            raw_content = bytes(file_row.get("content") or b"")
+            if not raw_content:
+                raise HTTPException(status_code=404, detail="File content is empty.")
+
+            with Image.open(io.BytesIO(raw_content)) as image:
                 frame = next(ImageSequence.Iterator(image), image)
                 frame = frame.convert("RGB")
                 frame.thumbnail((width, width), Image.Resampling.LANCZOS)
@@ -3742,17 +3780,19 @@ async def serve_media_preview(media_id: int, request: Request, access: str | Non
 
     file_row = await db.get_media_file(media_id)
     if file_row:
-        digest = hashlib.sha256(file_row["content"]).hexdigest()
-        if digest != file_row["sha256"]:
-            raise HTTPException(status_code=500, detail="Stored file failed hash verification.")
+        # Use the stored SHA-256 for the ETag; only verify content integrity after loading.
+        digest = str(file_row.get("sha256") or "")
         etag = _preview_etag(digest, size)
         headers = {"Cache-Control": "public, max-age=86400", "ETag": etag, "X-Content-SHA256": digest}
         if _etag_matches(request, etag):
             return Response(status_code=304, headers=headers)
+        content_bytes = bytes(file_row.get("content") or b"")
+        if digest and hashlib.sha256(content_bytes).hexdigest() != digest:
+            raise HTTPException(status_code=500, detail="Stored file failed hash verification.")
         preview_bytes, preview_mime = await asyncio.to_thread(
             _render_image_preview,
-            file_row["content"],
-            file_row["mime_type"],
+            content_bytes,
+            file_row.get("mime_type"),
             digest,
             size=size,
         )
@@ -3784,17 +3824,18 @@ async def serve_media_preview(media_id: int, request: Request, access: str | Non
 async def serve_user_avatar(user_id: int, request: Request) -> Response:
     file_row = await db.get_avatar_file(user_id)
     if file_row:
-        digest = hashlib.sha256(file_row["content"]).hexdigest()
-        if digest != file_row["sha256"]:
-            raise HTTPException(status_code=500, detail="Stored avatar failed hash verification.")
+        digest = str(file_row.get("sha256") or "")
         etag = f"\"avatar:{digest}\""
         headers = {"Cache-Control": "public, max-age=86400", "ETag": etag, "X-Content-SHA256": digest}
         if _etag_matches(request, etag):
             return Response(status_code=304, headers=headers)
-        return Response(content=file_row["content"], media_type=file_row["mime_type"], headers=headers)
+        content_bytes = bytes(file_row.get("content") or b"")
+        if digest and hashlib.sha256(content_bytes).hexdigest() != digest:
+            raise HTTPException(status_code=500, detail="Stored avatar failed hash verification.")
+        return Response(content=content_bytes, media_type=file_row.get("mime_type") or "image/jpeg", headers=headers)
 
     user = await db.get_user(user_id)
-    legacy = _legacy_upload_path(user.get("avatar_path") if user else None)
+    legacy = _legacy_upload_path((user or {}).get("avatar_path"))
     if legacy:
         content = legacy.read_bytes()
         digest = hashlib.sha256(content).hexdigest()

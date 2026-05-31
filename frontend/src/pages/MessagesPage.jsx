@@ -14,12 +14,22 @@ export function MessagesPage({ ctx }) {
   const [results, setResults] = useState([]);
   const [body, setBody] = useState("");
   const [loading, setLoading] = useState(true);
+  const messagesEndRef = useRef(null);
 
   const selectedId = selectedUser?.user_id || selectedUser?.id;
   const didAutoSelect = useRef(false);
+  const showToast = ctx.showToast;
+  const userId = ctx.user?.id;
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages]);
 
   const loadThreads = useCallback(async ({ background = false } = {}) => {
-    if (!ctx.user) return;
+    if (!userId) return;
     if (!background) setLoading(true);
     try {
       const data = await apiFetch("/api/messages/threads");
@@ -29,11 +39,11 @@ export function MessagesPage({ ctx }) {
         setSelectedUser(data.threads[0]);
       }
     } catch (error) {
-      if (!background) ctx.showToast(error.message, "error");
+      if (!background) showToast(error.message, "error");
     } finally {
       if (!background) setLoading(false);
     }
-  }, [ctx]);
+  }, [userId, showToast]);
 
   const loadMessages = useCallback(async ({ background = false } = {}) => {
     if (!selectedId) return;
@@ -42,9 +52,9 @@ export function MessagesPage({ ctx }) {
       setMessages(data.messages || []);
       if (background) loadThreads({ background: true });
     } catch (error) {
-      if (!background) ctx.showToast(error.message, "error");
+      if (!background) showToast(error.message, "error");
     }
-  }, [ctx, selectedId, loadThreads]);
+  }, [selectedId, loadThreads, showToast]);
 
   useEffect(() => {
     loadThreads();
@@ -66,13 +76,13 @@ export function MessagesPage({ ctx }) {
     const timer = window.setTimeout(async () => {
       try {
         const data = await cachedApiFetch(`/api/users/search${toQuery({ q: query, limit: 8 })}`, { ttl: 10_000 });
-        setResults((data.users || []).filter((user) => Number(user.id) !== Number(ctx.user?.id)));
+        setResults((data.users || []).filter((user) => Number(user.id) !== Number(userId)));
       } catch (_error) {
         setResults([]);
       }
     }, 220);
     return () => window.clearTimeout(timer);
-  }, [ctx.user?.id, query]);
+  }, [userId, query]);
 
   useLiveRefresh(() => loadMessages({ background: true }), { enabled: Boolean(selectedId), interval: 12_000 });
 
@@ -120,7 +130,7 @@ export function MessagesPage({ ctx }) {
         </aside>
         <section className="content-panel">
           <div className="section-head"><h2>{activeName}</h2><MessageCircle size={18} /></div>
-          <div className="comments-list">
+          <div className="comments-list messages-list">
             {messages.map((message) => (
               <article className="comment" key={message.id}>
                 <Avatar user={message} compact />
@@ -131,6 +141,7 @@ export function MessagesPage({ ctx }) {
               </article>
             ))}
             {!selectedId ? <EmptyState title="Choose someone to message" /> : null}
+            <div ref={messagesEndRef} />
           </div>
           {selectedId ? (
             <form className="comment-form" onSubmit={sendMessage}>

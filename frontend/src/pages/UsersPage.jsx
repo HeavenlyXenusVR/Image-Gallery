@@ -10,6 +10,8 @@ export function UsersPage({ ctx }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
 
+  const showToast = ctx.showToast;
+
   const loadUsers = useCallback(async ({ background = false } = {}) => {
     if (!background) setLoading(true);
     try {
@@ -20,11 +22,11 @@ export function UsersPage({ ctx }) {
       });
       setUsers(data.users || []);
     } catch (error) {
-      if (!background) ctx.showToast(error.message, "error");
+      if (!background) showToast(error.message, "error");
     } finally {
       if (!background) setLoading(false);
     }
-  }, [ctx, query]);
+  }, [showToast, query]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {

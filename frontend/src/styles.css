@@ -1144,7 +1144,7 @@ textarea:focus {
 .media-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--media-grid-min, 250px), 1fr));
-  gap: 14px;
+  gap: var(--media-grid-gap, 14px);
   contain: layout paint;
 }
 
@@ -2488,6 +2488,86 @@ textarea:focus {
   font-size: 0.82rem;
 }
 
+/* ─── Profile name styles (class-based) ────────────────────────────────────── */
+.profile-name-gradient .profile-hero h2 {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2, #6ec7ff));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.profile-name-glow .profile-hero h2 {
+  text-shadow: 0 0 20px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.profile-name-outline .profile-hero h2 {
+  -webkit-text-stroke: 1px var(--accent);
+  color: transparent;
+}
+
+/* ─── Profile header styles (class-based) ──────────────────────────────────── */
+.profile-header-glass .profile-hero {
+  backdrop-filter: blur(18px);
+}
+
+.profile-header-blur .profile-hero {
+  backdrop-filter: blur(28px) saturate(0.9);
+}
+
+.profile-header-transparent .profile-hero {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.profile-header-gradient .profile-hero {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 26%, transparent), rgba(110, 199, 255, 0.12), transparent);
+}
+
+/* ─── Profile background color override ────────────────────────────────────── */
+[style*="--profile-bg-override"] .profile-hero,
+[style*="--profile-bg-override"] .profile-feature-card,
+[style*="--profile-bg-override"] .profile-showcase {
+  background-color: var(--profile-bg-override);
+}
+
+/* ─── Profile name styles ───────────────────────────────────────────────────── */
+[style*="--profile-name-style: gradient"] .profile-hero h2 {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2, #6ec7ff));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+[style*="--profile-name-style: glow"] .profile-hero h2 {
+  text-shadow: 0 0 20px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+[style*="--profile-name-style: outline"] .profile-hero h2 {
+  -webkit-text-stroke: 1px var(--accent);
+  color: transparent;
+}
+
+/* ─── Profile header styles ─────────────────────────────────────────────────── */
+[style*="--profile-header-style: glass"] .profile-hero {
+  backdrop-filter: blur(18px);
+  background-color: rgba(15, 22, 29, 0.62);
+}
+
+[style*="--profile-header-style: blur"] .profile-hero {
+  backdrop-filter: blur(28px) saturate(0.9);
+}
+
+[style*="--profile-header-style: transparent"] .profile-hero {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+[style*="--profile-header-style: gradient"] .profile-hero {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 26%, transparent), rgba(110, 199, 255, 0.12), transparent);
+}
+
 .profile-social-cards.profile-showcase {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -2813,12 +2893,84 @@ textarea:focus {
   opacity: 0;
 }
 
+.file-picker-hint {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
 .file-picker img,
 .file-picker video {
   width: 100%;
   height: 100%;
   max-height: 430px;
   object-fit: contain;
+}
+
+.upload-drop.drag-active {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 72%),
+    rgba(55, 201, 167, 0.06);
+}
+
+.upload-drop.drag-active .file-picker {
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  border-style: solid;
+  background: rgba(55, 201, 167, 0.08);
+  color: var(--accent);
+}
+
+.upload-progress-wrap {
+  position: relative;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(12, 18, 24, 0.6);
+  overflow: hidden;
+}
+
+.upload-progress-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2, #6ec7ff));
+  border-radius: inherit;
+  transition: width 200ms ease;
+}
+
+.upload-progress-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 700;
+  mix-blend-mode: difference;
+}
+
+.feed-empty-cta {
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  min-height: 280px;
+  padding: 40px 30px;
+  text-align: center;
+}
+
+.feed-empty-cta p {
+  margin: 0;
+  color: var(--muted);
+  max-width: 48ch;
+}
+
+.messages-list {
+  max-height: 520px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  padding: 4px 0;
 }
 
 .check-stack {
@@ -2841,6 +2993,14 @@ textarea:focus {
 .color-field input {
   width: 100%;
   padding: 4px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.small {
+  font-size: 0.84rem;
 }
 
 .mini-form {
@@ -2882,13 +3042,161 @@ textarea:focus {
   bottom: 18px;
   z-index: 40;
   max-width: min(420px, calc(100vw - 36px));
-  padding: 12px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 10px 12px 14px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   background: #17202a;
   color: var(--text);
   box-shadow: var(--shadow);
   animation: toast-in var(--motion-med) both;
+}
+
+.toast-message {
+  flex: 1;
+  min-width: 0;
+}
+
+.toast-dismiss {
+  flex: 0 0 auto;
+  min-height: 26px;
+  min-width: 26px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.toast-dismiss:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: transparent;
+  color: var(--text);
+}
+
+/* ─── Gallery personality: card hover effects ─────────────────────────────── */
+/* Default (lift) — already the base hover style */
+
+/* Zoom: image scales more dramatically, card stays put */
+.gallery-hover-zoom .media-card:hover {
+  transform: none !important;
+}
+
+.gallery-hover-zoom .media-card:hover .thumb-frame img,
+.gallery-hover-zoom .media-card:hover .thumb-frame video {
+  transform: scale(1.08);
+}
+
+/* Reveal: info overlay appears on hover instead of below */
+.gallery-hover-reveal .media-card .media-copy {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 14px;
+  background: linear-gradient(to top, rgba(4, 8, 12, 0.92), transparent);
+  opacity: 0;
+  transition: opacity var(--motion-med);
+}
+
+.gallery-hover-reveal .media-card:hover .media-copy {
+  opacity: 1;
+}
+
+/* Glow: accent-coloured box-shadow on hover */
+.gallery-hover-glow .media-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 62%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent), var(--shadow);
+}
+
+/* None: disable all hover transforms */
+.gallery-hover-none .media-card:hover,
+.gallery-hover-none .user-card:hover,
+.gallery-hover-none .studio-item:hover,
+.gallery-hover-none .side-box:hover {
+  transform: none !important;
+}
+
+/* ─── Gallery personality: media border styles ──────────────────────────────── */
+.gallery-border-soft .media-card .thumb-frame img,
+.gallery-border-soft .media-card .thumb-frame video {
+  border-radius: 4px;
+}
+
+.gallery-border-crisp .media-card {
+  border-radius: 4px;
+}
+
+.gallery-border-crisp .media-card .thumb-frame img,
+.gallery-border-crisp .media-card .thumb-frame video {
+  border-radius: 0;
+}
+
+.gallery-border-glow .media-card {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent), var(--shadow);
+}
+
+.gallery-border-neon .media-card {
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent), 0 0 18px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* ─── Gallery personality: card info display ────────────────────────────────── */
+.gallery-info-overlay .media-card .media-copy {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 12px 14px;
+  background: linear-gradient(to top, rgba(4, 8, 12, 0.88), transparent);
+  color: #fff;
+}
+
+.gallery-info-minimal .media-card .media-copy p {
+  display: none;
+}
+
+.gallery-info-hidden .media-card .media-copy {
+  display: none;
+}
+
+/* ─── Gallery personality: font override ───────────────────────────────────── */
+.gallery-font-serif {
+  font-family: var(--gallery-font, "Georgia", "Times New Roman", serif);
+}
+
+.gallery-font-mono {
+  font-family: var(--gallery-font, "Fira Code", "Consolas", monospace);
+}
+
+.gallery-font-rounded {
+  font-family: var(--gallery-font, "Nunito", "Varela Round", system-ui, sans-serif);
+}
+
+/* ─── Gallery background color override ────────────────────────────────────── */
+.app-shell:has(~ *) {
+  /* noop anchor */
+}
+
+/* When --gallery-bg-override is set, use it */
+[style*="--gallery-bg-override"] {
+  --bg: var(--gallery-bg-override);
+}
+
+/* ─── Accent secondary ──────────────────────────────────────────────────────── */
+[style*="--accent-secondary"] .primary,
+[style*="--accent-secondary"] button.primary,
+[style*="--accent-secondary"] .nav-item.accent {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 28%, transparent), color-mix(in srgb, var(--accent-secondary) 22%, transparent));
+}
+
+/* ─── Card aspect ratio override ──────────────────────────────────────────── */
+[style*="--card-aspect-ratio"] .thumb-frame {
+  aspect-ratio: var(--card-aspect-ratio);
 }
 
 @media (hover: hover) and (pointer: fine) {

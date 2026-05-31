@@ -9,8 +9,11 @@ export function FriendsPage({ ctx }) {
   const [state, setState] = useState({ incoming: [], outgoing: [], friends: [] });
   const [loading, setLoading] = useState(true);
 
+  const showToast = ctx.showToast;
+  const userId = ctx.user?.id;
+
   const loadFriends = useCallback(async ({ background = false } = {}) => {
-    if (!ctx.user) return;
+    if (!userId) return;
     if (!background) setLoading(true);
     try {
       const [requests, friends] = await Promise.all([
@@ -19,11 +22,11 @@ export function FriendsPage({ ctx }) {
       ]);
       setState({ incoming: requests.incoming || [], outgoing: requests.outgoing || [], friends: friends.friends || [] });
     } catch (error) {
-      if (!background) ctx.showToast(error.message, "error");
+      if (!background) showToast(error.message, "error");
     } finally {
       if (!background) setLoading(false);
     }
-  }, [ctx]);
+  }, [userId, showToast]);
 
   useEffect(() => {
     loadFriends();

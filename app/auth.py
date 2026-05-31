@@ -1,11 +1,15 @@
 import base64
+import binascii
 import hashlib
 import hmac
+import logging
 import secrets
 from typing import Any
 
 from fastapi import HTTPException, Request
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+
+_auth_log = logging.getLogger(__name__)
 
 
 TOKEN_SALT = "image_gallery_api_token"
@@ -28,7 +32,11 @@ def verify_password(password: str, encoded: str) -> bool:
         expected = base64.b64decode(digest_b64)
         actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(iterations))
         return hmac.compare_digest(actual, expected)
-    except Exception:
+    except (ValueError, TypeError, binascii.Error):
+        # Expected for malformed or legacy hashes — not a bug.
+        return False
+    except Exception as exc:
+        _auth_log.warning("Unexpected error during password verification: %s", exc)
         return False
 
 

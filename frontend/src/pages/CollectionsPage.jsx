@@ -19,6 +19,8 @@ export function CollectionsPage({ ctx }) {
 
   const didAutoOpen = useRef(false);
 
+  const showToast = ctx.showToast;
+
   const openCollection = useCallback(async (id, { fresh = false } = {}) => {
     try {
       const data = fresh
@@ -28,9 +30,9 @@ export function CollectionsPage({ ctx }) {
       setMedia(data.media || []);
       preloadMediaAssets(data.media || [], { limit: 6 });
     } catch (openError) {
-      ctx.showToast(openError.message, "error");
+      showToast(openError.message, "error");
     }
-  }, [ctx]);
+  }, [showToast]);
 
   const loadCollections = useCallback(async ({ fresh = false } = {}) => {
     setLoading(true);

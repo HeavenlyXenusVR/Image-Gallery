@@ -226,6 +226,10 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
   }
 
   // ─── Keyboard shortcuts ──────────────────────────────────────────────────────
+  // Use a ref to always see fresh volume so the effect never needs to re-run
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+
   useEffect(() => {
     function onKey(event) {
       if (!containerRef.current) return;
@@ -235,8 +239,8 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
         case "Space": event.preventDefault(); togglePlay(); break;
         case "ArrowLeft": event.preventDefault(); nudge(-5); revealControls(); break;
         case "ArrowRight": event.preventDefault(); nudge(5); revealControls(); break;
-        case "ArrowUp": event.preventDefault(); changeVolume(volume + 0.1); revealControls(); break;
-        case "ArrowDown": event.preventDefault(); changeVolume(volume - 0.1); revealControls(); break;
+        case "ArrowUp": event.preventDefault(); changeVolume(volumeRef.current + 0.1); revealControls(); break;
+        case "ArrowDown": event.preventDefault(); changeVolume(volumeRef.current - 0.1); revealControls(); break;
         case "KeyM": toggleMute(); break;
         case "KeyF": toggleFullscreen(); break;
         case "KeyP": togglePip(); break;
@@ -245,8 +249,7 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [volume, revealControls]);
+  }, [revealControls]);
 
   const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
   const bufferedPct = duration > 0 ? (buffered / duration) * 100 : 0;
