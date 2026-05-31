@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App.jsx";
 import "./styles.css";
+import { startRemoteOriginPolling } from "./api.js";
 
 function runtimeBasename() {
   const configured = String(window.IMAGE_GALLERY_BASENAME || "").replace(/\/+$/, "");
@@ -35,6 +36,7 @@ function applyRuntimeClasses() {
 }
 
 applyRuntimeClasses();
+startRemoteOriginPolling();
 
 document.addEventListener("contextmenu", (event) => {
   event.preventDefault();

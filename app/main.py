@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -101,7 +101,7 @@ _site_background_state: dict[str, Any] = {"picked_at": 0.0, "item": None}
 _preview_cache: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
 _api_cache: OrderedDict[str, tuple[float, str, str]] = OrderedDict()
 _thumb_generation_locks: dict[str, asyncio.Lock] = {}
-_video_transcode_locks: dict[tuple[int, str], asyncio.Lock] = {}
+_video_active_streams: set[tuple[int, str]] = set()
 _video_thumb_warm_tasks: dict[tuple[int, tuple[int, ...]], asyncio.Task[Any]] = {}
 GENERIC_MEDIA_TITLES = {
     "uncategorized media",
@@ -3356,66 +3356,91 @@ def _normalize_video_quality(value: str | None) -> str:
     return quality if quality in {"high", "original", "medium", "low"} else "high"
 
 
-def _transcode_video_variant(source_path: Path, cache_path: Path, profile: dict[str, Any]) -> None:
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = cache_path.with_suffix(".tmp.mp4")
-    if tmp_path.exists():
-        tmp_path.unlink()
-    valid_presets = {"ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower"}
-    preset = str(profile.get("preset") or "faster")
-    if preset not in valid_presets:
-        preset = "faster"
+async def _stream_transcode_and_cache(
+    source: Path,
+    cache_file: Path,
+    profile: dict[str, Any],
+    tmp_dir: "tempfile.TemporaryDirectory[str] | None",
+    stream_key: tuple[int, str],
+) -> "AsyncGenerator[bytes, None]":
+    """
+    Stream a fragmented MP4 transcode directly from ffmpeg stdout while
+    simultaneously writing the output to `cache_file`.  This lets the browser
+    start playing within a second instead of waiting for the full transcode.
+    Subsequent requests for the same quality hit the cache and get FileResponse
+    (which supports HTTP Range / seek).
+    """
     scale_filter = f"scale='min({int(profile['max_width'])},iw)':-2:flags=lanczos"
     command = [
         FFMPEG_BIN,
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        str(source_path),
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a:0?",
-        "-vf",
-        scale_filter,
-        "-c:v",
-        "libx264",
-        "-preset",
-        preset,
-        "-crf",
-        str(int(profile["crf"])),
-        "-profile:v",
-        str(profile.get("profile") or "high"),
-        "-level",
-        "4.1",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        str(profile["audio_bitrate"]),
-        "-movflags",
-        "+faststart",
-        str(tmp_path),
+        "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(source),
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-vf", scale_filter,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", str(int(profile["crf"])),
+        "-profile:v", str(profile.get("profile") or "high"),
+        "-level", "4.1",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", str(profile["audio_bitrate"]),
+        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "-f", "mp4", "pipe:1",
     ]
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp_cache = cache_file.with_suffix(".stream.tmp")
     try:
-        result = subprocess.run(command, check=True, timeout=900, capture_output=True, text=True)
-        tmp_path.replace(cache_path)
-    except subprocess.CalledProcessError as exc:
-        err_tail = (exc.stderr or "").strip()[-800:]
-        logger.error("Video transcode failed for %s -> %s: %s", source_path, cache_path, err_tail)
-        raise
-    except subprocess.TimeoutExpired:
-        logger.error("Video transcode timed out after 900s for %s", source_path)
+        tmp_cache.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    # Drain stderr concurrently so it never blocks stdout.
+    stderr_task: asyncio.Task[bytes] = asyncio.create_task(process.stderr.read(4096))
+    succeeded = False
+    try:
+        with open(tmp_cache, "wb") as fh:
+            while True:
+                chunk = await process.stdout.read(65536)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                yield chunk
+        await process.wait()
+        succeeded = process.returncode == 0
+        if succeeded:
+            tmp_cache.replace(cache_file)
+        else:
+            stderr_bytes = await stderr_task if not stderr_task.done() else stderr_task.result()
+            err_tail = stderr_bytes.decode(errors="replace")[-400:]
+            logger.error("Live transcode rc=%s for cache_file=%s: %s", process.returncode, cache_file, err_tail)
+    except Exception:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except Exception:
+                pass
+        logger.exception("Live transcode stream interrupted, cache_file=%s", cache_file)
         raise
     finally:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except Exception:
-            pass
+        _video_active_streams.discard(stream_key)
+        if not succeeded:
+            try:
+                tmp_cache.unlink(missing_ok=True)
+            except Exception:
+                pass
+        if tmp_dir is not None:
+            try:
+                tmp_dir.cleanup()
+            except Exception:
+                pass
+        if not stderr_task.done():
+            stderr_task.cancel()
 
 
 async def _video_variant_response(media_id: int, item: dict[str, Any], file_info: dict[str, Any] | None, legacy: Path | None, quality: str) -> Response | None:
@@ -3425,47 +3450,45 @@ async def _video_variant_response(media_id: int, item: dict[str, Any], file_info
     digest = str((file_info or {}).get("sha256") or item.get("content_sha256") or item.get("updated_at") or item.get("created_at") or media_id)
     cache_file = VIDEO_CACHE_DIR / f"{int(media_id)}_{quality}_{hashlib.sha256(digest.encode('utf-8')).hexdigest()[:16]}.mp4"
 
-    # Per-(media_id, quality) lock prevents two simultaneous requests from both
-    # spawning a transcode for the same output file (race → corrupt cache).
-    lock_key = (int(media_id), quality)
-    lock = _video_transcode_locks.setdefault(lock_key, asyncio.Lock())
-    # Prune stale locks to prevent unbounded growth.
-    if len(_video_transcode_locks) > 512:
-        stale = [k for k, lk in list(_video_transcode_locks.items()) if not lk.locked() and k != lock_key]
-        for k in stale[:128]:
-            _video_transcode_locks.pop(k, None)
+    # Cache hit — FileResponse supports HTTP Range so the browser can seek.
+    if cache_file.exists() and cache_file.stat().st_size > 0:
+        return FileResponse(
+            cache_file,
+            media_type="video/mp4",
+            headers={
+                "Cache-Control": "public, max-age=86400",
+                "X-Video-Quality": quality,
+                "X-Video-Codec": "h264/aac",
+            },
+        )
 
-    async with lock:
-        # Re-check after acquiring the lock — a concurrent request may have
-        # already written the cache file while we were waiting.
-        if not cache_file.exists() or cache_file.stat().st_size <= 0:
-            try:
-                if file_info:
-                    file_row = await db.get_media_file(media_id)
-                    if not file_row:
-                        return None
-                    with tempfile.TemporaryDirectory(prefix="gallery-video-") as tmp_dir:
-                        safe_name = Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
-                        source_path = Path(tmp_dir) / safe_name
-                        source_path.write_bytes(bytes(file_row["content"]))
-                        await asyncio.to_thread(_transcode_video_variant, source_path, cache_file, profile)
-                elif legacy:
-                    await asyncio.to_thread(_transcode_video_variant, legacy, cache_file, profile)
-                else:
-                    return None
-            except Exception:
-                logger.exception("Video quality variant generation failed for media_id=%s quality=%s; falling back to source.", media_id, quality)
-                return None
+    # Cache miss — stream live transcode.  Resolve the source file first.
+    source_path: Path | None = None
+    tmp_dir_obj: "tempfile.TemporaryDirectory[str] | None" = None
 
-    if not cache_file.exists() or cache_file.stat().st_size <= 0:
+    if file_info:
+        file_row = await db.get_media_file(media_id)
+        if not file_row:
+            return None
+        tmp_dir_obj = tempfile.TemporaryDirectory(prefix="gallery-video-")
+        safe_name = (Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video")
+        source_path = Path(tmp_dir_obj.name) / safe_name
+        await asyncio.to_thread(source_path.write_bytes, bytes(file_row["content"]))
+    elif legacy:
+        source_path = legacy
+    else:
         return None
-    return FileResponse(
-        cache_file,
+
+    stream_key = (int(media_id), quality)
+    _video_active_streams.add(stream_key)
+    return StreamingResponse(
+        _stream_transcode_and_cache(source_path, cache_file, profile, tmp_dir_obj, stream_key),
         media_type="video/mp4",
         headers={
-            "Cache-Control": "public, max-age=86400",
+            "Cache-Control": "no-store",
             "X-Video-Quality": quality,
             "X-Video-Codec": "h264/aac",
+            "X-Transcode": "live",
         },
     )
 

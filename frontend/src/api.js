@@ -6,8 +6,8 @@ const API_CACHE_VERSION = "v5";
 const API_CACHE_STORE_PREFIX = "image_gallery_api_cache:";
 const MAX_STORED_CACHE_BYTES = 700_000;
 const REMOTE_ORIGIN_KEY = "image_gallery_remote_origin";
-const REMOTE_ORIGIN_TTL = 60_000;
-const REMOTE_ORIGIN_STALE_TTL = 15 * 60_000;
+const REMOTE_ORIGIN_TTL = 20_000;
+const REMOTE_ORIGIN_STALE_TTL = 3 * 60_000;
 const API_FETCH_TIMEOUT_MS = 25_000;
 const REMOTE_CONFIG_TIMEOUT_MS = 8_000;
 
@@ -207,6 +207,18 @@ async function refreshRemoteOrigin() {
   return remoteOriginPromise;
 }
 
+export function forceRefreshRemoteOrigin() {
+  remoteOriginRefreshAfter = 0;
+}
+
+let _pollTimer = null;
+export function startRemoteOriginPolling() {
+  if (_pollTimer !== null || typeof window === "undefined" || !isRemoteStaticHost()) return;
+  _pollTimer = window.setInterval(() => {
+    loadRemoteOrigin({ force: true }).catch(() => {});
+  }, 20_000);
+}
+
 async function loadRemoteOrigin({ force = false } = {}) {
   const cached = readRemoteOriginCache();
   if (!force && cached?.origin && cached.updatedAt && Date.now() - cached.updatedAt < REMOTE_ORIGIN_TTL) {
@@ -249,12 +261,20 @@ async function fetchWithRemoteRetry(path, options, headers) {
     }
     return response;
   } catch (error) {
-    // Network-level error (TypeError "Failed to fetch", DNS failure, refused
-    // connection).  Re-fetch live-config.json to pick up a fresh tunnel URL,
-    // then retry the original request once with the new origin.
+    // Network-level error — re-fetch live-config.json to pick up a rotated
+    // Cloudflare tunnel URL, then retry up to twice with increasing delay.
     const retryTarget = await retryTargetFor(path, target, options);
     if (retryTarget && retryTarget !== target) {
-      return fetchWithTimeout(retryTarget, { ...options, headers }, options.timeoutMs || API_FETCH_TIMEOUT_MS);
+      try {
+        return await fetchWithTimeout(retryTarget, { ...options, headers }, options.timeoutMs || API_FETCH_TIMEOUT_MS);
+      } catch (_retryError) {
+        // Second retry: pause 600 ms, force another config refresh, try once more.
+        await new Promise((resolve) => window.setTimeout(resolve, 600));
+        const retryTarget2 = await retryTargetFor(path, retryTarget, options);
+        if (retryTarget2) {
+          return fetchWithTimeout(retryTarget2, { ...options, headers }, options.timeoutMs || API_FETCH_TIMEOUT_MS);
+        }
+      }
     }
     throw error;
   }
