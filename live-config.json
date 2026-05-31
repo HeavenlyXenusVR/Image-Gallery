@@ -1,6 +1,6 @@
 {
-  "gallery_url": "",
-  "status": "offline",
+  "gallery_url": "https://zshops-kissing-victor-mumbai.trycloudflare.com",
+  "status": "live",
   "local_urls": ["http://127.0.0.1:8788", "http://localhost:8788", "http://192.168.12.188:8788"],
-  "updated_at": "2026-05-31T13:02:43-05:00"
+  "updated_at": "2026-05-31T13:06:29-05:00"
 }
