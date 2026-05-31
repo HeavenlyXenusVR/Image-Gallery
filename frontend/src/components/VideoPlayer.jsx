@@ -106,8 +106,22 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
       const code = video?.error?.code;
       if (code === 2) setError("Network error — check your connection and try again.");
       else if (code === 3) setError("Decoding error — the video format may not be supported.");
-      else if (code === 4) setError("Source not supported — the video format or codec is unavailable.");
-      else setError("Playback error — the video could not be loaded.");
+      else if (code === 4) {
+        // MEDIA_ERR_SRC_NOT_SUPPORTED — Firefox rejects non-browser-safe formats.
+        // If we're on high/original quality and a lower quality is available,
+        // automatically fall back to medium so the video can still play.
+        if (
+          onQualityChange &&
+          (quality === "high" || quality === "original" || !quality) &&
+          qualityOptions &&
+          qualityOptions.some(([v]) => v === "medium")
+        ) {
+          setError("This format isn’t supported by your browser. Switching to Medium quality…");
+          onQualityChange("medium");
+        } else {
+          setError("This format isn’t supported by your browser. Try switching to Medium or Low quality.");
+        }
+      } else setError("Playback error — the video could not be loaded.");
     };
     const onEnded = () => { setPlaying(false); setShowControls(true); };
     const onVolumeChange = () => { setVolume(video.volume); setMuted(video.muted); };

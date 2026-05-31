@@ -3385,7 +3385,7 @@ async def _stream_transcode_and_cache(
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", str(profile["audio_bitrate"]),
-        "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        "-movflags", "frag_keyframe+default_base_moof",
         "-f", "mp4", "pipe:1",
     ]
     cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -3444,6 +3444,16 @@ async def _stream_transcode_and_cache(
                 pass
         if stderr_task is not None and not stderr_task.done():
             stderr_task.cancel()
+
+
+_BROWSER_SAFE_VIDEO_MIME: frozenset[str] = frozenset({"video/mp4", "video/webm", "video/ogg"})
+
+
+def _needs_video_transcode(mime_type: str | None) -> bool:
+    """Return True when the MIME type is a video that browsers cannot play natively."""
+    if not mime_type:
+        return False
+    return mime_type.startswith("video/") and mime_type.lower() not in _BROWSER_SAFE_VIDEO_MIME
 
 
 async def _video_variant_response(media_id: int, item: dict[str, Any], file_info: dict[str, Any] | None, legacy: Path | None, quality: str) -> Response | None:
@@ -3515,7 +3525,13 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
     requested_quality = _normalize_video_quality(quality)
     file_info = await db.get_media_file_info(media_id)
     if file_info:
-        variant = None if as_download else await _video_variant_response(media_id, item, file_info, None, requested_quality)
+        # If the stored MIME type is browser-incompatible (e.g. MKV, MOV, AVI)
+        # and the caller asked for the original/high quality, redirect through the
+        # medium transcode profile so Firefox and Safari can play it.
+        effective_quality = requested_quality
+        if not as_download and _needs_video_transcode(file_info.get("mime_type")) and effective_quality not in VIDEO_QUALITY_PROFILES:
+            effective_quality = "medium"
+        variant = None if as_download else await _video_variant_response(media_id, item, file_info, None, effective_quality)
         if variant:
             return variant
         file_size = int(file_info.get("file_size") or 0)
@@ -3550,7 +3566,12 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
 
     legacy = _legacy_upload_path(item.get("storage_path"))
     if legacy:
-        variant = None if as_download else await _video_variant_response(media_id, item, None, legacy, requested_quality)
+        # Same browser-compatibility check for legacy on-disk files.
+        legacy_mime = item.get("mime_type") or mimetypes.guess_type(str(legacy))[0]
+        legacy_quality = requested_quality
+        if not as_download and _needs_video_transcode(legacy_mime) and legacy_quality not in VIDEO_QUALITY_PROFILES:
+            legacy_quality = "medium"
+        variant = None if as_download else await _video_variant_response(media_id, item, None, legacy, legacy_quality)
         if variant:
             return variant
         if as_download:
