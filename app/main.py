@@ -11,6 +11,7 @@ import secrets
 import hashlib
 import hmac
 import random
+import shutil
 import struct
 import subprocess
 import tempfile
@@ -100,6 +101,7 @@ _site_background_state: dict[str, Any] = {"picked_at": 0.0, "item": None}
 _preview_cache: OrderedDict[tuple[str, str], tuple[bytes, str]] = OrderedDict()
 _api_cache: OrderedDict[str, tuple[float, str, str]] = OrderedDict()
 _thumb_generation_locks: dict[str, asyncio.Lock] = {}
+_video_transcode_locks: dict[tuple[int, str], asyncio.Lock] = {}
 _video_thumb_warm_tasks: dict[tuple[int, tuple[int, ...]], asyncio.Task[Any]] = {}
 GENERIC_MEDIA_TITLES = {
     "uncategorized media",
@@ -945,7 +947,7 @@ def _render_video_frame_thumb(source_path: Path, cache_path: Path, width: int) -
     if tmp_path.exists():
         tmp_path.unlink()
     command = [
-        "ffmpeg",
+        FFMPEG_BIN,
         "-y",
         "-hide_banner",
         "-loglevel",
@@ -3365,7 +3367,7 @@ def _transcode_video_variant(source_path: Path, cache_path: Path, profile: dict[
         preset = "faster"
     scale_filter = f"scale='min({int(profile['max_width'])},iw)':-2:flags=lanczos"
     command = [
-        "ffmpeg",
+        FFMPEG_BIN,
         "-y",
         "-hide_banner",
         "-loglevel",
@@ -3422,24 +3424,41 @@ async def _video_variant_response(media_id: int, item: dict[str, Any], file_info
         return None
     digest = str((file_info or {}).get("sha256") or item.get("content_sha256") or item.get("updated_at") or item.get("created_at") or media_id)
     cache_file = VIDEO_CACHE_DIR / f"{int(media_id)}_{quality}_{hashlib.sha256(digest.encode('utf-8')).hexdigest()[:16]}.mp4"
-    if not cache_file.exists() or cache_file.stat().st_size <= 0:
-        try:
-            if file_info:
-                file_row = await db.get_media_file(media_id)
-                if not file_row:
+
+    # Per-(media_id, quality) lock prevents two simultaneous requests from both
+    # spawning a transcode for the same output file (race → corrupt cache).
+    lock_key = (int(media_id), quality)
+    lock = _video_transcode_locks.setdefault(lock_key, asyncio.Lock())
+    # Prune stale locks to prevent unbounded growth.
+    if len(_video_transcode_locks) > 512:
+        stale = [k for k, lk in list(_video_transcode_locks.items()) if not lk.locked() and k != lock_key]
+        for k in stale[:128]:
+            _video_transcode_locks.pop(k, None)
+
+    async with lock:
+        # Re-check after acquiring the lock — a concurrent request may have
+        # already written the cache file while we were waiting.
+        if not cache_file.exists() or cache_file.stat().st_size <= 0:
+            try:
+                if file_info:
+                    file_row = await db.get_media_file(media_id)
+                    if not file_row:
+                        return None
+                    with tempfile.TemporaryDirectory(prefix="gallery-video-") as tmp_dir:
+                        safe_name = Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
+                        source_path = Path(tmp_dir) / safe_name
+                        source_path.write_bytes(bytes(file_row["content"]))
+                        await asyncio.to_thread(_transcode_video_variant, source_path, cache_file, profile)
+                elif legacy:
+                    await asyncio.to_thread(_transcode_video_variant, legacy, cache_file, profile)
+                else:
                     return None
-                with tempfile.TemporaryDirectory(prefix="gallery-video-") as tmp_dir:
-                    safe_name = Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
-                    source_path = Path(tmp_dir) / safe_name
-                    source_path.write_bytes(bytes(file_row["content"]))
-                    await asyncio.to_thread(_transcode_video_variant, source_path, cache_file, profile)
-            elif legacy:
-                await asyncio.to_thread(_transcode_video_variant, legacy, cache_file, profile)
-            else:
+            except Exception:
+                logger.exception("Video quality variant generation failed for media_id=%s quality=%s; falling back to source.", media_id, quality)
                 return None
-        except Exception:
-            logger.exception("Video quality variant generation failed for media_id=%s quality=%s; falling back to source.", media_id, quality)
-            return None
+
+    if not cache_file.exists() or cache_file.stat().st_size <= 0:
+        return None
     return FileResponse(
         cache_file,
         media_type="video/mp4",
@@ -3529,14 +3548,26 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
 
 
 
+# Resolve the ffmpeg binary once at startup.  On NixOS, ffmpeg lives under
+# /run/current-system/sw/bin and is NOT on the default PATH used by the
+# FastAPI process.  We try the NixOS well-known path first, then fall back to
+# whatever `which` finds, and finally to the bare name so the error message
+# from subprocess is at least meaningful.
+_NIXOS_FFMPEG = "/run/current-system/sw/bin/ffmpeg"
+FFMPEG_BIN: str = (
+    _NIXOS_FFMPEG
+    if os.path.isfile(_NIXOS_FFMPEG) and os.access(_NIXOS_FFMPEG, os.X_OK)
+    else (shutil.which("ffmpeg") or "ffmpeg")
+)
+
 # XENUS_THUMB_CACHE_V1
 THUMB_CACHE_DIR = settings.uploads_dir / "_thumb_cache"
 THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_CACHE_DIR = settings.uploads_dir / "_video_cache"
 VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_QUALITY_PROFILES = {
-    "medium": {"max_width": 1600, "crf": 19, "audio_bitrate": "192k", "preset": "faster", "profile": "high"},
-    "low": {"max_width": 960, "crf": 23, "audio_bitrate": "128k", "preset": "faster", "profile": "high"},
+    "medium": {"max_width": 1600, "crf": 28, "audio_bitrate": "192k", "preset": "fast", "profile": "high"},
+    "low": {"max_width": 960, "crf": 32, "audio_bitrate": "128k", "preset": "fast", "profile": "high"},
 }
 
 

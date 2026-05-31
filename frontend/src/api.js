@@ -249,6 +249,9 @@ async function fetchWithRemoteRetry(path, options, headers) {
     }
     return response;
   } catch (error) {
+    // Network-level error (TypeError "Failed to fetch", DNS failure, refused
+    // connection).  Re-fetch live-config.json to pick up a fresh tunnel URL,
+    // then retry the original request once with the new origin.
     const retryTarget = await retryTargetFor(path, target, options);
     if (retryTarget && retryTarget !== target) {
       return fetchWithTimeout(retryTarget, { ...options, headers }, options.timeoutMs || API_FETCH_TIMEOUT_MS);
@@ -273,10 +276,18 @@ function shouldRefreshRemoteAfterStatus(status, options) {
 
 function canRetryWithFreshRemote(options) {
   const method = String(options.method || "GET").toUpperCase();
-  if (!isRemoteStaticHost()) return false;
+  // Always allow retry for remote-static mode.
+  if (isRemoteStaticHost()) {
+    if (method === "GET" || method === "HEAD") return true;
+    const path = String(options.__path || "");
+    if (method === "POST" && isSafeRemoteRetryPost(path)) return true;
+    return false;
+  }
+  // In local/hybrid mode: allow a retry if live-config.json advertises a
+  // gallery_url that differs from the current origin — this covers the case
+  // where the Cloudflare Tunnel URL has rotated and the in-memory origin is
+  // stale.  Only safe idempotent methods are retried.
   if (method === "GET" || method === "HEAD") return true;
-  const path = String(options.__path || "");
-  if (method === "POST" && isSafeRemoteRetryPost(path)) return true;
   return false;
 }
 

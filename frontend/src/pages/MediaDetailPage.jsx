@@ -138,7 +138,6 @@ export function MediaDetailPage({ ctx }) {
             <div className="locked-state"><Lock size={38} /><h2>Age verification required</h2></div>
           ) : media.media_kind === "video" ? (
             <VideoPlayer
-              key={videoSrc}
               src={videoSrc}
               poster={thumbUrl(media, 640)}
               quality={videoQuality}

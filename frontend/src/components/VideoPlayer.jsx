@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   Gauge,
+  Loader2,
   Maximize,
   Minimize,
   Pause,
@@ -46,12 +47,17 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
   const [fullscreen, setFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [buffering, setBuffering] = useState(false);
+  const [bufferingLong, setBufferingLong] = useState(false);
   const [error, setError] = useState(null);
   const [speed, setSpeed] = useState(1);
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [seekHover, setSeekHover] = useState(null); // { x, time }
   const [pip, setPip] = useState(false);
+
+  // ─── Seek-restore state for quality switching ────────────────────────────────
+  const pendingRestoreRef = useRef(null); // { time, wasPlaying }
+  const bufferingTimerRef = useRef(null);
 
   // ─── Controls auto-hide ─────────────────────────────────────────────────────
   const scheduleHide = useCallback(() => {
@@ -78,8 +84,23 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
       if (video.buffered.length > 0) setBuffered(video.buffered.end(video.buffered.length - 1));
     };
     const onDurationChange = () => setDuration(video.duration || 0);
-    const onWaiting = () => setBuffering(true);
-    const onCanPlay = () => setBuffering(false);
+    const onWaiting = () => {
+      setBuffering(true);
+      if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
+      bufferingTimerRef.current = setTimeout(() => setBufferingLong(true), 3000);
+    };
+    const onCanPlay = () => {
+      setBuffering(false);
+      setBufferingLong(false);
+      if (bufferingTimerRef.current) { clearTimeout(bufferingTimerRef.current); bufferingTimerRef.current = null; }
+      // Restore seek position after quality switch
+      if (pendingRestoreRef.current) {
+        const { time, wasPlaying } = pendingRestoreRef.current;
+        pendingRestoreRef.current = null;
+        if (time > 0) video.currentTime = time;
+        if (wasPlaying) video.play().catch(() => {});
+      }
+    };
     const onError = () => {
       const video = videoRef.current;
       const code = video?.error?.code;
@@ -121,11 +142,35 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
       video.removeEventListener("leavepictureinpicture", onPipLeave);
       document.removeEventListener("fullscreenchange", onFullscreenChange);
       clearTimeout(controlsHideTimer.current);
+      if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
     };
   }, [scheduleHide]);
 
-  // Reset error on src change
-  useEffect(() => { setError(null); setCurrentTime(0); setBuffered(0); setPlaying(false); }, [src]);
+  // On src change: save position/playing state, reload, restore after canplay
+  const prevSrcRef = useRef(src);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    setError(null);
+    setBufferingLong(false);
+    if (bufferingTimerRef.current) { clearTimeout(bufferingTimerRef.current); bufferingTimerRef.current = null; }
+    if (prevSrcRef.current && prevSrcRef.current !== src) {
+      // Quality switch — preserve playback position
+      const savedTime = video.currentTime || 0;
+      const wasPlaying = !video.paused;
+      if (savedTime > 0 || wasPlaying) {
+        pendingRestoreRef.current = { time: savedTime, wasPlaying };
+      }
+      video.pause();
+      video.load();
+    } else {
+      // First load or same src
+      setCurrentTime(0);
+      setBuffered(0);
+      setPlaying(false);
+    }
+    prevSrcRef.current = src;
+  }, [src]);
 
   // ─── Playback controls ───────────────────────────────────────────────────────
   function togglePlay() {
@@ -237,8 +282,8 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
       if (!containerRef.current.contains(document.activeElement) && document.activeElement !== document.body) return;
       switch (event.code) {
         case "Space": event.preventDefault(); togglePlay(); break;
-        case "ArrowLeft": event.preventDefault(); nudge(-5); revealControls(); break;
-        case "ArrowRight": event.preventDefault(); nudge(5); revealControls(); break;
+        case "ArrowLeft": event.preventDefault(); nudge(-10); revealControls(); break;
+        case "ArrowRight": event.preventDefault(); nudge(10); revealControls(); break;
         case "ArrowUp": event.preventDefault(); changeVolume(volumeRef.current + 0.1); revealControls(); break;
         case "ArrowDown": event.preventDefault(); changeVolume(volumeRef.current - 0.1); revealControls(); break;
         case "KeyM": toggleMute(); break;
@@ -278,8 +323,14 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
 
       {/* Buffering spinner */}
       {buffering && !error && (
-        <div className="vp-spinner-wrap" aria-label="Buffering">
+        <div className="vp-spinner-wrap" aria-label={bufferingLong ? "Transcoding" : "Buffering"}>
           <div className="vp-spinner" />
+          {bufferingLong && (
+            <div className="vp-transcoding-msg">
+              <Loader2 size={14} className="vp-transcoding-spin" />
+              Transcoding&hellip; this may take a moment
+            </div>
+          )}
         </div>
       )}
 
@@ -413,7 +464,7 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
                   title="Quality"
                   aria-label="Video quality"
                 >
-                  <span className="vp-quality-label">{quality || "HD"}</span>
+                  <span className="vp-quality-label">{(qualityOptions.find(([v]) => v === quality) || [])[1] || quality || "HD"}</span>
                 </button>
                 {showQualityMenu && (
                   <div className="vp-menu vp-menu-up">
