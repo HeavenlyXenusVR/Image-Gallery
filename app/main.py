@@ -3475,18 +3475,38 @@ async def _video_variant_response(media_id: int, item: dict[str, Any], file_info
             },
         )
 
+    # Large DB-backed files: skip transcode entirely and let the caller fall through
+    # to range-based streaming of the original.  Loading hundreds of MB into memory
+    # to write a temp file before ffmpeg can start would saturate the container's
+    # memory limit and stall the entire event loop.
+    _TRANSCODE_SIZE_LIMIT = 300 * 1024 * 1024  # 300 MB
+    if file_info and int(file_info.get("file_size") or 0) > _TRANSCODE_SIZE_LIMIT:
+        logger.info(
+            "Skipping transcode for large DB-backed file media_id=%s size=%s quality=%s",
+            media_id,
+            file_info.get("file_size"),
+            quality,
+        )
+        return None
+
     # Cache miss — stream live transcode.  Resolve the source file first.
     source_path: Path | None = None
     tmp_dir_obj: "tempfile.TemporaryDirectory[str] | None" = None
 
     if file_info:
-        file_row = await db.get_media_file(media_id)
-        if not file_row:
-            return None
+        # Stream DB content to a temp file to avoid a single huge in-memory bytes object.
         tmp_dir_obj = tempfile.TemporaryDirectory(prefix="gallery-video-")
-        safe_name = (Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video")
+        safe_name = (Path(str(file_info.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video")
         source_path = Path(tmp_dir_obj.name) / safe_name
-        await asyncio.to_thread(source_path.write_bytes, bytes(file_row["content"]))
+        async def _write_stream_to_file(fid: int, dest: Path) -> None:
+            with open(dest, "wb") as fh:
+                async for chunk in db.stream_media_file_content(fid):
+                    fh.write(chunk)
+        await _write_stream_to_file(int(file_info["id"]), source_path)
+        if not source_path.exists() or source_path.stat().st_size == 0:
+            if tmp_dir_obj:
+                tmp_dir_obj.cleanup()
+            return None
     elif legacy:
         source_path = legacy
     else:
@@ -3665,13 +3685,20 @@ async def _ensure_video_thumb_cache(
                     generated += 1
         return generated
 
-    file_row = await db.get_media_file(media_id)
-    if file_row and file_row.get("content"):
+    # Use get_media_file_info (no BLOB) then stream chunks to avoid loading the
+    # entire video into Python memory — critical for files over a few hundred MB.
+    file_info = await db.get_media_file_info(media_id)
+    if file_info:
         with tempfile.TemporaryDirectory(prefix="gallery-video-thumb-") as tmp_dir:
-            safe_name = Path(str(file_row.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
+            safe_name = Path(str(file_info.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
             source_path = Path(tmp_dir) / safe_name
-            source_path.write_bytes(bytes(file_row["content"]))
-            return await _extract_from_source(source_path)
+            async def _stream_to_file(fid: int, dest: Path) -> None:
+                with open(dest, "wb") as fh:
+                    async for chunk in db.stream_media_file_content(fid):
+                        fh.write(chunk)
+            await _stream_to_file(int(file_info["id"]), source_path)
+            if source_path.stat().st_size > 0:
+                return await _extract_from_source(source_path)
 
     legacy = _legacy_upload_path(item.get("storage_path"))
     if legacy:
@@ -3745,6 +3772,7 @@ async def serve_media_thumb(media_id: int, request: Request, access: str | None 
         raise HTTPException(status_code=403, detail="Age verification required for this 18+ post.")
 
     width = max(160, min(int(w or 520), 1440))
+    # Flat (non-sharded) cache path used for image thumbnails.
     cache_file = THUMB_CACHE_DIR / f"{int(media_id)}_{width}.webp"
 
     headers = {
@@ -3752,15 +3780,18 @@ async def serve_media_thumb(media_id: int, request: Request, access: str | None 
         "X-Xenus-Thumb": "1",
     }
 
-    if cache_file.exists() and cache_file.stat().st_size > 0:
-        cached = _thumb_file_response(request, cache_file, headers)
+    if str(item.get("media_kind") or "").lower() == "video":
+        # Video thumbnails are stored in sharded subdirectories via _video_thumb_cache_file.
+        # Always use the sharded path so generation and serving agree on the file location.
+        video_cache_file = _video_thumb_cache_file(int(media_id), width)
+        video_headers = {**headers, "X-Xenus-Video-Thumb": "frame"}
+        # Serve from cache if already generated (handles both fresh and pre-existing entries).
+        cached = _thumb_file_response(request, video_cache_file, video_headers)
         if cached:
             return cached
-
-    if str(item.get("media_kind") or "").lower() == "video":
-        video_headers = {**headers, "X-Xenus-Video-Thumb": "frame"}
+        # Not cached yet — generate now, then re-check.
         await _ensure_video_thumb_cache(int(media_id), item=item, widths=(width,))
-        cached = _thumb_file_response(request, cache_file, video_headers)
+        cached = _thumb_file_response(request, video_cache_file, video_headers)
         if cached:
             return cached
         preview_bytes, preview_mime = await asyncio.to_thread(_render_video_placeholder_thumb, item, width)
