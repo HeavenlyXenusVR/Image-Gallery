@@ -3489,7 +3489,27 @@ async def _video_variant_response(media_id: int, item: dict[str, Any], file_info
         )
         return None
 
-    # Cache miss — stream live transcode.  Resolve the source file first.
+    # Cache miss — if a transcode is already running for this (media_id, quality),
+    # wait for it to finish rather than spawning a second competing ffmpeg process.
+    # Both would write to the same .stream.tmp file, corrupting the output.
+    stream_key = (int(media_id), quality)
+    if stream_key in _video_active_streams:
+        for _ in range(60):  # poll up to 30 s (60 × 0.5 s)
+            await asyncio.sleep(0.5)
+            if cache_file.exists() and cache_file.stat().st_size > 0:
+                return FileResponse(
+                    cache_file,
+                    media_type="video/mp4",
+                    headers={
+                        "Cache-Control": "public, max-age=86400",
+                        "X-Video-Quality": quality,
+                        "X-Video-Codec": "h264/aac",
+                    },
+                )
+        # Transcode is stalled or very slow — fall through to serve the original.
+        return None
+
+    # Resolve the source file for the transcode.
     source_path: Path | None = None
     tmp_dir_obj: "tempfile.TemporaryDirectory[str] | None" = None
 
@@ -3512,13 +3532,13 @@ async def _video_variant_response(media_id: int, item: dict[str, Any], file_info
     else:
         return None
 
-    stream_key = (int(media_id), quality)
     _video_active_streams.add(stream_key)
     return StreamingResponse(
         _stream_transcode_and_cache(source_path, cache_file, profile, tmp_dir_obj, stream_key),
         media_type="video/mp4",
         headers={
             "Cache-Control": "no-store",
+            "Accept-Ranges": "none",
             "X-Video-Quality": quality,
             "X-Video-Codec": "h264/aac",
             "X-Transcode": "live",

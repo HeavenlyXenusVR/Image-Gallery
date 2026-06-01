@@ -104,6 +104,7 @@ class TelegramPollingService:
 
     async def _poll_loop(self) -> None:
         self.status.running = True
+        _backoff = 5.0
         while not self._closing.is_set():
             try:
                 params: dict[str, Any] = {"timeout": self.poll_timeout_seconds, "allowed_updates": json.dumps(["message"])}
@@ -115,12 +116,14 @@ class TelegramPollingService:
                     self._offset = max(self._offset or 0, update_id + 1)
                     await self._handle_update(update)
                 self.status.last_error = ""
+                _backoff = 5.0  # reset on success
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.status.last_error = str(exc)[:240]
                 logger.warning("%s Telegram polling error: %s", self.name, exc)
-                await asyncio.sleep(5)
+                await asyncio.sleep(_backoff)
+                _backoff = min(_backoff * 2, 120.0)  # cap at 2 minutes
         self.status.running = False
 
     async def _handle_update(self, update: dict[str, Any]) -> None:
