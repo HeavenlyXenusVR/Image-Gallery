@@ -24,6 +24,9 @@ CONFIG_PUSH_COOLDOWN_SECONDS="${GALLERY_CONFIG_PUSH_COOLDOWN_SECONDS:-120}"
 LAST_PUSH_FILE="${LOG_DIR}/last-live-config-push"
 TUNNEL_PROVIDER="${GALLERY_TUNNEL_PROVIDER:-auto}"
 TUNNEL_READY_ATTEMPTS="${GALLERY_TUNNEL_READY_ATTEMPTS:-180}"
+# Set GALLERY_NGROK_DOMAIN to your free static ngrok subdomain to get a stable URL.
+# Claim one at https://dashboard.ngrok.com/domains (free, one per account).
+NGROK_STATIC_DOMAIN="${GALLERY_NGROK_DOMAIN:-${NGROK_STATIC_DOMAIN:-}}"
 
 mkdir -p "${BIN_DIR}" "${LOG_DIR}"
 echo "$$" > "${PID_FILE}"
@@ -313,6 +316,62 @@ publish_live_url() {
   exit $?
 }
 
+ngrok_bin() {
+  for candidate in "${HOME}/.local/bin/ngrok" "${BIN_DIR}/ngrok"; do
+    if [[ -x "${candidate}" ]]; then echo "${candidate}"; return; fi
+  done
+  if command -v ngrok >/dev/null 2>&1; then command -v ngrok; return; fi
+  echo ""
+}
+
+start_ngrok_tunnel() {
+  local bin
+  bin="$(ngrok_bin)"
+  if [[ -z "${bin}" ]]; then
+    echo "ngrok binary not found; skipping ngrok tunnel." >&2; return 1
+  fi
+  local ngrok_log="${LOG_DIR}/ngrok.log"
+  : > "${ngrok_log}"
+
+  if [[ -n "${NGROK_STATIC_DOMAIN}" ]]; then
+    echo "Opening ngrok tunnel on static domain ${NGROK_STATIC_DOMAIN}..."
+    "${bin}" http "--domain=${NGROK_STATIC_DOMAIN}" --log=stdout --log-format=json "${PORT}" >"${ngrok_log}" 2>&1 &
+  else
+    echo "Opening ngrok tunnel (random URL — set GALLERY_NGROK_DOMAIN for a stable URL)..."
+    "${bin}" http --log=stdout --log-format=json "${PORT}" >"${ngrok_log}" 2>&1 &
+  fi
+  TUNNEL_PID="$!"
+
+  local gallery_url=""
+  for _ in {1..80}; do
+    if ! kill -0 "${TUNNEL_PID}" >/dev/null 2>&1; then
+      echo "ngrok exited early. Last log lines:" >&2; tail -40 "${ngrok_log}" >&2 || true; return 1
+    fi
+    gallery_url="$(python3 -c "
+import sys, json
+for line in open('${ngrok_log}'):
+    try:
+        d=json.loads(line)
+        u=d.get('url','')
+        if u.startswith('https://'): print(u); break
+    except: pass
+" 2>/dev/null || true)"
+    if [[ -n "${gallery_url}" ]]; then
+      echo "Waiting for ${gallery_url} to answer through ngrok..."
+      for ((ready_attempt=1; ready_attempt<=TUNNEL_READY_ATTEMPTS; ready_attempt++)); do
+        if curl -fsS --max-time 10 "${gallery_url}/api/health" >/dev/null 2>&1; then
+          TUNNEL_LOG="${ngrok_log}"
+          publish_live_url "${gallery_url}"
+        fi
+        sleep 1
+      done
+      echo "ngrok URL never became reachable. Last log lines:" >&2; tail -40 "${ngrok_log}" >&2 || true; return 1
+    fi
+    sleep 0.5
+  done
+  echo "Timed out waiting for ngrok URL." >&2; tail -40 "${ngrok_log}" >&2 || true; return 1
+}
+
 start_pinggy_tunnel() {
   echo "Opening Pinggy tunnel..."
   : > "${TUNNEL_LOG}"
@@ -416,6 +475,15 @@ fi
 # Keep the local config truthful while a tunnel is being created, but avoid
 # pushing a temporary offline state to GitHub right before the live URL push.
 write_offline_config
+
+# ── Tunnel provider dispatch ──────────────────────────────────────────────────
+# Priority (auto mode): ngrok with static domain → Cloudflare quick tunnel → Pinggy
+# Set GALLERY_TUNNEL_PROVIDER=ngrok|cloudflare|pinggy to force a specific provider.
+
+if [[ "${TUNNEL_PROVIDER}" == "ngrok" ]] || \
+   [[ "${TUNNEL_PROVIDER}" == "auto" && -n "${NGROK_STATIC_DOMAIN}" ]]; then
+  start_ngrok_tunnel && exit 0 || true
+fi
 
 if [[ "${TUNNEL_PROVIDER}" == "cloudflare" || "${TUNNEL_PROVIDER}" == "auto" ]]; then
   echo "Opening Cloudflare quick tunnel..."
