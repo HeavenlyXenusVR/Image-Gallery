@@ -8,10 +8,14 @@ const MAX_STORED_CACHE_BYTES = 700_000;
 const REMOTE_ORIGIN_KEY = "image_gallery_remote_origin";
 const REMOTE_ORIGIN_TTL = 20_000;
 const REMOTE_ORIGIN_STALE_TTL = 3 * 60_000;
-const API_FETCH_TIMEOUT_MS = 25_000;
+const API_FETCH_TIMEOUT_MS = 12_000;
 const REMOTE_CONFIG_TIMEOUT_MS = 8_000;
 // How often to re-check live-config.json while the backend is known offline.
 const REMOTE_ORIGIN_RECOVERY_POLL_MS = 5_000;
+// Minimum gap between forced origin refreshes triggered by failed requests.
+// Without this, N concurrent failures each spawn their own live-config.json
+// GET and the console fills with duplicate fetches of the same file.
+const FORCE_REFRESH_MIN_INTERVAL_MS = 4_000;
 
 const memoryCache = new Map();
 const inFlightFetches = new Map();
@@ -21,6 +25,7 @@ let remoteConfig = null;
 // Timestamp of when the backend was last seen offline (via live-config status
 // field or via network failure).  Used to switch to fast-poll mode.
 let remoteOriginOfflineSince = 0;
+let _lastForceRefreshAt = 0;
 
 export function readToken() {
   try {
@@ -206,6 +211,17 @@ async function ensureRemoteOrigin() {
 
 async function refreshRemoteOrigin() {
   if (!isRemoteStaticHost()) return currentApiOrigin();
+  // Reuse any in-flight refresh — concurrent failed requests must not each
+  // spawn their own live-config.json GET; they all share the same promise.
+  if (remoteOriginPromise) return remoteOriginPromise;
+  // Rate-limit forced refreshes.  When the tunnel is dead but live-config.json
+  // hasn't been updated yet, rapid retries would hammer GitHub Pages CDN for
+  // the same stale JSON without any benefit.
+  const now = Date.now();
+  if (now - _lastForceRefreshAt < FORCE_REFRESH_MIN_INTERVAL_MS && currentApiOrigin()) {
+    return currentApiOrigin();
+  }
+  _lastForceRefreshAt = now;
   remoteOriginPromise = loadRemoteOrigin({ force: true }).finally(() => {
     remoteOriginPromise = null;
   });
@@ -224,15 +240,26 @@ export function startRemoteOriginPolling() {
 
   const runPoll = () => {
     _pollTimer = null;
+    const isOffline = remoteOriginOfflineSince > 0;
+    const interval = isOffline ? REMOTE_ORIGIN_RECOVERY_POLL_MS : REMOTE_ORIGIN_TTL;
+    if (remoteOriginPromise) {
+      // A request-triggered refresh is already in-flight; skip this tick and
+      // reschedule so the two paths don't race to fetch the same file.
+      _pollFast = isOffline;
+      _pollTimer = window.setTimeout(runPoll, interval);
+      return;
+    }
+    // Allow the periodic poll to bypass the per-request rate limit so recovery
+    // is detected on schedule even when no user requests are in-flight.
+    _lastForceRefreshAt = 0;
     loadRemoteOrigin({ force: true })
       .catch(() => {})
       .finally(() => {
         // Use a faster interval while the backend is known offline so recovery
         // is detected within ~5 s instead of the normal 20 s cadence.
-        const isOffline = remoteOriginOfflineSince > 0;
-        const interval = isOffline ? REMOTE_ORIGIN_RECOVERY_POLL_MS : REMOTE_ORIGIN_TTL;
-        _pollFast = isOffline;
-        _pollTimer = window.setTimeout(runPoll, interval);
+        const stillOffline = remoteOriginOfflineSince > 0;
+        _pollFast = stillOffline;
+        _pollTimer = window.setTimeout(runPoll, stillOffline ? REMOTE_ORIGIN_RECOVERY_POLL_MS : REMOTE_ORIGIN_TTL);
       });
   };
 
