@@ -207,6 +207,12 @@ def verification_token_hash(token: str) -> str:
     return hashlib.sha256(str(token).encode("utf-8")).hexdigest()
 
 
+import time as _time
+
+# TTL (seconds) for the in-memory user cache used by get_user().
+_USER_CACHE_TTL = 30.0
+
+
 class GalleryDatabase:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -215,6 +221,8 @@ class GalleryDatabase:
         self._blob_lock = asyncio.Lock()
         configured_chunk = int(getattr(settings, "db_blob_chunk_bytes", 8 * 1024 * 1024) or 0)
         self.media_chunk_bytes = max(1024 * 1024, min(configured_chunk, 16 * 1024 * 1024))
+        # {user_id: (expires_at, user_dict)} — avoids a DB round-trip on every /api/me poll
+        self._user_cache: dict[int, tuple[float, dict[str, Any] | None]] = {}
 
     async def connect(self) -> None:
         async with self._connect_lock:
@@ -1001,6 +1009,7 @@ class GalleryDatabase:
                     """,
                     (normalized, user_id),
                 )
+        self._invalidate_user_cache(user_id)
         return await self.get_user(user_id)
 
     async def verify_email_code(self, user_id: int, code: str) -> dict[str, Any] | None:
@@ -1026,6 +1035,7 @@ class GalleryDatabase:
                     """,
                     (user_id,),
                 )
+        self._invalidate_user_cache(user_id)
         return await self.get_user(user_id)
 
     async def authenticate_user(self, username: str, password: str) -> dict[str, Any] | None:
@@ -1056,7 +1066,16 @@ class GalleryDatabase:
                 else:
                     await cur.execute("UPDATE users SET last_seen_at=CURRENT_TIMESTAMP WHERE id=%s", (user_id,))
 
-    async def get_user(self, user_id: int) -> dict[str, Any] | None:
+    def _invalidate_user_cache(self, user_id: int) -> None:
+        self._user_cache.pop(user_id, None)
+
+    async def get_user(self, user_id: int, *, bypass_cache: bool = False) -> dict[str, Any] | None:
+        now = _time.monotonic()
+        if not bypass_cache:
+            cached = self._user_cache.get(user_id)
+            if cached and cached[0] > now:
+                return dict(cached[1]) if cached[1] is not None else None
+
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
@@ -1072,7 +1091,9 @@ class GalleryDatabase:
                     (user_id,),
                 )
                 user = await cur.fetchone()
-                return self._decode_user(user) if user else None
+                result = self._decode_user(user) if user else None
+        self._user_cache[user_id] = (now + _USER_CACHE_TTL, dict(result) if result is not None else None)
+        return result
 
     async def update_user_profile(self, user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         fields = {
@@ -1120,6 +1141,7 @@ class GalleryDatabase:
                         user_id,
                     ),
                 )
+        self._invalidate_user_cache(user_id)
         return await self.get_user(user_id)
 
     async def verify_user_age(self, user_id: int, birthdate: date) -> dict[str, Any]:
@@ -1133,6 +1155,7 @@ class GalleryDatabase:
                     """,
                     (birthdate.isoformat(), user_id),
                 )
+        self._invalidate_user_cache(user_id)
         return await self.get_user(user_id)
 
     async def update_user_settings(self, user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -1194,6 +1217,7 @@ class GalleryDatabase:
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("UPDATE users SET user_settings=%s WHERE id=%s", (json.dumps(settings), user_id))
+        self._invalidate_user_cache(user_id)
         return await self.get_user(user_id)
 
     async def save_avatar_file(self, user_id: int, *, content: bytes, sha256: str, mime_type: str, original_filename: str) -> dict[str, Any]:
@@ -1216,6 +1240,7 @@ class GalleryDatabase:
                     """,
                     (file_id, f"avatar-db://{file_id}", mime_type[:120], original_filename[:255], user_id),
                 )
+        self._invalidate_user_cache(user_id)
         return await self.get_user(user_id)
 
     async def update_user_avatar(self, user_id: int, storage_path: str, mime_type: str, original_filename: str) -> dict[str, Any]:
@@ -1229,6 +1254,7 @@ class GalleryDatabase:
                     """,
                     (storage_path, mime_type[:120], original_filename[:255], user_id),
                 )
+        self._invalidate_user_cache(user_id)
         return await self.get_user(user_id)
 
 
@@ -3417,48 +3443,40 @@ class GalleryDatabase:
         """Lightweight operational checks used by the live site status panel.
 
         These checks avoid touching BLOB contents so the endpoint stays cheap.
+        All counts are gathered in a single round-trip.
         """
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute("SELECT CURRENT_TIMESTAMP AS db_time")
-                db_time = (await cur.fetchone() or {}).get("db_time")
-                await cur.execute("SELECT COUNT(*) AS n FROM users")
-                users = int((await cur.fetchone() or {}).get("n") or 0)
-                await cur.execute("SELECT COUNT(*) AS n FROM media_items")
-                media_total = int((await cur.fetchone() or {}).get("n") or 0)
-                await cur.execute("SELECT COUNT(*) AS n FROM media_items WHERE deleted_at IS NULL")
-                media_active = int((await cur.fetchone() or {}).get("n") or 0)
-                await cur.execute("SELECT COUNT(*) AS n FROM media_items WHERE deleted_at IS NOT NULL")
-                media_archived = int((await cur.fetchone() or {}).get("n") or 0)
-                await cur.execute("SELECT COUNT(*) AS n FROM media_files")
-                db_files = int((await cur.fetchone() or {}).get("n") or 0)
                 await cur.execute(
                     """
-                    SELECT COUNT(*) AS n FROM media_items
-                    WHERE deleted_at IS NULL AND (media_file_id IS NULL OR media_file_id=0)
+                    SELECT
+                        CURRENT_TIMESTAMP AS db_time,
+                        (SELECT COUNT(*) FROM users) AS users,
+                        (SELECT COUNT(*) FROM media_items) AS media_total,
+                        (SELECT COUNT(*) FROM media_items WHERE deleted_at IS NULL) AS media_active,
+                        (SELECT COUNT(*) FROM media_items WHERE deleted_at IS NOT NULL) AS media_archived,
+                        (SELECT COUNT(*) FROM media_files) AS db_files,
+                        (SELECT COUNT(*) FROM media_items
+                            WHERE deleted_at IS NULL AND (media_file_id IS NULL OR media_file_id=0)) AS missing_db_files,
+                        (SELECT COUNT(*) FROM media_items WHERE visibility='private' AND deleted_at IS NULL) AS private_posts,
+                        (SELECT COUNT(*) FROM media_items WHERE comments_enabled=0 AND deleted_at IS NULL) AS comments_disabled,
+                        (SELECT COUNT(*) FROM media_items WHERE downloads_enabled=0 AND deleted_at IS NULL) AS downloads_disabled,
+                        (SELECT COUNT(*) FROM media_reports WHERE status='open') AS open_reports
                     """
                 )
-                missing_db_files = int((await cur.fetchone() or {}).get("n") or 0)
-                await cur.execute("SELECT COUNT(*) AS n FROM media_items WHERE visibility='private' AND deleted_at IS NULL")
-                private_posts = int((await cur.fetchone() or {}).get("n") or 0)
-                await cur.execute("SELECT COUNT(*) AS n FROM media_items WHERE comments_enabled=0 AND deleted_at IS NULL")
-                comments_disabled = int((await cur.fetchone() or {}).get("n") or 0)
-                await cur.execute("SELECT COUNT(*) AS n FROM media_items WHERE downloads_enabled=0 AND deleted_at IS NULL")
-                downloads_disabled = int((await cur.fetchone() or {}).get("n") or 0)
-                await cur.execute("SELECT COUNT(*) AS n FROM media_reports WHERE status='open'")
-                open_reports = int((await cur.fetchone() or {}).get("n") or 0)
+                row = (await cur.fetchone()) or {}
                 return {
-                    "db_time": db_time,
-                    "users": users,
-                    "media_total": media_total,
-                    "media_active": media_active,
-                    "media_archived": media_archived,
-                    "db_files": db_files,
-                    "missing_db_files": missing_db_files,
-                    "private_posts": private_posts,
-                    "comments_disabled": comments_disabled,
-                    "downloads_disabled": downloads_disabled,
-                    "open_reports": open_reports,
+                    "db_time": row.get("db_time"),
+                    "users": int(row.get("users") or 0),
+                    "media_total": int(row.get("media_total") or 0),
+                    "media_active": int(row.get("media_active") or 0),
+                    "media_archived": int(row.get("media_archived") or 0),
+                    "db_files": int(row.get("db_files") or 0),
+                    "missing_db_files": int(row.get("missing_db_files") or 0),
+                    "private_posts": int(row.get("private_posts") or 0),
+                    "comments_disabled": int(row.get("comments_disabled") or 0),
+                    "downloads_disabled": int(row.get("downloads_disabled") or 0),
+                    "open_reports": int(row.get("open_reports") or 0),
                 }
 
     def _decode_media(self, row: dict[str, Any]) -> dict[str, Any]:

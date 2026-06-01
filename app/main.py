@@ -2317,7 +2317,6 @@ async def browser_origin_and_headers(request: Request, call_next):
     try:
         if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
             _ensure_allowed_browser_origin(request)
-        await _touch_request_presence(request)
         response = await call_next(request)
     except HTTPException as exc:
         response = Response(content=str(exc.detail or "Request blocked"), status_code=exc.status_code, media_type="text/plain")
@@ -2325,6 +2324,8 @@ async def browser_origin_and_headers(request: Request, call_next):
     response.headers.setdefault("X-Response-Time-ms", f"{elapsed_ms:.2f}")
     response.headers.setdefault("Server-Timing", f"app;dur={elapsed_ms:.2f}")
     _security_headers(request, response)
+    # Fire presence touch after response is returned so it never blocks the client.
+    asyncio.ensure_future(_touch_request_presence(request))
     return response
 
 
