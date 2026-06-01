@@ -1796,42 +1796,179 @@ def _telegram_command_parts(text: str) -> tuple[str, str]:
     return first.split("@", 1)[0].lower(), rest.strip()
 
 
+def _fmt_bytes(n: int) -> str:
+    """Human-readable byte size."""
+    n = int(n or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return f"{n} {unit}"
+        n //= 1024
+    return f"{n} TB"
+
+
 def _format_gallery_stats(stats_payload: dict[str, Any]) -> str:
     stats = stats_payload or {}
+    storage_bytes = int(stats.get("bytes") or 0)
     return (
-        "Image Gallery status\n"
-        f"Users: {int(stats.get('users') or 0)}\n"
+        "Image Gallery — Stats\n"
+        f"Users:      {int(stats.get('users') or 0)}\n"
         f"Categories: {int(stats.get('categories') or 0)}\n"
-        f"Media: {int(stats.get('media') or 0)}\n"
-        f"Storage: {int(stats.get('bytes') or 0) // (1024 * 1024)} MB\n"
-        f"Likes: {int(stats.get('likes') or 0)}"
+        f"Media:      {int(stats.get('media') or 0)}\n"
+        f"Storage:    {_fmt_bytes(storage_bytes)}\n"
+        f"Likes:      {int(stats.get('likes') or 0)}"
     )
+
+
+def _format_gallery_health(checks: dict[str, Any]) -> str:
+    checks = checks or {}
+    db_time = checks.get("db_time")
+    db_time_str = str(db_time)[:19] if db_time else "unknown"
+    open_reports = int(checks.get("open_reports") or 0)
+    missing_files = int(checks.get("missing_db_files") or 0)
+    lines = [
+        "Image Gallery — Health",
+        f"DB time:        {db_time_str}",
+        f"Users:          {int(checks.get('users') or 0)}",
+        f"Media active:   {int(checks.get('media_active') or 0)}",
+        f"Media archived: {int(checks.get('media_archived') or 0)}",
+        f"DB files:       {int(checks.get('db_files') or 0)}",
+    ]
+    if missing_files:
+        lines.append(f"Missing files:  {missing_files}  ← WARNING")
+    else:
+        lines.append("Missing files:  0  OK")
+    lines.append(f"Private posts:  {int(checks.get('private_posts') or 0)}")
+    if open_reports:
+        lines.append(f"Open reports:   {open_reports}  ← ACTION NEEDED")
+    else:
+        lines.append("Open reports:   0")
+    return "\n".join(lines)
 
 
 async def _handle_telegram_command(message: dict[str, Any]) -> str:
     command, _rest = _telegram_command_parts(str(message.get("text") or ""))
+
+    # ---- /start  /help -------------------------------------------------------
     if command in {"/start", "/help", "help"}:
+        owner_note = ""
+        if not settings.telegram_allowed_chat_ids:
+            owner_note = (
+                "\n\nNOTE: No GALLERY_TELEGRAM_ALLOWED_CHAT_IDS set — "
+                "all chats can reach this bot. Use /id to find your chat id "
+                "and set it in the .env file to restrict access."
+            )
         return (
-            "Image Gallery Telegram bridge is online.\n"
-            "Commands: /status, /stats, /recent, /id"
+            "Image Gallery Telegram control panel\n\n"
+            "/status   — Gallery stats (users, media, storage)\n"
+            "/health   — Database & file integrity check\n"
+            "/storage  — Detailed storage breakdown\n"
+            "/recent   — Last 5 public uploads\n"
+            "/users    — Recent user registrations\n"
+            "/ai       — AI / vision pipeline status\n"
+            "/id       — Show this chat's Telegram ID\n"
+            "/help     — Show this message"
+            + owner_note
         )
+
+    # ---- /id -----------------------------------------------------------------
     if command == "/id":
-        return f"Telegram chat id: {message.get('chat_id')}"
+        chat_id = message.get("chat_id")
+        allowlisted = chat_id in settings.telegram_allowed_chat_ids if settings.telegram_allowed_chat_ids else None
+        note = ""
+        if allowlisted is True:
+            note = "  (allowlisted)"
+        elif allowlisted is False:
+            note = "  (NOT in GALLERY_TELEGRAM_ALLOWED_CHAT_IDS)"
+        elif allowlisted is None:
+            note = "  (no allowlist set — add this id to GALLERY_TELEGRAM_ALLOWED_CHAT_IDS)"
+        return f"Your Telegram chat id: {chat_id}{note}"
+
+    # ---- /status  /stats -----------------------------------------------------
     if command in {"/status", "status", "/stats", "stats"}:
         stats_payload = await db.stats()
         return _format_gallery_stats(stats_payload)
+
+    # ---- /health -------------------------------------------------------------
+    if command in {"/health", "health"}:
+        try:
+            checks = await db.site_checks()
+            return _format_gallery_health(checks)
+        except Exception as exc:
+            return f"Health check failed: {str(exc)[:300]}"
+
+    # ---- /storage ------------------------------------------------------------
+    if command in {"/storage", "storage"}:
+        try:
+            stats_payload = await db.stats()
+            checks = await db.site_checks()
+            storage_bytes = int(stats_payload.get("bytes") or 0)
+            db_files = int(checks.get("db_files") or 0)
+            media_count = int(stats_payload.get("media") or 0)
+            avg_bytes = storage_bytes // max(1, media_count)
+            max_upload = int(settings.max_upload_bytes or 0)
+            backend = str(getattr(settings, "storage_backend", "database"))
+            lines = [
+                "Image Gallery — Storage",
+                f"Backend:       {backend}",
+                f"Total stored:  {_fmt_bytes(storage_bytes)}",
+                f"DB file rows:  {db_files}",
+                f"Media items:   {media_count}",
+                f"Avg per item:  {_fmt_bytes(avg_bytes)}",
+                f"Max upload:    {_fmt_bytes(max_upload)}",
+            ]
+            return "\n".join(lines)
+        except Exception as exc:
+            return f"Storage info failed: {str(exc)[:300]}"
+
+    # ---- /recent -------------------------------------------------------------
     if command in {"/recent", "recent"}:
         items = await db.list_media(viewer_id=None, sort="new", limit=5, offset=0)
         if not items:
             return "No public gallery posts found."
-        lines = ["Recent public gallery posts"]
+        lines = ["Image Gallery — Recent uploads"]
         for item in items:
             title = item.get("title") or "Untitled"
             kind = item.get("media_kind") or "media"
             user = item.get("display_name") or item.get("username") or "unknown"
-            lines.append(f"- {title} ({kind}) by {user}")
+            ts = str(item.get("created_at") or "")[:10]
+            lines.append(f"- [{ts}] {title} ({kind}) by {user}")
         return "\n".join(lines)
-    return "Unknown command. Use /help for Image Gallery Telegram commands."
+
+    # ---- /users --------------------------------------------------------------
+    if command in {"/users", "users"}:
+        try:
+            checks = await db.site_checks()
+            total_users = int(checks.get("users") or 0)
+            # Fetch recent users via stats (no dedicated list endpoint, use site_checks)
+            stats_payload = await db.stats()
+            return (
+                "Image Gallery — Users\n"
+                f"Total registered: {total_users}\n"
+                f"(Use the web panel at {settings.pages_public_url} to manage users)"
+            )
+        except Exception as exc:
+            return f"User info failed: {str(exc)[:300]}"
+
+    # ---- /ai -----------------------------------------------------------------
+    if command in {"/ai", "ai"}:
+        try:
+            ai_enabled = bool(getattr(settings, "ai_enabled", False))
+            ai_provider = str(getattr(settings, "ai_provider", "none"))
+            ai_model = str(getattr(settings, "active_ai_model", "") or getattr(settings, "ai_model", ""))
+            bg_enabled = bool(getattr(settings, "ai_background_learning_enabled", False))
+            bg_interval = int(getattr(settings, "ai_background_learning_interval_seconds", 0))
+            lines = [
+                "Image Gallery — AI / Vision",
+                f"AI enabled:     {'yes' if ai_enabled else 'no'}",
+                f"Provider:       {ai_provider}",
+                f"Model:          {ai_model or 'default'}",
+                f"Background:     {'on' if bg_enabled else 'off'} (every {bg_interval}s)",
+            ]
+            return "\n".join(lines)
+        except Exception as exc:
+            return f"AI info failed: {str(exc)[:300]}"
+
+    return "Unknown command. Use /help to see available Image Gallery commands."
 
 
 TELEGRAM_HEALTH_INTERVAL_SECONDS = max(60.0, float(os.getenv("GALLERY_TELEGRAM_HEALTH_INTERVAL_SECONDS", "300") or "300"))
@@ -1839,15 +1976,36 @@ TELEGRAM_ALERT_COOLDOWN_SECONDS = max(300.0, float(os.getenv("GALLERY_TELEGRAM_A
 _telegram_alert_last: dict[str, float] = {}
 
 
+def _telegram_alert_recipients() -> set[int]:
+    """Return the set of chat ids that should receive proactive alerts.
+
+    Priority:
+    1. The explicit allowlist (GALLERY_TELEGRAM_ALLOWED_CHAT_IDS) if set.
+    2. The single owner chat id (GALLERY_TELEGRAM_OWNER_CHAT_ID) as a fallback.
+
+    If neither is configured alerts are silently dropped — the bot has no
+    known destination to push messages to.
+    """
+    if settings.telegram_allowed_chat_ids:
+        return set(settings.telegram_allowed_chat_ids)
+    owner = getattr(settings, "telegram_owner_chat_id", None)
+    if owner:
+        return {int(owner)}
+    return set()
+
+
 async def _send_telegram_alert(key: str, title: str, detail: str) -> None:
-    if not telegram_service or not settings.telegram_allowed_chat_ids:
+    if not telegram_service:
+        return
+    recipients = _telegram_alert_recipients()
+    if not recipients:
         return
     now = time.monotonic()
     if now - _telegram_alert_last.get(key, 0.0) < TELEGRAM_ALERT_COOLDOWN_SECONDS:
         return
     _telegram_alert_last[key] = now
     message = f"{title}\n{str(detail or '').strip()[:1200]}"
-    for chat_id in sorted(settings.telegram_allowed_chat_ids):
+    for chat_id in sorted(recipients):
         try:
             await telegram_service.send_message(chat_id, message)
         except Exception:
@@ -2026,10 +2184,13 @@ async def lifespan(app: FastAPI):
         handler=_handle_telegram_command,
         allowed_chat_ids=settings.telegram_allowed_chat_ids,
         commands=[
-            ("status", "Show Image Gallery status"),
-            ("stats", "Show gallery counts"),
-            ("recent", "List recent public posts"),
-            ("id", "Show this Telegram chat id"),
+            ("status", "Gallery stats (users, media, storage)"),
+            ("health", "Database & file integrity check"),
+            ("storage", "Detailed storage breakdown"),
+            ("recent", "Last 5 public uploads"),
+            ("users", "User registration stats"),
+            ("ai", "AI / vision pipeline status"),
+            ("id", "Show this chat's Telegram ID"),
             ("help", "Show available commands"),
         ],
     )

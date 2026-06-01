@@ -145,6 +145,7 @@ class Settings:
     ai_background_learning_min_training_tags: int
     telegram_bot_token: str
     telegram_allowed_chat_ids: set[int]
+    telegram_owner_chat_id: int | None
     telegram_polling_enabled: bool
 
     @property
@@ -227,5 +228,6 @@ def load_settings() -> Settings:
         ai_background_learning_min_training_tags=max(1, min(24, int(_env("GALLERY_AI_BACKGROUND_LEARNING_MIN_TRAINING_TAGS", "3")))),
         telegram_bot_token=_env("GALLERY_TELEGRAM_BOT_TOKEN") or _env("TELEGRAM_BOT_TOKEN"),
         telegram_allowed_chat_ids=_env_int_set("GALLERY_TELEGRAM_ALLOWED_CHAT_IDS") or _env_int_set("TELEGRAM_ALLOWED_CHAT_IDS"),
+        telegram_owner_chat_id=next(iter(_env_int_set("GALLERY_TELEGRAM_OWNER_CHAT_ID") or _env_int_set("TELEGRAM_OWNER_CHAT_ID")), None),
         telegram_polling_enabled=_env_bool("GALLERY_TELEGRAM_POLLING_ENABLED", bool(_env("GALLERY_TELEGRAM_BOT_TOKEN") or _env("TELEGRAM_BOT_TOKEN"))),
     )
