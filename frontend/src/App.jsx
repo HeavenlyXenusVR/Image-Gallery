@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
-import { apiFetch, cachedApiFetch, clearApiCache, prefetchApi, readStoredUser, readToken, resolveApiUrl, toQuery, writeStoredUser, writeToken } from "./api.js";
+import { apiFetch, cachedApiFetch, clearApiCache, forceRefreshRemoteOrigin, prefetchApi, readStoredUser, readToken, resolveApiUrl, toQuery, writeStoredUser, writeToken } from "./api.js";
 import { Shell } from "./components/Shell.jsx";
 import { NotFound } from "./components/ui.jsx";
 import { DEFAULT_SETTINGS, PAGE_SIZE, setRuntimeMaxUploadBytes } from "./config.js";
@@ -100,6 +100,10 @@ function App() {
         cachedApiFetch("/api/live/checks", { ttl: 30_000, staleTtl: 5 * 60_000 }),
       ]);
       if (live.status === "fulfilled") setRuntimeMaxUploadBytes(live.value?.max_upload_bytes);
+      // When the live-checks call fails (tunnel down / backend restart), force the
+      // remote-origin cache to expire so the very next API request re-reads
+      // live-config.json and picks up the rotated tunnel URL immediately.
+      if (live.status === "rejected") forceRefreshRemoteOrigin();
       setLookups({
         categories: categories.status === "fulfilled" ? categories.value.categories || [] : [],
         tags: tags.status === "fulfilled" ? tags.value.tags || [] : [],

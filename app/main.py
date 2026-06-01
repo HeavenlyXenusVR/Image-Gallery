@@ -2168,10 +2168,36 @@ async def _video_thumb_warm_loop() -> None:
             await asyncio.sleep(2.0)
 
 
+_LIVE_CONFIG_PATH = ROOT_DIR / "live-config.json"
+
+
+def _touch_live_config() -> None:
+    """Refresh the updated_at timestamp in live-config.json on startup.
+
+    If the file already has a non-empty gallery_url (tunnel is up), we
+    re-write it with the current timestamp so the frontend knows the backend
+    is alive and its cached URL is still valid.  If gallery_url is empty we
+    leave the file alone — the tunnel script is responsible for updating it.
+    """
+    try:
+        if not _LIVE_CONFIG_PATH.exists():
+            return
+        raw = _LIVE_CONFIG_PATH.read_text(encoding="utf-8")
+        config = json.loads(raw)
+        if not config.get("gallery_url"):
+            return
+        config["updated_at"] = datetime.now(timezone.utc).astimezone().isoformat()
+        _LIVE_CONFIG_PATH.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        logger.info("live-config.json updated_at refreshed on startup.")
+    except Exception as exc:
+        logger.warning("Could not refresh live-config.json on startup: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global telegram_service
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
+    _touch_live_config()
     await db.connect()
     migration_task = asyncio.create_task(_auto_migrate_legacy_uploads())
     health_task = asyncio.create_task(_telegram_health_watch_loop())
@@ -4160,3 +4186,37 @@ async def api_site_background_options_compat():
 @app.options("/api/live/checks")
 async def api_live_checks_options_compat():
     return {}
+
+
+@app.get("/api/live/config", include_in_schema=False)
+async def live_config_json() -> Response:
+    """Serve live-config.json directly from the backend.
+
+    This allows the frontend to verify that the backend is reachable and to
+    read the current public tunnel URL without relying on GitHub Pages CDN
+    caching.  The response is intentionally not cached so every hit reflects
+    the latest state.
+    """
+    try:
+        if _LIVE_CONFIG_PATH.exists():
+            raw = _LIVE_CONFIG_PATH.read_text(encoding="utf-8")
+            json.loads(raw)  # Validate — raise if malformed.
+            return Response(
+                content=raw,
+                media_type="application/json",
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+            )
+    except Exception:
+        pass
+    # Fallback: synthesise a minimal live config from what we know.
+    config = {
+        "gallery_url": "",
+        "status": "live",
+        "local_urls": [],
+        "updated_at": datetime.now(timezone.utc).astimezone().isoformat(),
+    }
+    return Response(
+        content=json.dumps(config),
+        media_type="application/json",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )

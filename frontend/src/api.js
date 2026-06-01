@@ -10,12 +10,17 @@ const REMOTE_ORIGIN_TTL = 20_000;
 const REMOTE_ORIGIN_STALE_TTL = 3 * 60_000;
 const API_FETCH_TIMEOUT_MS = 25_000;
 const REMOTE_CONFIG_TIMEOUT_MS = 8_000;
+// How often to re-check live-config.json while the backend is known offline.
+const REMOTE_ORIGIN_RECOVERY_POLL_MS = 5_000;
 
 const memoryCache = new Map();
 const inFlightFetches = new Map();
 let remoteOriginPromise = null;
 let remoteOriginRefreshAfter = 0;
 let remoteConfig = null;
+// Timestamp of when the backend was last seen offline (via live-config status
+// field or via network failure).  Used to switch to fast-poll mode.
+let remoteOriginOfflineSince = 0;
 
 export function readToken() {
   try {
@@ -212,11 +217,27 @@ export function forceRefreshRemoteOrigin() {
 }
 
 let _pollTimer = null;
+let _pollFast = false;
+
 export function startRemoteOriginPolling() {
   if (_pollTimer !== null || typeof window === "undefined" || !isRemoteStaticHost()) return;
-  _pollTimer = window.setInterval(() => {
-    loadRemoteOrigin({ force: true }).catch(() => {});
-  }, 20_000);
+
+  const runPoll = () => {
+    _pollTimer = null;
+    loadRemoteOrigin({ force: true })
+      .catch(() => {})
+      .finally(() => {
+        // Use a faster interval while the backend is known offline so recovery
+        // is detected within ~5 s instead of the normal 20 s cadence.
+        const isOffline = remoteOriginOfflineSince > 0;
+        const interval = isOffline ? REMOTE_ORIGIN_RECOVERY_POLL_MS : REMOTE_ORIGIN_TTL;
+        _pollFast = isOffline;
+        _pollTimer = window.setTimeout(runPoll, interval);
+      });
+  };
+
+  _pollFast = false;
+  _pollTimer = window.setTimeout(runPoll, REMOTE_ORIGIN_TTL);
 }
 
 async function loadRemoteOrigin({ force = false } = {}) {
@@ -232,13 +253,38 @@ async function loadRemoteOrigin({ force = false } = {}) {
     const config = parseRemoteConfig(text);
     const origin = validApiOrigin(config.gallery_url || config.api_url);
     if (origin) {
+      // Backend is live — clear the offline marker.
+      remoteOriginOfflineSince = 0;
       const entry = { origin, localUrls: normalizeLocalUrls(config.local_urls), updatedAt: Date.now() };
       applyRemoteOrigin(entry);
       writeRemoteOriginCache(entry);
       return origin;
     }
+    // gallery_url is empty: the tunnel script has written an offline config
+    // (status: "offline").  Keep the stale cached URL alive so in-flight
+    // requests can still fall back to it while the new tunnel URL is being
+    // negotiated — only drop it once the stale TTL has expired.
     remoteConfig = config || null;
+    if (!remoteOriginOfflineSince) remoteOriginOfflineSince = Date.now();
+    if (cached?.origin && (!cached.updatedAt || Date.now() - cached.updatedAt < REMOTE_ORIGIN_STALE_TTL)) {
+      // Also try to fetch live-config from the stale backend origin itself —
+      // if the backend is still up (e.g., tunnel rotated but the old URL still
+      // briefly works, or a named tunnel with stable URL restarted) we can get
+      // the freshest config directly without waiting for the git push.
+      const backendOrigin = await fetchLiveConfigFromBackend(cached.origin);
+      if (backendOrigin && backendOrigin !== cached.origin) {
+        remoteOriginOfflineSince = 0;
+        const freshEntry = { origin: backendOrigin, localUrls: normalizeLocalUrls(config.local_urls), updatedAt: Date.now() };
+        applyRemoteOrigin(freshEntry);
+        writeRemoteOriginCache(freshEntry);
+        return backendOrigin;
+      }
+      applyRemoteOrigin(cached);
+      return cached.origin;
+    }
   } catch (_error) {
+    // Network error fetching live-config.json itself (e.g., GitHub Pages down).
+    // Fall back to the stale cache without marking offline.
     if (cached?.origin && (!cached.updatedAt || Date.now() - cached.updatedAt < REMOTE_ORIGIN_STALE_TTL)) {
       applyRemoteOrigin(cached);
       return cached.origin;
@@ -246,6 +292,25 @@ async function loadRemoteOrigin({ force = false } = {}) {
   }
   clearRemoteOriginCache();
   return "";
+}
+
+/**
+ * Ask the backend itself for the latest live-config via /api/live/config.
+ * Returns the new gallery_url origin if it differs from the one we asked, or
+ * "" if the backend is unreachable or returns the same/empty URL.
+ */
+async function fetchLiveConfigFromBackend(backendOrigin) {
+  if (!backendOrigin) return "";
+  try {
+    const url = `${backendOrigin}/api/live/config?t=${Date.now()}`;
+    const response = await fetchWithTimeout(url, { cache: "no-store", credentials: "omit" }, REMOTE_CONFIG_TIMEOUT_MS);
+    if (!response.ok) return "";
+    const text = await response.text();
+    const config = parseRemoteConfig(text);
+    return validApiOrigin(config.gallery_url || config.api_url);
+  } catch (_error) {
+    return "";
+  }
 }
 
 async function fetchWithRemoteRetry(path, options, headers) {
@@ -261,8 +326,10 @@ async function fetchWithRemoteRetry(path, options, headers) {
     }
     return response;
   } catch (error) {
-    // Network-level error — re-fetch live-config.json to pick up a rotated
-    // Cloudflare tunnel URL, then retry up to twice with increasing delay.
+    // Network-level error — mark the backend as offline so the adaptive poller
+    // switches to fast mode (5 s), then re-fetch live-config.json to pick up a
+    // rotated Cloudflare tunnel URL and retry up to twice with increasing delay.
+    if (isRemoteStaticHost() && !remoteOriginOfflineSince) remoteOriginOfflineSince = Date.now();
     const retryTarget = await retryTargetFor(path, target, options);
     if (retryTarget && retryTarget !== target) {
       try {
