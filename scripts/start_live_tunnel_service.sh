@@ -19,7 +19,13 @@ PUSH_OFFLINE_CONFIG="${GALLERY_PUSH_OFFLINE_CONFIG:-0}"
 CONFIG_PUSH_COOLDOWN_SECONDS="${GALLERY_CONFIG_PUSH_COOLDOWN_SECONDS:-120}"
 LAST_PUSH_FILE="${LOG_DIR}/last-live-config-push"
 ALLOW_FALLBACK_BACKEND="${GALLERY_SERVICE_START_BACKEND_IF_MISSING:-0}"
-TUNNEL_PROVIDER="${GALLERY_TUNNEL_PROVIDER:-cloudflare}"
+TUNNEL_PROVIDER="${GALLERY_TUNNEL_PROVIDER:-$(read_env_value GALLERY_TUNNEL_PROVIDER)}"
+TUNNEL_PROVIDER="${TUNNEL_PROVIDER:-auto}"
+NGROK_STATIC_DOMAIN="${GALLERY_NGROK_DOMAIN:-$(read_env_value GALLERY_NGROK_DOMAIN)}"
+NGROK_CONFIG_FILE="${GALLERY_NGROK_CONFIG:-$(read_env_value GALLERY_NGROK_CONFIG)}"
+if [[ -n "${NGROK_CONFIG_FILE}" && ! "${NGROK_CONFIG_FILE}" = /* ]]; then
+  NGROK_CONFIG_FILE="${ROOT_DIR}/${NGROK_CONFIG_FILE}"
+fi
 PAGES_ORIGIN="${GALLERY_PAGES_ORIGIN:-https://heavenlyxenusvr.github.io}"
 PAGES_URL="${GALLERY_PAGES_PUBLIC_URL:-https://heavenlyxenusvr.github.io/Image-Gallery/}"
 MAX_TUNNEL_START_ATTEMPTS="${GALLERY_MAX_TUNNEL_START_ATTEMPTS:-12}"
@@ -228,6 +234,70 @@ install_python_deps() {
   fi
   "${VENV_DIR}/bin/python" -m pip install --upgrade pip
   "${VENV_DIR}/bin/python" -m pip install -r "${ROOT_DIR}/requirements.txt"
+}
+
+
+ngrok_bin() {
+  for candidate in "${HOME}/.local/bin/ngrok" "${BIN_DIR}/ngrok"; do
+    if [[ -x "${candidate}" ]]; then echo "${candidate}"; return; fi
+  done
+  if command -v ngrok >/dev/null 2>&1; then command -v ngrok; return; fi
+  echo ""
+}
+
+start_ngrok_tunnel() {
+  local bin health_path="$1"
+  bin="$(ngrok_bin)"
+  if [[ -z "${bin}" ]]; then
+    echo "ngrok binary not found; falling through to Cloudflare." >&2; return 1
+  fi
+  local cfg_flag=()
+  if [[ -n "${NGROK_CONFIG_FILE}" && -f "${NGROK_CONFIG_FILE}" ]]; then
+    cfg_flag=("--config=${NGROK_CONFIG_FILE}")
+  fi
+  local ngrok_log="${LOG_DIR}/ngrok.log"
+  : > "${ngrok_log}"
+  if [[ -n "${NGROK_STATIC_DOMAIN}" ]]; then
+    echo "Opening ngrok tunnel on static domain ${NGROK_STATIC_DOMAIN}..."
+    "${bin}" http "${cfg_flag[@]}" "--domain=${NGROK_STATIC_DOMAIN}" --log=stdout --log-format=json "${PORT}" >"${ngrok_log}" 2>&1 &
+  else
+    echo "Opening ngrok tunnel (random URL — set NGROK_DOMAIN for a stable URL)..."
+    "${bin}" http "${cfg_flag[@]}" --log=stdout --log-format=json "${PORT}" >"${ngrok_log}" 2>&1 &
+  fi
+  TUNNEL_PID="$!"
+  local tunnel_url=""
+  for _ in {1..80}; do
+    if ! kill -0 "${TUNNEL_PID}" >/dev/null 2>&1; then
+      echo "ngrok exited early. Last log:" >&2; tail -20 "${ngrok_log}" >&2 || true; return 1
+    fi
+    tunnel_url="$(python3 -c "
+import json
+for line in open('${ngrok_log}'):
+    try:
+        d=json.loads(line)
+        if d.get('url','').startswith('https://'): print(d['url']); break
+    except: pass
+" 2>/dev/null || true)"
+    if [[ -n "${tunnel_url}" ]]; then
+      echo "Waiting for ${tunnel_url} to answer..."
+      for ((r=1; r<=60; r++)); do
+        if curl -fsS --max-time 8 "${tunnel_url}${health_path}" >/dev/null 2>&1; then break; fi
+        if ! kill -0 "${TUNNEL_PID}" >/dev/null 2>&1; then break; fi
+        sleep 1
+      done
+      if ! curl -fsS --max-time 8 "${tunnel_url}${health_path}" >/dev/null 2>&1; then
+        echo "ngrok URL never became reachable." >&2; tail -20 "${ngrok_log}" >&2 || true; return 1
+      fi
+      announce_live_url "${tunnel_url}"
+      echo "ngrok tunnel is live. Waiting (systemd will restart on exit)..."
+      wait "${TUNNEL_PID}"
+      local rc=$?
+      TUNNEL_PID=""
+      return ${rc}
+    fi
+    sleep 0.5
+  done
+  echo "Timed out waiting for ngrok URL." >&2; tail -20 "${ngrok_log}" >&2 || true; return 1
 }
 
 cloudflared_bin() {
@@ -516,6 +586,13 @@ fi
 # Write offline config locally before acquiring the public URL so the frontend
 # does not keep hitting a stale URL while a new tunnel is being negotiated.
 write_offline_config
+
+# ── ngrok: static domain, no reconnect loop needed (systemd restarts on exit) ──
+if [[ "${TUNNEL_PROVIDER}" == "ngrok" ]] || \
+   [[ "${TUNNEL_PROVIDER}" == "auto" && -n "${NGROK_STATIC_DOMAIN}" ]]; then
+  start_ngrok_tunnel "/api/health" && exit 0 || true
+  echo "ngrok tunnel failed; falling through to Cloudflare." >&2
+fi
 
 if [[ "${TUNNEL_PROVIDER}" == "cloudflare" || "${TUNNEL_PROVIDER}" == "auto" ]]; then
   # --- Named tunnel: stable URL, reconnect loop on drops ---
