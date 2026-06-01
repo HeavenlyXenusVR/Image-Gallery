@@ -3667,6 +3667,135 @@ def _needs_video_transcode(mime_type: str | None) -> bool:
     return mime_type.startswith("video/") and mime_type.lower() not in _BROWSER_SAFE_VIDEO_MIME
 
 
+def _stdin_transcode_compatible(header: bytes) -> bool:
+    """Return True when the file's container can be demuxed from non-seekable stdin.
+
+    * WebM/MKV: starts with EBML magic (0x1A 0x45 0xDF 0xA3) — always streamable.
+    * MP4/MOV/M4V: first box is 'ftyp' or 'moov' — fast-start layout, seekable
+      from the start.  Files whose first box is 'mdat' have moov at the end and
+      require a seekable (file-backed) input.
+    """
+    if len(header) < 4:
+        return False
+    if header[:4] == b"\x1a\x45\xdf\xa3":
+        return True
+    if len(header) >= 8 and header[4:8] in (b"ftyp", b"moov"):
+        return True
+    return False
+
+
+async def _stdin_transcode_and_cache(
+    file_id: int,
+    cache_file: Path,
+    profile: dict[str, Any],
+    stream_key: tuple[int, str],
+):
+    """Transcode a DB-backed video by piping chunks directly to ffmpeg stdin.
+
+    Sending ffmpeg input via stdin means the transcode starts immediately with
+    no temp-file round-trip.  ffmpeg produces its first output chunk within a
+    few seconds (after the first keyframe interval), so HTTP response headers
+    and the first video bytes reach the browser almost immediately.
+
+    Only call this for containers that don't require random-access seeking
+    (WebM, MKV, fast-start MP4).  Use _db_backed_transcode_and_cache for the
+    router that detects the right path automatically.
+    """
+    scale_filter = f"scale='min({int(profile['max_width'])},iw)':-2:flags=lanczos"
+    command = [
+        FFMPEG_BIN,
+        "-y", "-hide_banner", "-loglevel", "error",
+        "-i", "pipe:0",
+        "-map", "0:v:0", "-map", "0:a:0?",
+        "-vf", scale_filter,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", str(int(profile["crf"])),
+        "-profile:v", str(profile.get("profile") or "high"),
+        "-level", "4.1",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", str(profile["audio_bitrate"]),
+        "-movflags", "frag_keyframe+default_base_moof",
+        "-f", "mp4", "pipe:1",
+    ]
+    cache_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp_cache = cache_file.with_suffix(".stream.tmp")
+    try:
+        tmp_cache.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    stderr_task: asyncio.Task | None = None
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stderr_task = asyncio.create_task(process.stderr.read(8192))
+
+    async def _feed_stdin() -> None:
+        try:
+            async for chunk in db.stream_media_file_content(file_id):
+                try:
+                    process.stdin.write(chunk)
+                    await process.stdin.drain()
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+        except Exception:
+            logger.debug("stdin feed interrupted for stream_key=%s", stream_key, exc_info=True)
+        finally:
+            try:
+                process.stdin.close()
+            except Exception:
+                pass
+
+    stdin_task = asyncio.create_task(_feed_stdin())
+    succeeded = False
+    try:
+        with open(tmp_cache, "wb") as fh:
+            while True:
+                chunk = await process.stdout.read(65536)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                yield chunk
+        await process.wait()
+        succeeded = process.returncode == 0
+        if succeeded:
+            tmp_cache.replace(cache_file)
+        else:
+            if stderr_task.done():
+                err = stderr_task.result()
+            else:
+                err = b""
+            logger.error(
+                "stdin transcode rc=%s cache_file=%s: %s",
+                process.returncode,
+                cache_file,
+                err.decode(errors="replace")[-400:],
+            )
+    except Exception:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except Exception:
+                pass
+        logger.exception("stdin transcode stream interrupted cache_file=%s", cache_file)
+        raise
+    finally:
+        stdin_task.cancel()
+        _video_active_streams.discard(stream_key)
+        if not succeeded:
+            try:
+                tmp_cache.unlink(missing_ok=True)
+            except Exception:
+                pass
+        if stderr_task is not None and not stderr_task.done():
+            stderr_task.cancel()
+
+
 async def _db_backed_transcode_and_cache(
     file_id: int,
     original_filename: str,
@@ -3674,13 +3803,27 @@ async def _db_backed_transcode_and_cache(
     profile: dict[str, Any],
     stream_key: tuple[int, str],
 ):
+    """Router for DB-backed live transcodes.
+
+    Probes the first 8 bytes of the source file to decide the transcode path:
+
+    * Fast-start MP4 / MOV (moov/ftyp at offset 4) and WebM/MKV (EBML magic):
+      Use stdin piping.  ffmpeg starts immediately and yields the first fragment
+      within ~2 s, so TTFB is fast and the browser shows a responsive buffering
+      state.
+
+    * All other layouts (moov-at-end MP4, unknown containers):
+      Fall back to writing a temp file first, then running ffmpeg.  TTFB is
+      slower (full DB read + disk write before first output byte) but the
+      connection stays alive and the browser eventually plays the video.
     """
-    Generator for DB-backed live transcodes.  Runs the full pipeline (DB read →
-    temp file → ffmpeg) inside the response generator so HTTP headers are sent to
-    the browser immediately.  The browser shows a buffering indicator while the
-    source file is written and ffmpeg warms up, rather than seeing a connection
-    timeout because no headers arrived for 15-30 s.
-    """
+    header = await db.get_file_header_bytes(file_id, size=8)
+    if _stdin_transcode_compatible(header):
+        async for data in _stdin_transcode_and_cache(file_id, cache_file, profile, stream_key):
+            yield data
+        return
+
+    # Temp-file fallback for moov-at-end and unknown containers.
     tmp_dir_obj: tempfile.TemporaryDirectory | None = None
     entered_stream_transcode = False
     try:

@@ -1538,6 +1538,28 @@ class GalleryDatabase:
                 row = await cur.fetchone()
                 return dict(row) if row else None
 
+    async def get_file_header_bytes(self, file_id: int, size: int = 16) -> bytes:
+        """Return the first `size` bytes of a DB-backed file by its media_files.id.
+
+        Used for cheap container-format detection (e.g. moov-at-start MP4 probe)
+        without loading the full file content.
+        """
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT SUBSTRING(content, 1, %s) AS prefix, OCTET_LENGTH(content) AS inline_size FROM media_files WHERE id=%s",
+                    (size, file_id),
+                )
+                row = await cur.fetchone() or {}
+                if int(row.get("inline_size") or 0) > 0:
+                    return bytes(row.get("prefix") or b"")
+                await cur.execute(
+                    "SELECT SUBSTRING(content, 1, %s) AS prefix FROM media_file_chunks WHERE file_id=%s ORDER BY chunk_index ASC LIMIT 1",
+                    (size, file_id),
+                )
+                row = await cur.fetchone() or {}
+                return bytes(row.get("prefix") or b"")
+
     async def get_media_file_prefix(self, media_id: int, limit: int = 1048576) -> bytes:
         """Read only the first bytes needed for cheap dimension sniffing."""
         return (await self.get_media_file_prefixes([int(media_id)], limit=limit)).get(int(media_id), b"")
