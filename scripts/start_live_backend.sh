@@ -27,6 +27,11 @@ TUNNEL_READY_ATTEMPTS="${GALLERY_TUNNEL_READY_ATTEMPTS:-180}"
 # Set GALLERY_NGROK_DOMAIN to your free static ngrok subdomain to get a stable URL.
 # Claim one at https://dashboard.ngrok.com/domains (free, one per account).
 NGROK_STATIC_DOMAIN="${GALLERY_NGROK_DOMAIN:-${NGROK_STATIC_DOMAIN:-}}"
+# Per-project ngrok config (holds the account-specific authtoken)
+NGROK_CONFIG_FILE="${GALLERY_NGROK_CONFIG:-}"
+if [[ -n "${NGROK_CONFIG_FILE}" && ! "${NGROK_CONFIG_FILE}" = /* ]]; then
+  NGROK_CONFIG_FILE="${ROOT_DIR}/${NGROK_CONFIG_FILE}"
+fi
 
 mkdir -p "${BIN_DIR}" "${LOG_DIR}"
 echo "$$" > "${PID_FILE}"
@@ -333,12 +338,17 @@ start_ngrok_tunnel() {
   local ngrok_log="${LOG_DIR}/ngrok.log"
   : > "${ngrok_log}"
 
+  local cfg_flag=()
+  if [[ -n "${NGROK_CONFIG_FILE}" && -f "${NGROK_CONFIG_FILE}" ]]; then
+    cfg_flag=("--config=${NGROK_CONFIG_FILE}")
+  fi
+
   if [[ -n "${NGROK_STATIC_DOMAIN}" ]]; then
     echo "Opening ngrok tunnel on static domain ${NGROK_STATIC_DOMAIN}..."
-    "${bin}" http "--domain=${NGROK_STATIC_DOMAIN}" --log=stdout --log-format=json "${PORT}" >"${ngrok_log}" 2>&1 &
+    "${bin}" http "${cfg_flag[@]}" "--domain=${NGROK_STATIC_DOMAIN}" --log=stdout --log-format=json "${PORT}" >"${ngrok_log}" 2>&1 &
   else
     echo "Opening ngrok tunnel (random URL — set GALLERY_NGROK_DOMAIN for a stable URL)..."
-    "${bin}" http --log=stdout --log-format=json "${PORT}" >"${ngrok_log}" 2>&1 &
+    "${bin}" http "${cfg_flag[@]}" --log=stdout --log-format=json "${PORT}" >"${ngrok_log}" 2>&1 &
   fi
   TUNNEL_PID="$!"
 
