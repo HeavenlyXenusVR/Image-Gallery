@@ -2193,10 +2193,33 @@ def _touch_live_config() -> None:
         logger.warning("Could not refresh live-config.json on startup: %s", exc)
 
 
+def _cleanup_orphan_transcode_temps() -> None:
+    """Remove leftover temp files from interrupted or crashed transcodes.
+
+    Two patterns to clean:
+    * ``*.stream.tmp`` — current naming; created by _stream_transcode_and_cache,
+      renamed to ``.mp4`` on success and deleted on failure.  Any survivor means
+      the process was killed mid-stream.
+    * ``*.tmp.mp4`` — legacy naming from a previous code version; never served
+      and accumulate indefinitely without this cleanup.
+    """
+    try:
+        for pattern in ("*.stream.tmp", "*.tmp.mp4"):
+            for stale in VIDEO_CACHE_DIR.glob(pattern):
+                try:
+                    stale.unlink(missing_ok=True)
+                    logger.info("Removed orphaned transcode temp file: %s", stale.name)
+                except Exception as exc:
+                    logger.warning("Could not remove orphaned transcode temp %s: %s", stale, exc)
+    except Exception as exc:
+        logger.warning("Orphan transcode cleanup failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global telegram_service
     settings.uploads_dir.mkdir(parents=True, exist_ok=True)
+    _cleanup_orphan_transcode_temps()
     _touch_live_config()
     await db.connect()
     migration_task = asyncio.create_task(_auto_migrate_legacy_uploads())
@@ -3644,6 +3667,49 @@ def _needs_video_transcode(mime_type: str | None) -> bool:
     return mime_type.startswith("video/") and mime_type.lower() not in _BROWSER_SAFE_VIDEO_MIME
 
 
+async def _db_backed_transcode_and_cache(
+    file_id: int,
+    original_filename: str,
+    cache_file: Path,
+    profile: dict[str, Any],
+    stream_key: tuple[int, str],
+):
+    """
+    Generator for DB-backed live transcodes.  Runs the full pipeline (DB read →
+    temp file → ffmpeg) inside the response generator so HTTP headers are sent to
+    the browser immediately.  The browser shows a buffering indicator while the
+    source file is written and ffmpeg warms up, rather than seeing a connection
+    timeout because no headers arrived for 15-30 s.
+    """
+    tmp_dir_obj: tempfile.TemporaryDirectory | None = None
+    entered_stream_transcode = False
+    try:
+        tmp_dir_obj = tempfile.TemporaryDirectory(prefix="gallery-video-")
+        safe_name = Path(original_filename or "source.video").name or "source.video"
+        source_path = Path(tmp_dir_obj.name) / safe_name
+        with open(source_path, "wb") as fh:
+            async for chunk in db.stream_media_file_content(file_id):
+                fh.write(chunk)
+        if not source_path.exists() or source_path.stat().st_size == 0:
+            return
+        entered_stream_transcode = True
+        async for data in _stream_transcode_and_cache(source_path, cache_file, profile, tmp_dir_obj, stream_key):
+            yield data
+    except Exception:
+        logger.exception("DB-backed transcode failed for stream_key=%s", stream_key)
+        raise
+    finally:
+        if not entered_stream_transcode:
+            # _stream_transcode_and_cache owns cleanup once entered; only clean
+            # up here if we never reached it.
+            _video_active_streams.discard(stream_key)
+            if tmp_dir_obj is not None:
+                try:
+                    tmp_dir_obj.cleanup()
+                except Exception:
+                    pass
+
+
 async def _video_variant_response(media_id: int, item: dict[str, Any], file_info: dict[str, Any] | None, legacy: Path | None, quality: str) -> Response | None:
     profile = VIDEO_QUALITY_PROFILES.get(_normalize_video_quality(quality))
     if not profile or item.get("media_kind") != "video":
@@ -3698,31 +3764,39 @@ async def _video_variant_response(media_id: int, item: dict[str, Any], file_info
         return None
 
     # Resolve the source file for the transcode.
-    source_path: Path | None = None
-    tmp_dir_obj: "tempfile.TemporaryDirectory[str] | None" = None
-
     if file_info:
-        # Stream DB content to a temp file to avoid a single huge in-memory bytes object.
-        tmp_dir_obj = tempfile.TemporaryDirectory(prefix="gallery-video-")
+        # For DB-backed files, start streaming immediately so HTTP headers reach
+        # the browser before the temp-file write begins.  Waiting for the full
+        # DB read to complete before returning the response caused the connection
+        # to appear stalled (no headers at all) for the entire write duration,
+        # which looks like a timeout for large videos (50-300 MB).
+        _video_active_streams.add(stream_key)
         safe_name = (Path(str(file_info.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video")
-        source_path = Path(tmp_dir_obj.name) / safe_name
-        async def _write_stream_to_file(fid: int, dest: Path) -> None:
-            with open(dest, "wb") as fh:
-                async for chunk in db.stream_media_file_content(fid):
-                    fh.write(chunk)
-        await _write_stream_to_file(int(file_info["id"]), source_path)
-        if not source_path.exists() or source_path.stat().st_size == 0:
-            if tmp_dir_obj:
-                tmp_dir_obj.cleanup()
-            return None
+        return StreamingResponse(
+            _db_backed_transcode_and_cache(
+                int(file_info["id"]),
+                safe_name,
+                cache_file,
+                profile,
+                stream_key,
+            ),
+            media_type="video/mp4",
+            headers={
+                "Cache-Control": "no-store",
+                "Accept-Ranges": "none",
+                "X-Video-Quality": quality,
+                "X-Video-Codec": "h264/aac",
+                "X-Transcode": "live",
+            },
+        )
     elif legacy:
-        source_path = legacy
+        pass
     else:
         return None
 
     _video_active_streams.add(stream_key)
     return StreamingResponse(
-        _stream_transcode_and_cache(source_path, cache_file, profile, tmp_dir_obj, stream_key),
+        _stream_transcode_and_cache(legacy, cache_file, profile, None, stream_key),
         media_type="video/mp4",
         headers={
             "Cache-Control": "no-store",
