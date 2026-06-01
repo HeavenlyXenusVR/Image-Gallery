@@ -3762,7 +3762,7 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
         variant = None if as_download else await _video_variant_response(media_id, item, file_info, None, effective_quality)
         if variant:
             return variant
-        file_size = int(file_info.get("file_size") or 0)
+        file_size = int(file_info.get("file_size") or 0) or int(file_info.get("inline_size") or 0)
         requested_range = None if as_download else _parse_range_header(request.headers.get("range"), file_size)
         headers = {
             "X-Content-SHA256": str(file_info.get("sha256") or ""),

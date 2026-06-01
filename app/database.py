@@ -1628,11 +1628,30 @@ class GalleryDatabase:
                     if inline:
                         yield bytes(inline)
                     return
+                # For range requests seeking into the middle of the file, scanning
+                # chunks from index 0 wastes bandwidth transferring and discarding
+                # potentially hundreds of MB.  Query one chunk's size to compute the
+                # first relevant chunk index directly (chunks are uniform-size except
+                # the last, so integer division gives a safe lower bound).
+                first_chunk_index = 0
+                chunk_size = 0
+                if start > 0:
+                    await cur.execute(
+                        "SELECT OCTET_LENGTH(content) AS chunk_size FROM media_file_chunks WHERE file_id=%s ORDER BY chunk_index ASC LIMIT 1",
+                        (file_id,),
+                    )
+                    size_row = await cur.fetchone()
+                    chunk_size = int((size_row or {}).get("chunk_size") or 0)
+                    if chunk_size > 0:
+                        first_chunk_index = start // chunk_size
                 await cur.execute(
-                    "SELECT content FROM media_file_chunks WHERE file_id=%s ORDER BY chunk_index ASC",
-                    (file_id,),
+                    "SELECT content FROM media_file_chunks WHERE file_id=%s AND chunk_index >= %s ORDER BY chunk_index ASC",
+                    (file_id, first_chunk_index),
                 )
-                offset = 0
+                # Recompute byte offset at the first fetched chunk. Because all chunks
+                # except the last share the same size, chunk_index * chunk_size gives
+                # the correct byte offset (verified per-chunk via the loop below).
+                offset = first_chunk_index * chunk_size
                 while True:
                     rows = await cur.fetchmany(16)
                     if not rows:
