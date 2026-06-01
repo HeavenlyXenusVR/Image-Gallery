@@ -9,6 +9,7 @@ import {
   PictureInPicture2,
   Play,
   RefreshCw,
+  Repeat,
   SkipBack,
   SkipForward,
   Volume1,
@@ -54,10 +55,17 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
   const [showQualityMenu, setShowQualityMenu] = useState(false);
   const [seekHover, setSeekHover] = useState(null); // { x, time }
   const [pip, setPip] = useState(false);
+  const [loop, setLoop] = useState(false);
+  const [showRemaining, setShowRemaining] = useState(false);
+  const [seeking, setSeeking] = useState(false);
 
   // ─── Seek-restore state for quality switching ────────────────────────────────
   const pendingRestoreRef = useRef(null); // { time, wasPlaying }
   const bufferingTimerRef = useRef(null);
+
+  // ─── Auto-play tracking ──────────────────────────────────────────────────────
+  // Set to true once the user has clicked play; thereafter onCanPlay will resume.
+  const shouldAutoPlayRef = useRef(false);
 
   // ─── Controls auto-hide ─────────────────────────────────────────────────────
   const scheduleHide = useCallback(() => {
@@ -99,27 +107,32 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
         pendingRestoreRef.current = null;
         if (time > 0) video.currentTime = time;
         if (wasPlaying) video.play().catch(() => {});
+        return;
+      }
+      // Auto-play if the user had previously started playing
+      if (shouldAutoPlayRef.current) {
+        video.play().catch(() => {});
       }
     };
     const onError = () => {
-      const video = videoRef.current;
-      const code = video?.error?.code;
+      const vid = videoRef.current;
+      const code = vid?.error?.code;
       if (code === 2) setError("Network error — check your connection and try again.");
       else if (code === 3) setError("Decoding error — the video format may not be supported.");
       else if (code === 4) {
         // MEDIA_ERR_SRC_NOT_SUPPORTED — Firefox rejects non-browser-safe formats.
         // If we're on high/original quality and a lower quality is available,
-        // automatically fall back to medium so the video can still play.
+        // automatically fall back to 1080p so the video can still play.
+        const fallback = qualityOptions && qualityOptions.find(([v]) => v === "1080p" || v === "720p");
         if (
           onQualityChange &&
           (quality === "high" || quality === "original" || !quality) &&
-          qualityOptions &&
-          qualityOptions.some(([v]) => v === "medium")
+          fallback
         ) {
-          setError("This format isn’t supported by your browser. Switching to Medium quality…");
-          onQualityChange("medium");
+          setError(`This format isn't supported by your browser. Switching to ${fallback[1] || fallback[0]}…`);
+          onQualityChange(fallback[0]);
         } else {
-          setError("This format isn’t supported by your browser. Try switching to Medium or Low quality.");
+          setError("This format isn't supported by your browser. Try switching to a lower quality.");
         }
       } else setError("Playback error — the video could not be loaded.");
     };
@@ -186,12 +199,30 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     prevSrcRef.current = src;
   }, [src]);
 
+  // Sync loop attribute on video element when state changes
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video) video.loop = loop;
+  }, [loop]);
+
+  // Document-level mouseup to cancel drag-seek
+  useEffect(() => {
+    if (!seeking) return;
+    const up = () => setSeeking(false);
+    document.addEventListener("mouseup", up);
+    return () => document.removeEventListener("mouseup", up);
+  }, [seeking]);
+
   // ─── Playback controls ───────────────────────────────────────────────────────
   function togglePlay() {
     const video = videoRef.current;
     if (!video || error) return;
-    if (video.paused) video.play().catch(() => {});
-    else video.pause();
+    if (video.paused) {
+      shouldAutoPlayRef.current = true;
+      video.play().catch(() => {});
+    } else {
+      video.pause();
+    }
   }
 
   function seek(fraction) {
@@ -251,6 +282,7 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     const video = videoRef.current;
     if (!video) return;
     setError(null);
+    shouldAutoPlayRef.current = true;
     video.load();
     video.play().catch(() => {});
   }
@@ -263,17 +295,23 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     return clamp((event.clientX - rect.left) / rect.width, 0, 1);
   }
 
-  function onSeekClick(event) {
+  function onSeekMouseDown(event) {
+    setSeeking(true);
     seek(seekBarFraction(event));
     revealControls();
   }
 
-  function onSeekMove(event) {
+  function onSeekMouseMove(event) {
     const bar = seekBarRef.current;
     if (!bar) return;
     const rect = bar.getBoundingClientRect();
     const fraction = clamp((event.clientX - rect.left) / rect.width, 0, 1);
     setSeekHover({ x: event.clientX - rect.left, time: fraction * duration });
+    if (seeking) seek(fraction);
+  }
+
+  function onSeekMouseUp() {
+    setSeeking(false);
   }
 
   // ─── Volume bar interaction ──────────────────────────────────────────────────
@@ -303,7 +341,18 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
         case "KeyM": toggleMute(); break;
         case "KeyF": toggleFullscreen(); break;
         case "KeyP": togglePip(); break;
-        default: break;
+        case "KeyL": setLoop((v) => !v); break;
+        case "Home": event.preventDefault(); seek(0); revealControls(); break;
+        case "End": event.preventDefault(); seek(0.95); revealControls(); break;
+        default: {
+          // 0–9 keys: seek to 0%–90%
+          if (event.key >= "0" && event.key <= "9") {
+            event.preventDefault();
+            seek(Number(event.key) / 10);
+            revealControls();
+          }
+          break;
+        }
       }
     }
     document.addEventListener("keydown", onKey);
@@ -333,6 +382,7 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
         playsInline
         preload="metadata"
         onClick={(e) => { e.stopPropagation(); togglePlay(); }}
+        onDoubleClick={toggleFullscreen}
       />
 
       {/* Buffering spinner */}
@@ -383,8 +433,9 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
             aria-valuemin={0}
             aria-valuemax={100}
             aria-valuenow={Math.round(progressPct)}
-            onClick={onSeekClick}
-            onMouseMove={onSeekMove}
+            onMouseDown={onSeekMouseDown}
+            onMouseMove={onSeekMouseMove}
+            onMouseUp={onSeekMouseUp}
             onMouseLeave={() => setSeekHover(null)}
           >
             <div className="vp-seek-track">
@@ -433,13 +484,31 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
             </div>
 
             {/* Time */}
-            <span className="vp-time">
-              {formatTime(currentTime)} / {formatTime(duration)}
+            <span
+              className="vp-time"
+              onClick={() => setShowRemaining((v) => !v)}
+              style={{ cursor: "pointer" }}
+              title={showRemaining ? "Show elapsed time" : "Show remaining time"}
+            >
+              {showRemaining && duration > 0
+                ? `-${formatTime(Math.max(0, duration - currentTime))} / ${formatTime(duration)}`
+                : `${formatTime(currentTime)} / ${formatTime(duration)}`}
             </span>
           </div>
 
           {/* Right cluster */}
           <div className="vp-cluster">
+            {/* Loop */}
+            <button
+              type="button"
+              className={`vp-btn${loop ? " active" : ""}`}
+              onClick={() => setLoop((v) => !v)}
+              title="Loop"
+              aria-label="Loop video"
+            >
+              <Repeat size={18} />
+            </button>
+
             {/* Speed */}
             <div className="vp-menu-wrap">
               <button

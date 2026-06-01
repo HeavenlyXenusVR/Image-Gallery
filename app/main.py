@@ -392,34 +392,31 @@ def _build_media_description(
     source: str | None,
     reason: str | None = None,
 ) -> str:
-    summary = title.strip() or subcategory_name or category_name or "Imported media"
-    category = (category_name or "").strip()
-    subcategory = (subcategory_name or "").strip()
-    source_name = (source or "").strip().lower()
-    generic_category = _category_is_generic(category)
-    lines = [summary.rstrip(".")]
-    if subcategory and subcategory.lower() not in summary.lower():
-        if category and not generic_category:
-            lines.append(f"Featuring {subcategory} from {category}.")
+    """Build a natural, human-readable description — no pipeline attribution sentences."""
+    parts = []
+    # Lead with title (cleaned to sentence form)
+    core = (title or subcategory_name or category_name or "").strip().rstrip(".")
+    if core:
+        parts.append(core + ".")
+    # Add subcategory context only when it adds real value
+    sub = (subcategory_name or "").strip()
+    cat = (category_name or "").strip()
+    generic_cat = _category_is_generic(cat)
+    if sub and sub.lower() not in (core.lower()):
+        if cat and not generic_cat and cat.lower() not in sub.lower():
+            parts.append(f"From {cat} — {sub}.")
         else:
-            lines.append(f"Featuring {subcategory}.")
-    elif category and not generic_category and category.lower() not in summary.lower():
-        lines.append(f"Category: {category}.")
-    if source_name == "visual-training":
-        lines.append("Recognized through the gallery's learned visual reference memory.")
-    elif source_name == "gallery-training":
-        lines.append("Recognized from the gallery's learned metadata and correction history.")
-    elif source_name in {"google-gemini", "gemini"}:
-        lines.append("Analyzed through the gallery's Gemini vision pipeline.")
-    elif source_name == "ollama":
-        lines.append("Analyzed through the gallery's local Ollama vision pipeline.")
-    elif source_name == "local-clip":
-        lines.append("Analyzed through the gallery's local visual fallback model.")
+            parts.append(f"Features {sub}.")
+    elif cat and not generic_cat and cat.lower() not in (core.lower()):
+        parts.append(f"Part of {cat}.")
+    # Include AI's own reason only if it's a real descriptive sentence, not a pipeline note
     if reason:
-        lines.append(reason.strip().rstrip(".") + ".")
-    if tags:
-        lines.append("Tags: " + ", ".join(tags[:10]) + ".")
-    return " ".join(part for part in lines if part).strip()[:2000]
+        clean_reason = reason.strip().rstrip(".")
+        # Skip boilerplate pipeline attribution lines
+        skip_phrases = ("analyzed", "recognized", "pipeline", "vision", "gallery's", "training", "ollama", "gemini", "local-clip")
+        if not any(p in clean_reason.lower() for p in skip_phrases):
+            parts.append(clean_reason + ".")
+    return " ".join(p for p in parts if p).strip()[:2000] or core or "No description available."
 
 
 def _media_has_curated_metadata(item: dict[str, Any] | None) -> bool:
@@ -545,6 +542,9 @@ async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> d
         tags = list(getattr(analysis, "tags", []) or [])[:12]
 
     description = current_description
+    ai_description = str(getattr(analysis, "description", "") or "").strip()
+    if ai_description and _description_is_placeholder(current_description):
+        description = ai_description
 
     changed = any(
         [
@@ -3564,7 +3564,10 @@ def _parse_range_header(range_header: str | None, file_size: int) -> tuple[int, 
 
 def _normalize_video_quality(value: str | None) -> str:
     quality = str(value or "high").strip().lower()
-    return quality if quality in {"high", "original", "medium", "low"} else "high"
+    # Map legacy names so old cached links and API calls still work
+    _LEGACY = {"medium": "720p", "low": "480p", "high": "original", "original": "original"}
+    quality = _LEGACY.get(quality, quality)
+    return quality if quality in {"original", "1080p", "720p", "480p", "144p"} else "original"
 
 
 async def _stream_transcode_and_cache(
@@ -3876,7 +3879,7 @@ async def _video_variant_response(media_id: int, item: dict[str, Any], file_info
     # to range-based streaming of the original.  Loading hundreds of MB into memory
     # to write a temp file before ffmpeg can start would saturate the container's
     # memory limit and stall the entire event loop.
-    _TRANSCODE_SIZE_LIMIT = 300 * 1024 * 1024  # 300 MB
+    _TRANSCODE_SIZE_LIMIT = 500 * 1024 * 1024  # 500 MB
     if file_info and int(file_info.get("file_size") or 0) > _TRANSCODE_SIZE_LIMIT:
         logger.info(
             "Skipping transcode for large DB-backed file media_id=%s size=%s quality=%s",
@@ -3975,7 +3978,7 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
         # medium transcode profile so Firefox and Safari can play it.
         effective_quality = requested_quality
         if not as_download and _needs_video_transcode(file_info.get("mime_type")) and effective_quality not in VIDEO_QUALITY_PROFILES:
-            effective_quality = "medium"
+            effective_quality = "720p"
         variant = None if as_download else await _video_variant_response(media_id, item, file_info, None, effective_quality)
         if variant:
             return variant
@@ -4015,7 +4018,7 @@ async def _serve_media_content(media_id: int, request: Request, *, access: str |
         legacy_mime = item.get("mime_type") or mimetypes.guess_type(str(legacy))[0]
         legacy_quality = requested_quality
         if not as_download and _needs_video_transcode(legacy_mime) and legacy_quality not in VIDEO_QUALITY_PROFILES:
-            legacy_quality = "medium"
+            legacy_quality = "720p"
         variant = None if as_download else await _video_variant_response(media_id, item, None, legacy, legacy_quality)
         if variant:
             return variant
@@ -4058,8 +4061,10 @@ THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_CACHE_DIR = settings.uploads_dir / "_video_cache"
 VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 VIDEO_QUALITY_PROFILES = {
-    "medium": {"max_width": 1600, "crf": 28, "audio_bitrate": "192k", "preset": "fast", "profile": "high"},
-    "low": {"max_width": 960, "crf": 32, "audio_bitrate": "128k", "preset": "fast", "profile": "high"},
+    "1080p": {"max_width": 1920, "crf": 22, "audio_bitrate": "320k", "preset": "fast", "profile": "high"},
+    "720p":  {"max_width": 1280, "crf": 25, "audio_bitrate": "256k", "preset": "fast", "profile": "high"},
+    "480p":  {"max_width": 854,  "crf": 28, "audio_bitrate": "192k", "preset": "fast", "profile": "high"},
+    "144p":  {"max_width": 256,  "crf": 36, "audio_bitrate": "64k",  "preset": "ultrafast", "profile": "baseline"},
 }
 
 

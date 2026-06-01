@@ -213,6 +213,7 @@ class SmartMediaAnalysis:
     confidence: float
     size: tuple[int, int] | None = None
     reason: str | None = None
+    description: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -227,6 +228,7 @@ class SmartMediaAnalysis:
             "confidence": round(float(self.confidence), 3),
             "size": list(self.size) if self.size else None,
             "reason": self.reason,
+            "description": self.description,
         }
 
 
@@ -1205,6 +1207,7 @@ def _merge_analysis(
         source = "openai"
     else:
         source = fallback.source
+    ai_description = str(ai_result.get("description") or "").strip()[:500]
     return SmartMediaAnalysis(
         title=title,
         suggested_filename=suggested_filename,
@@ -1217,6 +1220,7 @@ def _merge_analysis(
         confidence=max(confidence, fallback.confidence if confidence < 0.45 else 0.0),
         size=fallback.size,
         reason=_clean_reason_text(ai_result.get("reason")) or fallback.reason,
+        description=ai_description or None,
     )
 
 
@@ -1353,6 +1357,7 @@ def _ollama_vision_analysis(
             "type": "object",
             "properties": {
                 "title": {"type": "string"},
+                "description": {"type": "string"},
                 "suggested_filename_base": {"type": "string"},
                 "tags": {"type": "array", "items": {"type": "string"}},
                 "category_name": {"type": "string"},
@@ -1364,6 +1369,7 @@ def _ollama_vision_analysis(
             },
             "required": [
                 "title",
+                "description",
                 "suggested_filename_base",
                 "tags",
                 "category_name",
@@ -1424,8 +1430,9 @@ def _gemini_vision_analysis(
         + "Prefer these main categories when they fit: "
         + ", ".join(KNOWN_CATEGORIES)
         + ". If it looks like a phone wallpaper use Phone Backgrounds and place the franchise or subject inside subcategories; desktop wallpaper use Desktop Backgrounds and place the franchise or subject inside subcategories. "
+        "Write the description field as 1-2 natural sentences describing what's shown — character, scene, mood, or subject. Do not mention AI, pipelines, gallery systems, or tools. Write as if describing the media to another person. "
         "Return exactly this JSON schema: "
-        '{"title":"string","suggested_filename_base":"string","tags":["tag"],"category_name":"string","subcategory_name":"string","subcategory_names":["string"],"is_adult":false,"confidence":0.0,"reason":"string"}\n\n'
+        '{"title":"string","description":"1-2 sentence natural description of what\'s shown","suggested_filename_base":"string","tags":["tag"],"category_name":"string","subcategory_name":"string","subcategory_names":["string"],"is_adult":false,"confidence":0.0,"reason":"string"}\n\n'
         f"Filename: {filename}\n"
         f"MIME type: {mime_type}\n"
         f"Media kind: {media_kind}\n"
@@ -1528,6 +1535,7 @@ def _openai_vision_analysis(
         "additionalProperties": False,
         "properties": {
             "title": {"type": "string"},
+            "description": {"type": "string"},
             "suggested_filename_base": {"type": "string"},
             "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 12},
             "category_name": {"type": "string"},
@@ -1539,6 +1547,7 @@ def _openai_vision_analysis(
         },
         "required": [
             "title",
+            "description",
             "suggested_filename_base",
             "tags",
             "category_name",

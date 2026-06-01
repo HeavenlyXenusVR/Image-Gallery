@@ -24,7 +24,7 @@ export function MediaDetailPage({ ctx }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [imageQuality, setImageQuality] = useState("medium");
-  const [videoQuality, setVideoQuality] = useState("high");
+  const [videoQuality, setVideoQuality] = useState("original");
   const actions = useMediaActions(ctx, (updated) => setMedia(updated));
   const abortRef = useRef(null);
 
@@ -58,7 +58,7 @@ export function MediaDetailPage({ ctx }) {
   }, [loadDetail]);
 
   useEffect(() => {
-    setVideoQuality("high");
+    setVideoQuality("original");
     setImageQuality("medium");
   }, [mediaId]);
 
@@ -142,7 +142,7 @@ export function MediaDetailPage({ ctx }) {
               poster={thumbUrl(media, 640)}
               quality={videoQuality}
               onQualityChange={setVideoQuality}
-              qualityOptions={[["high", "Original / Full"], ["medium", "Medium"], ["low", "Low / Fast"]]}
+              qualityOptions={[["original", "Original"], ["1080p", "1080p HD"], ["720p", "720p"], ["480p", "480p"], ["144p", "144p"]]}
               title={media.title}
             />
           ) : (

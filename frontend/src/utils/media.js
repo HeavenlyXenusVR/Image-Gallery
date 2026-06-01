@@ -162,9 +162,9 @@ export function imageQualityUrl(item, quality = "medium") {
   return withQuery(item.preview_url || thumbUrl(item, 1280), { size: "detail" });
 }
 
-export function videoQualityUrl(item, quality = "high") {
+export function videoQualityUrl(item, quality = "original") {
   if (!item || item.locked) return "";
-  if (quality === "high" || quality === "original") return item.url || "";
+  if (!quality || quality === "original" || quality === "high") return item.url || "";
   return withQuery(item.url || "", { quality });
 }
 

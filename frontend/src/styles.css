@@ -1717,6 +1717,8 @@ textarea:focus {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   padding: 0 6px;
+  cursor: pointer;
+  user-select: none;
 }
 
 /* Speed + Quality labels */
