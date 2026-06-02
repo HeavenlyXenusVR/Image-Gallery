@@ -6,6 +6,13 @@ export PATH="/run/current-system/sw/bin:${HOME}/.nix-profile/bin:${HOME}/.local/
 
 PORT="${1:-8788}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+read_env_value() {
+  local key="$1"
+  local env_file="${ROOT_DIR}/.env"
+  [[ -f "${env_file}" ]] || return 0
+  grep -E "^${key}=" "${env_file}" | tail -n 1 | cut -d= -f2- | sed -e 's/^\"//' -e 's/\"$//' -e "s/^'//" -e "s/'$//" || true
+}
 VENV_DIR="${ROOT_DIR}/.venv"
 BIN_DIR="${ROOT_DIR}/.bin"
 CONFIG_FILE="${ROOT_DIR}/live-config.json"
