@@ -12,6 +12,8 @@ export function setRuntimeMaxUploadBytes(value) {
 export const DEFAULT_SETTINGS = {
   theme_mode: "system",
   accent_color: "#37c9a7",
+  accent_secondary: "",
+  gallery_bg_color: "",
   grid_density: "comfortable",
   default_sort: "new",
   items_per_page: PAGE_SIZE,
@@ -38,4 +40,14 @@ export const DEFAULT_SETTINGS = {
   profile_show_collections: true,
   profile_show_friends: true,
   profile_show_follow_counts: true,
+  profile_name_style: "display",
+  profile_header_style: "solid",
+  profile_bg_color: "",
+  card_hover_effect: "lift",
+  card_aspect_ratio: "free",
+  media_border_style: "none",
+  gallery_font: "system",
+  card_info_display: "below",
+  column_gap: "normal",
+  watermark_text: "",
 };

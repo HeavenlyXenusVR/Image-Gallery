@@ -239,6 +239,8 @@ class ProfileUpdateRequest(BaseModel):
 class SettingsUpdateRequest(BaseModel):
     theme_mode: str | None = None
     accent_color: str | None = None
+    accent_secondary: str | None = None
+    gallery_bg_color: str | None = None
     grid_density: str | None = None
     default_sort: str | None = None
     items_per_page: int | None = None
@@ -255,6 +257,16 @@ class SettingsUpdateRequest(BaseModel):
     profile_featured_panel: str | None = None
     profile_backdrop_image_url: str | None = None
     profile_backdrop_strength: float | None = None
+    profile_name_style: str | None = None
+    profile_header_style: str | None = None
+    profile_bg_color: str | None = None
+    card_hover_effect: str | None = None
+    card_aspect_ratio: str | None = None
+    media_border_style: str | None = None
+    gallery_font: str | None = None
+    card_info_display: str | None = None
+    column_gap: str | None = None
+    watermark_text: str | None = None
     autoplay_previews: bool | None = None
     muted_previews: bool | None = None
     reduce_motion: bool | None = None

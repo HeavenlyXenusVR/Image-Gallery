@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Check, Eye, KeyRound, Mail, Palette, Save, ShieldCheck, UserRound } from "lucide-react";
-import { apiFetch } from "../api.js";
+import { apiFetch, clearApiCache } from "../api.js";
 import { Avatar, ChipRow, Page, RequireLogin } from "../components/ui.jsx";
 import { profileClassName, profileStyle } from "../utils/appearance.js";
 
@@ -55,9 +55,21 @@ export function SettingsPage({ ctx }) {
         featured_tags: profile.featured_tags.split(",").map((tag) => tag.trim()).filter(Boolean),
       };
       const profileData = await apiFetch("/api/me/profile", { method: "PATCH", body: JSON.stringify(profilePayload) });
+      ctx.setSessionUser(profileData.user);
+      clearApiCache();
+      ctx.showToast("Profile saved.", "success");
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    }
+  }
+
+  async function savePrefs(event) {
+    event.preventDefault();
+    try {
       const prefsData = await apiFetch("/api/me/settings", { method: "PATCH", body: JSON.stringify(prefs) });
-      ctx.setSessionUser(prefsData.user ?? profileData.user);
-      ctx.showToast("Settings saved.", "success");
+      ctx.setSessionUser(prefsData.user);
+      clearApiCache();
+      ctx.showToast("Preferences saved.", "success");
     } catch (error) {
       ctx.showToast(error.message, "error");
     }
@@ -68,6 +80,7 @@ export function SettingsPage({ ctx }) {
     try {
       const data = await apiFetch("/api/me/email", { method: "POST", body: JSON.stringify({ email }) });
       ctx.setSessionUser(data.user);
+      clearApiCache();
       ctx.showToast(data.email_verification_sent ? "Verification sent." : "Email saved.", "success");
     } catch (error) {
       ctx.showToast(error.message, "error");
@@ -79,6 +92,7 @@ export function SettingsPage({ ctx }) {
     try {
       const data = await apiFetch("/api/me/email/verify", { method: "POST", body: JSON.stringify({ code: emailCode }) });
       ctx.setSessionUser(data.user);
+      clearApiCache();
       setEmailCode("");
       ctx.showToast("Email verified.", "success");
     } catch (error) {
@@ -94,6 +108,7 @@ export function SettingsPage({ ctx }) {
       body.set("file", file);
       const data = await apiFetch("/api/me/avatar", { method: "POST", body });
       ctx.setSessionUser(data.user);
+      clearApiCache();
       ctx.showToast("Avatar saved.", "success");
     } catch (error) {
       ctx.showToast(error.message, "error");
@@ -105,6 +120,7 @@ export function SettingsPage({ ctx }) {
     try {
       const data = await apiFetch("/api/me/age-verification", { method: "POST", body: JSON.stringify(age) });
       ctx.setSessionUser(data.user);
+      clearApiCache();
       ctx.showToast("Age verification saved.", "success");
     } catch (error) {
       ctx.showToast(error.message, "error");
@@ -193,7 +209,7 @@ export function SettingsPage({ ctx }) {
               <button className="primary" type="submit"><Save size={16} />Save Profile</button>
             </div>
           </form>
-          <form className="stacked-form side-box settings-form-card" onSubmit={saveProfile}>
+          <form className="stacked-form side-box settings-form-card" onSubmit={savePrefs}>
             <h2><Palette size={18} /> Preferences</h2>
             <div className="settings-cluster">
             <div className="settings-cluster-head"><h3>Gallery Defaults</h3><p>Control theme, density, sorting, and how much of the deck is visible at once.</p></div>
