@@ -609,8 +609,12 @@ write_offline_config
 # ── ngrok: static domain, no reconnect loop needed (systemd restarts on exit) ──
 if [[ "${TUNNEL_PROVIDER}" == "ngrok" ]] || \
    [[ "${TUNNEL_PROVIDER}" == "auto" && -n "${NGROK_STATIC_DOMAIN}" ]]; then
-  start_ngrok_tunnel "/api/health" && exit 0 || true
-  echo "ngrok tunnel failed; falling through to Cloudflare." >&2
+  start_ngrok_tunnel "/api/health" && exit 0
+  # Static domain: never fall through to Cloudflare — a random Cloudflare URL
+  # overwrites the stable ngrok URL in live-config.json, breaking GitHub Pages.
+  # Exit so systemd restarts the service and ngrok retries the static domain.
+  echo "ngrok static tunnel exited; letting systemd restart." >&2
+  exit 1
 fi
 
 if [[ "${TUNNEL_PROVIDER}" == "cloudflare" || "${TUNNEL_PROVIDER}" == "auto" ]]; then
