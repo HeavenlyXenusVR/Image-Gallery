@@ -2,3 +2,5 @@ version: "3"
 agent:
     authtoken: 3EYY2glGqJHrXrMoy7pVk5FvDVS_3ZdyjHHGQgVSfE32t3XF2
     web_addr: "127.0.0.1:4041"
+    heartbeat_interval: 20s
+    heartbeat_tolerance: 15s

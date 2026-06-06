@@ -1588,6 +1588,8 @@ def _trusted_hosts() -> list[str]:
         "*.pinggy-free.link",
         "*.serveousercontent.com",
         "*.lhr.life",
+        "*.ngrok-free.dev",
+        "*.ngrok.io",
     }
     for origin in _allowed_browser_origins():
         try:
@@ -2330,7 +2332,7 @@ allowed_origins = settings.cors_allowed_origins or [
 ]
 cors_origin_regex = os.getenv(
     "GALLERY_CORS_ALLOW_ORIGIN_REGEX",
-    r"(https://[a-z0-9-]+\.(trycloudflare\.com|pinggy-free\.link|serveousercontent\.com|lhr\.life)|http://(localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(:\d+)?)",
+    r"(https://[a-z0-9-]+\.(trycloudflare\.com|ngrok-free\.dev|ngrok\.io|pinggy-free\.link|serveousercontent\.com|lhr\.life)|http://(localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(:\d+)?)",
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_trusted_hosts())
 app.add_middleware(

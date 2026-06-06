@@ -267,10 +267,10 @@ start_ngrok_tunnel() {
   : > "${ngrok_log}"
   if [[ -n "${NGROK_STATIC_DOMAIN}" ]]; then
     echo "Opening ngrok tunnel on static domain ${NGROK_STATIC_DOMAIN}..."
-    "${bin}" http "${cfg_flag[@]}" "--domain=${NGROK_STATIC_DOMAIN}" --log=stdout --log-format=json "${PORT}" >"${ngrok_log}" 2>&1 &
+    "${bin}" http "${cfg_flag[@]}" "--domain=${NGROK_STATIC_DOMAIN}" --log=stdout --log-format=json "127.0.0.1:${PORT}" >"${ngrok_log}" 2>&1 &
   else
     echo "Opening ngrok tunnel (random URL — set NGROK_DOMAIN for a stable URL)..."
-    "${bin}" http "${cfg_flag[@]}" --log=stdout --log-format=json "${PORT}" >"${ngrok_log}" 2>&1 &
+    "${bin}" http "${cfg_flag[@]}" --log=stdout --log-format=json "127.0.0.1:${PORT}" >"${ngrok_log}" 2>&1 &
   fi
   TUNNEL_PID="$!"
   local tunnel_url=""
