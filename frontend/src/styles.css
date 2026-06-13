@@ -24,6 +24,7 @@
   --motion-med: 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
   --motion-slow: 520ms cubic-bezier(0.16, 1, 0.3, 1);
   --site-background-image: none;
+  --site-background-image-prev: none;
 }
 
 * {
@@ -170,6 +171,36 @@ body[data-background-ready="1"] .app-shell::before {
 
 .gallery-theme-light body[data-background-ready="1"] .app-shell::before,
 .gallery-theme-system body[data-background-ready="1"] .app-shell::before {
+  opacity: 0.08;
+}
+
+/* Previous background image, shown on top of ::before while rotating so the
+   change from one background to the next crossfades over 8s instead of
+   popping instantly (background-image itself isn't animatable). */
+.app-shell::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  background-image: var(--site-background-image-prev, none);
+  background-position: center center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  transition: opacity 8000ms ease;
+}
+
+.bg-no-prev-transition .app-shell::after {
+  transition: none;
+}
+
+body[data-background-ready="1"].bg-prev-visible .app-shell::after {
+  opacity: 0.2;
+}
+
+.gallery-theme-light body[data-background-ready="1"].bg-prev-visible .app-shell::after,
+.gallery-theme-system body[data-background-ready="1"].bg-prev-visible .app-shell::after {
   opacity: 0.08;
 }
 

@@ -1362,6 +1362,15 @@ class GalleryDatabase:
         )
         return normalized_category_id, (subcategory_ids[0] if subcategory_ids else None)
 
+    async def set_media_dimensions(self, media_id: int, width: int, height: int) -> None:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE media_items SET image_width=%s, image_height=%s WHERE id=%s",
+                    (int(width), int(height), int(media_id)),
+                )
+                await conn.commit()
+
     async def set_media_subcategories(self, media_id: int, subcategory_ids: list[int] | None) -> None:
         normalized_ids = normalize_subcategory_ids(subcategory_ids)
         async with self.pool.acquire() as conn:
@@ -1605,17 +1614,16 @@ class GalleryDatabase:
                         continue
                     file_ids = list(chunk_file_map)
                     file_placeholders = ", ".join(["%s"] * len(file_ids))
+                    # chunk_index always starts at 0 (see enumerate() at insert time), so the
+                    # first chunk is always chunk_index=0 — a direct PK lookup. The previous
+                    # MIN(chunk_index) GROUP BY derived table forced a filesort over this
+                    # (often multi-GB) table, which could pile up and starve other queries
+                    # on the shared MariaDB instance.
                     await cur.execute(
                         f"""
                         SELECT c.file_id, SUBSTRING(c.content, 1, %s) AS content
                         FROM media_file_chunks c
-                        JOIN (
-                            SELECT file_id, MIN(chunk_index) AS chunk_index
-                            FROM media_file_chunks
-                            WHERE file_id IN ({file_placeholders})
-                            GROUP BY file_id
-                        ) first_chunk
-                          ON first_chunk.file_id=c.file_id AND first_chunk.chunk_index=c.chunk_index
+                        WHERE c.file_id IN ({file_placeholders}) AND c.chunk_index = 0
                         """,
                         (max_bytes, *file_ids),
                     )
@@ -1955,7 +1963,8 @@ class GalleryDatabase:
                 await cur.execute(
                     f"""
                     SELECT m.id, m.user_id, m.title, m.storage_path, m.mime_type, m.original_filename,
-                           m.media_kind, m.file_size, m.is_adult, m.visibility, {MEDIA_CATEGORY_SELECT}
+                           m.media_kind, m.file_size, m.is_adult, m.visibility,
+                           m.image_width, m.image_height, {MEDIA_CATEGORY_SELECT}
                            u.username,
                            CASE WHEN u.public_profile=1 THEN u.display_name ELSE u.username END AS display_name,
                            u.profile_color, u.public_profile

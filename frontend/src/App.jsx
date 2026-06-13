@@ -192,7 +192,26 @@ function App() {
         preload.decoding = "async";
         preload.onload = () => {
           if (!cancelled) {
-            document.documentElement.style.setProperty("--site-background-image", `url("${withBust.replace(/["\\]/g, "\\$&")}")`);
+            const root = document.documentElement;
+            const nextImage = `url("${withBust.replace(/["\\]/g, "\\$&")}")`;
+            const previousImage = root.style.getPropertyValue("--site-background-image");
+            const hasPrevious = document.body.dataset.backgroundReady === "1" && previousImage && previousImage !== "none";
+            if (hasPrevious) {
+              // Show the outgoing image on the ::after layer at full opacity (no
+              // transition), swap ::before to the new image underneath it, then
+              // fade ::after out over 8s to reveal the new image.
+              root.style.setProperty("--site-background-image-prev", previousImage);
+              root.classList.add("bg-no-prev-transition");
+              document.body.classList.add("bg-prev-visible");
+              void root.offsetHeight; // force reflow before re-enabling the transition
+              root.classList.remove("bg-no-prev-transition");
+              root.style.setProperty("--site-background-image", nextImage);
+              requestAnimationFrame(() => {
+                document.body.classList.remove("bg-prev-visible");
+              });
+            } else {
+              root.style.setProperty("--site-background-image", nextImage);
+            }
             document.body.dataset.backgroundReady = "1";
             if (persist) writeSiteBackground({ ...background, url: rawUrl, appliedAt: Date.now() });
           }

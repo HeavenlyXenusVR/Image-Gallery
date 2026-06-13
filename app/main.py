@@ -1083,18 +1083,39 @@ async def _background_candidate_rows() -> list[dict[str, Any]]:
         if built_at > 0 and (time.time() - built_at) < BACKGROUND_CACHE_SECONDS:
             return cached_items
         rows = await db.list_public_background_candidates(limit=900)
-        prefixes = await db.get_media_file_prefixes([int(row.get("id") or 0) for row in rows])
+        # image_width/image_height are persisted on media_items once known, so on
+        # steady state this loop needs zero blob reads. Only rows still missing
+        # dimensions (newly uploaded images) need a header fetch. Previously this
+        # re-fetched a header for all 900 candidates every cache cycle, pulling
+        # tens of MB from the 1.6GB media_file_chunks table and saturating the
+        # shared MariaDB connection pool for other services.
+        unknown_ids = [
+            int(row["id"])
+            for row in rows
+            if not (row.get("image_width") and row.get("image_height"))
+            and (not row.get("mime_type") or str(row["mime_type"]).startswith("image/"))
+        ]
+        # Only the image header is needed to read width/height (JPEG SOF / PNG IHDR
+        # markers live in the first few KB) — 64KB per file is generous headroom.
+        prefixes = await db.get_media_file_prefixes(unknown_ids, limit=65536) if unknown_ids else {}
         eligible: list[dict[str, Any]] = []
         for row in rows:
             if row.get("mime_type") and not str(row["mime_type"]).startswith("image/"):
                 continue
             media_id = int(row["id"])
-            prefix = prefixes.get(media_id, b"")
-            if prefix:
-                dimensions = _background_dimensions_from_bytes(prefix)
+            cached_width = row.get("image_width")
+            cached_height = row.get("image_height")
+            if cached_width and cached_height:
+                dimensions = (int(cached_width), int(cached_height))
             else:
-                legacy = _legacy_upload_path(row.get("storage_path"))
-                dimensions = _background_dimensions_from_path(legacy) if legacy and legacy.exists() else None
+                prefix = prefixes.get(media_id, b"")
+                if prefix:
+                    dimensions = _background_dimensions_from_bytes(prefix)
+                else:
+                    legacy = _legacy_upload_path(row.get("storage_path"))
+                    dimensions = _background_dimensions_from_path(legacy) if legacy and legacy.exists() else None
+                if dimensions:
+                    await db.set_media_dimensions(media_id, dimensions[0], dimensions[1])
             if not dimensions:
                 continue
             width, height = dimensions
