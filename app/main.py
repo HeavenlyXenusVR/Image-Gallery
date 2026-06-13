@@ -1089,11 +1089,19 @@ async def _background_candidate_rows() -> list[dict[str, Any]]:
         # re-fetched a header for all 900 candidates every cache cycle, pulling
         # tens of MB from the 1.6GB media_file_chunks table and saturating the
         # shared MariaDB connection pool for other services.
+        # Files large enough to be chunked (media_file_chunks) require reading the
+        # *entire* chunk off disk just to slice out a header, since InnoDB
+        # materializes the whole BLOB before SUBSTRING can run. On the shared
+        # spinning disk this single-handedly stalls video streaming queries for
+        # minutes, so skip header probing for any candidate that large — it's
+        # also a poor background pick anyway.
+        _DIMENSION_PROBE_SIZE_LIMIT = 4 * 1024 * 1024  # 4 MB
         unknown_ids = [
             int(row["id"])
             for row in rows
             if not (row.get("image_width") and row.get("image_height"))
             and (not row.get("mime_type") or str(row["mime_type"]).startswith("image/"))
+            and int(row.get("file_size") or 0) <= _DIMENSION_PROBE_SIZE_LIMIT
         ]
         # Only the image header is needed to read width/height (JPEG SOF / PNG IHDR
         # markers live in the first few KB) — 64KB per file is generous headroom.

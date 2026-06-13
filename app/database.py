@@ -122,6 +122,8 @@ MEDIA_COLUMNS = (
     ("moderation_score", "FLOAT NOT NULL DEFAULT 0"),
     ("moderation_reason", "VARCHAR(300) NULL"),
     ("moderated_at", "TIMESTAMP NULL DEFAULT NULL"),
+    ("image_width", "INT UNSIGNED NULL"),
+    ("image_height", "INT UNSIGNED NULL"),
 )
 
 AI_TRAINING_COLUMNS = (
