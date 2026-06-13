@@ -39,8 +39,8 @@ MAX_TUNNEL_START_ATTEMPTS="${GALLERY_MAX_TUNNEL_START_ATTEMPTS:-12}"
 TUNNEL_READY_ATTEMPTS="${GALLERY_TUNNEL_READY_ATTEMPTS:-900}"
 QUICK_TUNNEL_URL_ATTEMPTS="${GALLERY_QUICK_TUNNEL_URL_ATTEMPTS:-180}"
 CLOUDFLARE_PROTOCOL="${GALLERY_CLOUDFLARE_PROTOCOL:-http2}"
-CLOUDFLARE_TUNNEL_TOKEN="${GALLERY_CLOUDFLARE_TUNNEL_TOKEN:-}"
-CLOUDFLARE_PUBLIC_URL="${GALLERY_CLOUDFLARE_PUBLIC_URL:-}"
+CLOUDFLARE_TUNNEL_TOKEN="${GALLERY_CLOUDFLARE_TUNNEL_TOKEN:-$(read_env_value GALLERY_CLOUDFLARE_TUNNEL_TOKEN)}"
+CLOUDFLARE_PUBLIC_URL="${GALLERY_CLOUDFLARE_PUBLIC_URL:-$(read_env_value GALLERY_CLOUDFLARE_PUBLIC_URL)}"
 GLOBAL_TUNNEL_STATE_DIR="${HOME}/.local/state/cloudflare-quick-tunnels"
 GLOBAL_TUNNEL_LOCK_FILE="${GLOBAL_TUNNEL_STATE_DIR}/create.lock"
 GLOBAL_TUNNEL_NEXT_ALLOWED_FILE="${GLOBAL_TUNNEL_STATE_DIR}/next-allowed-epoch"
@@ -550,7 +550,7 @@ start_named_cloudflare_tunnel() {
 
   echo "Starting named Cloudflare tunnel for ${public_url}"
   : > "${TUNNEL_LOG}"
-  "${CLOUDFLARED}" tunnel --no-autoupdate run --token "${token}" >"${TUNNEL_LOG}" 2>&1 &
+  "${CLOUDFLARED}" tunnel --no-autoupdate run --token "${token}" --url "http://127.0.0.1:${PORT}" >"${TUNNEL_LOG}" 2>&1 &
   TUNNEL_PID="$!"
 
   announce_live_url "${public_url}"
@@ -605,6 +605,21 @@ fi
 # Write offline config locally before acquiring the public URL so the frontend
 # does not keep hitting a stale URL while a new tunnel is being negotiated.
 write_offline_config
+
+# ── static: hostname is routed externally (e.g. via the lumisound-bridge
+# Cloudflare tunnel's ingress rules) — just publish the URL and idle ──
+if [[ "${TUNNEL_PROVIDER}" == "static" ]]; then
+  if [[ -n "${CLOUDFLARE_PUBLIC_URL}" ]]; then
+    announce_live_url "${CLOUDFLARE_PUBLIC_URL}"
+  fi
+  while true; do
+    sleep 300
+    if ! backend_ready; then
+      echo "Backend not responding; exiting so systemd can restart cleanly." >&2
+      exit 1
+    fi
+  done
+fi
 
 # ── ngrok: static domain, no reconnect loop needed (systemd restarts on exit) ──
 if [[ "${TUNNEL_PROVIDER}" == "ngrok" ]] || \
