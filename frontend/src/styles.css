@@ -1482,6 +1482,7 @@ textarea:focus {
   min-height: 520px;
   display: grid;
   place-items: center;
+  align-content: center;
   overflow: hidden;
   background: #080c10;
 }
