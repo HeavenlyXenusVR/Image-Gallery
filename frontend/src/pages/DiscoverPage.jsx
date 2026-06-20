@@ -35,6 +35,8 @@ export function DiscoverPage({ ctx }) {
   const [hasNext, setHasNext] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [randomPending, setRandomPending] = useState(false);
+  const handleItemUpdated = useCallback((item) => setItems((rows) => replaceMedia(rows, item)), []);
 
   const selectedCategory = useMemo(() => {
     return ctx.lookups.categories.find((category) => String(category.id) === String(filters.category_id));
@@ -111,11 +113,15 @@ export function DiscoverPage({ ctx }) {
   }
 
   async function openRandom() {
+    if (randomPending) return;
+    setRandomPending(true);
     try {
       const data = await apiFetch("/api/media/random");
       navigate(`/media/${data.media.id}`);
     } catch (randomError) {
       ctx.showToast(randomError.message, "error");
+    } finally {
+      setRandomPending(false);
     }
   }
 
@@ -127,8 +133,8 @@ export function DiscoverPage({ ctx }) {
       className="page-discover"
       actions={(
       <>
-        <button type="button" onClick={openRandom}><Sparkles size={16} />Surprise</button>
-        <button type="button" onClick={() => { clearApiCache("/api/media"); loadMedia(); }}><RefreshCw size={16} />Refresh</button>
+        <button type="button" onClick={openRandom} disabled={randomPending}><Sparkles size={16} />{randomPending ? "Loading" : "Surprise"}</button>
+        <button type="button" onClick={() => { clearApiCache("/api/media"); loadMedia(); }} disabled={loading}><RefreshCw size={16} />Refresh</button>
       </>
       )}
     >
@@ -194,7 +200,7 @@ export function DiscoverPage({ ctx }) {
         </aside>
         <section className="content-panel">
           {error ? <Notice kind="error">{error}</Notice> : null}
-          <MediaGrid ctx={ctx} items={items} loading={loading} emptyTitle="No posts match this view" onItemUpdated={(item) => setItems((rows) => replaceMedia(rows, item))} />
+          <MediaGrid ctx={ctx} items={items} loading={loading} emptyTitle="No posts match this view" onItemUpdated={handleItemUpdated} />
           <Pager page={filters.page} hasNext={hasNext} loading={loading} onPage={(page) => setFilters((current) => ({ ...current, page }))} />
         </section>
       </section>

@@ -117,12 +117,13 @@ export function CollectionsPage({ ctx }) {
   }
 
   const canEditSelected = Boolean(ctx.user && selected && Number(selected.user_id) === Number(ctx.user.id));
+  const handleItemUpdated = useCallback((item) => setMedia((rows) => replaceMedia(rows, item)), []);
 
   return (
     <Page title="Collections" eyebrow="Stacks" actions={(
       <>
         <Segmented value={mine ? "mine" : "community"} onChange={(value) => setMine(value === "mine")} options={[["community", "Community"], ["mine", "Mine"]]} />
-        <button type="button" onClick={() => loadCollections({ fresh: true })}><RefreshCw size={16} />Refresh</button>
+        <button type="button" onClick={() => loadCollections({ fresh: true })} disabled={loading}><RefreshCw size={16} />Refresh</button>
       </>
     )}>
       {error ? <Notice kind="error">{error}</Notice> : null}
@@ -180,7 +181,7 @@ export function CollectionsPage({ ctx }) {
                   ) : !picker.loading && picker.q ? <p className="muted-copy">No matching posts outside this collection.</p> : null}
                 </section>
               ) : null}
-              <MediaGrid ctx={ctx} items={media} emptyTitle="This collection is empty" onItemUpdated={(item) => setMedia((rows) => replaceMedia(rows, item))} />
+              <MediaGrid ctx={ctx} items={media} emptyTitle="This collection is empty" onItemUpdated={handleItemUpdated} />
             </>
           ) : <EmptyState title="Select a collection" />}
         </section>

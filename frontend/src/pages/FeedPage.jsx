@@ -25,6 +25,7 @@ export function FeedPage({ ctx, mode }) {
   const pageSize = pageSizeFor(ctx.settings);
 
   const userId = ctx.user?.id;
+  const handleItemUpdated = useCallback((item) => setItems((rows) => replaceMedia(rows, item)), []);
 
   const loadFeed = useCallback(({ background = false } = {}) => {
     if (!userId) return Promise.resolve();
@@ -74,7 +75,7 @@ export function FeedPage({ ctx, mode }) {
       ) : likedEmpty ? (
         <EmptyState title="You haven't liked any posts yet" />
       ) : (
-        <MediaGrid ctx={ctx} items={items} loading={loading} emptyTitle={mode === "liked" ? "No liked posts yet" : "No following posts yet"} onItemUpdated={(item) => setItems((rows) => replaceMedia(rows, item))} />
+        <MediaGrid ctx={ctx} items={items} loading={loading} emptyTitle={mode === "liked" ? "No liked posts yet" : "No following posts yet"} onItemUpdated={handleItemUpdated} />
       )}
       <Pager page={page} hasNext={hasNext} loading={loading} onPage={setPage} />
     </Page>

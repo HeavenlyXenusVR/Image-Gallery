@@ -81,6 +81,7 @@ export function MediaDetailPage({ ctx }) {
   }
 
   async function deleteComment(commentId) {
+    if (!window.confirm("Delete this comment?")) return;
     try {
       await apiFetch(`/api/comments/${commentId}`, { method: "DELETE" });
       setComments((rows) => rows.filter((comment) => Number(comment.id) !== Number(commentId)));

@@ -3643,7 +3643,6 @@ textarea:focus {
     flex: 1 1 auto;
   }
 
-  .media-grid,
   .user-grid,
   .settings-grid,
   .three-columns,
@@ -3656,8 +3655,28 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
-  .media-grid {
+  .media-grid,
+  .media-grid-compact,
+  .media-grid-wide {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
+  }
+
+  .media-grid-wide .media-card,
+  .gallery-grid-wide .media-card {
+    min-height: 0;
+  }
+
+  .media-copy {
+    padding: 8px 9px 2px;
+  }
+
+  .media-copy h3 {
+    font-size: 0.92rem;
+  }
+
+  .media-copy p {
+    font-size: 0.74rem;
   }
 
   .collection-add-search,
@@ -3679,8 +3698,15 @@ textarea:focus {
     padding-right: 10px;
   }
 
+  .card-actions {
+    gap: 4px;
+    padding: 9px 9px 10px;
+  }
+
   .card-actions button {
-    min-height: 38px;
+    min-height: 44px;
+    min-width: 44px;
+    padding: 6px 7px;
   }
 
   .detail-side,
@@ -3700,22 +3726,79 @@ textarea:focus {
     padding: 14px;
   }
 
-  .media-stage,
   .upload-drop,
   .file-picker {
     min-height: 320px;
   }
 
+  .media-stage {
+    min-height: 0;
+  }
+
+  .media-stage img,
+  .media-stage video {
+    max-height: min(68vh, calc(100dvh - 220px));
+  }
+
   .profile-hero,
   .profile-preview-hero,
   .studio-item,
-  .user-card,
-  .comment {
+  .user-card {
     grid-template-columns: 1fr;
   }
 
   .profile-settings-preview {
     position: static;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .topbar {
+    padding-top: max(9px, env(safe-area-inset-top));
+  }
+
+  .page-actions > * {
+    min-height: 44px;
+  }
+
+  .pager {
+    gap: 8px;
+  }
+
+  .pager button {
+    flex: 1 1 auto;
+    min-height: 44px;
+  }
+
+  .pager span {
+    min-height: 44px;
+  }
+
+  .comment {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .comment .icon-button {
+    grid-column: 2;
+    justify-self: end;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .comment-form button,
+  .quality-bar select,
+  .media-action-panel button {
+    min-height: 44px;
+  }
+
+  .icon-button {
+    min-width: 44px;
+    min-height: 44px;
   }
 }
 
@@ -3730,5 +3813,27 @@ textarea:focus {
 
   .thumb-frame {
     aspect-ratio: 1 / 1;
+  }
+
+  .media-grid,
+  .media-grid-compact,
+  .media-grid-wide {
+    gap: 8px;
+  }
+
+  .card-meta {
+    padding: 0 9px 10px;
+    font-size: 0.74rem;
+  }
+
+  .card-meta .user-chip {
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .card-meta > span {
+    display: none;
   }
 }

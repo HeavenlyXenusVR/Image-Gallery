@@ -40,7 +40,7 @@ export function StudioPage({ ctx }) {
   }), { views: 0, likes: 0, downloads: 0 });
 
   return (
-    <Page title="Studio" eyebrow="Manage" actions={<button type="button" onClick={loadStudio}><RefreshCw size={16} />Refresh</button>}>
+    <Page title="Studio" eyebrow="Manage" actions={<button type="button" onClick={() => loadStudio()} disabled={loading}><RefreshCw size={16} />Refresh</button>}>
       <div className="stat-strip">
         <Metric label="Posts" value={items.length} />
         <Metric label="Views" value={totals.views} />

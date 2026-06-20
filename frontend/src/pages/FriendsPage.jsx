@@ -46,7 +46,7 @@ export function FriendsPage({ ctx }) {
   if (!ctx.user) return <RequireLogin />;
 
   return (
-    <Page title="Friends" eyebrow="Social" actions={<button type="button" onClick={loadFriends}><RefreshCw size={16} />Refresh</button>}>
+    <Page title="Friends" eyebrow="Social" actions={<button type="button" onClick={() => loadFriends()} disabled={loading}><RefreshCw size={16} />Refresh</button>}>
       {loading ? <SkeletonGrid count={3} /> : (
         <section className="three-columns">
           <FriendColumn title="Incoming" rows={state.incoming} action={(row) => (

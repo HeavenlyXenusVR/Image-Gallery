@@ -107,7 +107,7 @@ export function MessagesPage({ ctx }) {
   if (!ctx.user) return <RequireLogin />;
 
   return (
-    <Page title="Messages" eyebrow="Social" actions={<button type="button" onClick={() => loadThreads()}><RefreshCw size={16} />Refresh</button>}>
+    <Page title="Messages" eyebrow="Social" actions={<button type="button" onClick={() => loadThreads()} disabled={loading}><RefreshCw size={16} />Refresh</button>}>
       <section className="split-view">
         <aside className="list-panel">
           <div className="input-with-icon">

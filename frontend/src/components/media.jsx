@@ -189,6 +189,7 @@ export function MediaControls({ ctx, media, onChanged }) {
   }
 
   async function remove() {
+    if (!window.confirm("Delete this post? This cannot be undone from here.")) return;
     try {
       await apiFetch(`/api/media/${media.id}`, { method: "DELETE" });
       ctx.showToast("Post deleted.", "success");
@@ -238,6 +239,7 @@ export function MediaActionPanel({ ctx, media, actions }) {
 
 export function StudioItem({ ctx, item, onChanged, onRemoved }) {
   async function remove() {
+    if (!window.confirm("Delete this post? This cannot be undone from here.")) return;
     try {
       await apiFetch(`/api/media/${item.id}`, { method: "DELETE" });
       onRemoved(item.id);
