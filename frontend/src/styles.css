@@ -2814,8 +2814,50 @@ textarea:focus {
   background: rgba(12, 18, 24, 0.24);
 }
 
-.settings-color-field input {
+.settings-color-field input[type="color"] {
   width: 100%;
+}
+
+/* Optional color: show color picker + clear button, or a "Set color" toggle */
+.opt-color {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+.opt-color input[type="color"] {
+  flex: 1;
+  min-width: 0;
+}
+.opt-color-clear {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+  background: rgba(255, 80, 80, 0.12);
+  border: 1px solid rgba(255, 80, 80, 0.3);
+  border-radius: 4px;
+  color: #f87171;
+  cursor: pointer;
+}
+.opt-color-clear:hover {
+  background: rgba(255, 80, 80, 0.22);
+}
+.opt-color-set {
+  width: 100%;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  background: rgba(55, 201, 167, 0.08);
+  border: 1px dashed rgba(55, 201, 167, 0.3);
+  border-radius: 4px;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+}
+.opt-color-set:hover {
+  background: rgba(55, 201, 167, 0.14);
 }
 
 .settings-file-picker {

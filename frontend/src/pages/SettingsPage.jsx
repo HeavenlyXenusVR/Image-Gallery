@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, Eye, KeyRound, Mail, Palette, Save, ShieldCheck, UserRound } from "lucide-react";
 import { apiFetch, clearApiCache } from "../api.js";
 import { Avatar, ChipRow, Page, RequireLogin } from "../components/ui.jsx";
@@ -30,7 +30,15 @@ export function SettingsPage({ ctx }) {
   const [age, setAge] = useState({ birthdate: "", confirm_over_18: false });
   const [password, setPassword] = useState({ old_password: "", new_password: "" });
 
+  // Only re-initialize form state when the logged-in user's identity changes
+  // (login, logout, or switch). Background refreshMe polls update ctx.user every
+  // 45 s but keep the same user.id — without this guard those polls would wipe
+  // any unsaved edits the user has typed.
+  const prevUserIdRef = useRef(ctx.user?.id ?? null);
   useEffect(() => {
+    const nextId = ctx.user?.id ?? null;
+    if (prevUserIdRef.current === nextId) return;
+    prevUserIdRef.current = nextId;
     if (!ctx.user) return;
     setProfile(profileFromUser(ctx.user, ctx.settings));
     setPrefs(ctx.settings);
@@ -218,8 +226,22 @@ export function SettingsPage({ ctx }) {
               <label className="field color-field settings-color-field"><span>Accent</span><input value={prefs.accent_color || "#37c9a7"} onChange={(event) => updatePrefs("accent_color", event.target.value)} type="color" /></label>
             </div>
             <div className="two-col">
-              <label className="field color-field settings-color-field"><span>Secondary Accent <small>(gradient end)</small></span><input value={prefs.accent_secondary || ""} onChange={(event) => updatePrefs("accent_secondary", event.target.value)} type="color" /></label>
-              <label className="field color-field settings-color-field"><span>Gallery Background</span><input value={prefs.gallery_bg_color || ""} onChange={(event) => updatePrefs("gallery_bg_color", event.target.value)} type="color" /></label>
+              <label className="field color-field settings-color-field">
+                <span>Secondary Accent <small>(gradient end)</small></span>
+                {/^#[0-9a-f]{6}$/i.test(prefs.accent_secondary || "") ? (
+                  <span className="opt-color"><input value={prefs.accent_secondary} onChange={(event) => updatePrefs("accent_secondary", event.target.value)} type="color" /><button type="button" className="opt-color-clear" onClick={() => updatePrefs("accent_secondary", "")} title="Clear">×</button></span>
+                ) : (
+                  <button type="button" className="opt-color-set" onClick={() => updatePrefs("accent_secondary", prefs.accent_color || "#37c9a7")}>Set color</button>
+                )}
+              </label>
+              <label className="field color-field settings-color-field">
+                <span>Gallery Background</span>
+                {/^#[0-9a-f]{6}$/i.test(prefs.gallery_bg_color || "") ? (
+                  <span className="opt-color"><input value={prefs.gallery_bg_color} onChange={(event) => updatePrefs("gallery_bg_color", event.target.value)} type="color" /><button type="button" className="opt-color-clear" onClick={() => updatePrefs("gallery_bg_color", "")} title="Clear">×</button></span>
+                ) : (
+                  <button type="button" className="opt-color-set" onClick={() => updatePrefs("gallery_bg_color", "#111111")}>Set color</button>
+                )}
+              </label>
             </div>
             <div className="two-col">
               <label className="field"><span>Grid</span><select value={prefs.grid_density} onChange={(event) => updatePrefs("grid_density", event.target.value)}><option value="compact">Compact</option><option value="comfortable">Comfortable</option><option value="wide">Wide</option></select></label>
@@ -251,7 +273,14 @@ export function SettingsPage({ ctx }) {
               <label className="field"><span>Name Style</span><select value={prefs.profile_name_style ?? "display"} onChange={(event) => updatePrefs("profile_name_style", event.target.value)}><option value="display">Display</option><option value="gradient">Gradient</option><option value="glow">Glow</option><option value="outline">Outline</option></select></label>
               <label className="field"><span>Header Style</span><select value={prefs.profile_header_style ?? "solid"} onChange={(event) => updatePrefs("profile_header_style", event.target.value)}><option value="solid">Solid</option><option value="glass">Glass</option><option value="blur">Blur</option><option value="transparent">Transparent</option><option value="gradient">Gradient</option></select></label>
             </div>
-            <label className="field color-field settings-color-field"><span>Profile Background Color</span><input value={prefs.profile_bg_color || ""} onChange={(event) => updatePrefs("profile_bg_color", event.target.value)} type="color" /></label>
+            <label className="field color-field settings-color-field">
+              <span>Profile Background Color</span>
+              {/^#[0-9a-f]{6}$/i.test(prefs.profile_bg_color || "") ? (
+                <span className="opt-color"><input value={prefs.profile_bg_color} onChange={(event) => updatePrefs("profile_bg_color", event.target.value)} type="color" /><button type="button" className="opt-color-clear" onClick={() => updatePrefs("profile_bg_color", "")} title="Clear">×</button></span>
+              ) : (
+                <button type="button" className="opt-color-set" onClick={() => updatePrefs("profile_bg_color", "#111111")}>Set color</button>
+              )}
+            </label>
             <label className="field"><span>Watermark / Signature Text <small>(overlaid on your uploads)</small></span><input value={prefs.watermark_text ?? ""} onChange={(event) => updatePrefs("watermark_text", event.target.value)} placeholder="Optional text on your uploads (e.g. @handle)" maxLength={40} /></label>
           </div>
             <div className="settings-cluster">
