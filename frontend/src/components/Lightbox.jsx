@@ -17,6 +17,8 @@ export function Lightbox({ ctx }) {
   const cacheRef = useRef(new Map());
   const currentIndexRef = useRef(currentIndex);
   currentIndexRef.current = currentIndex;
+  const itemRef = useRef(item);
+  itemRef.current = item;
 
   // Reset when lightbox opens with a new payload
   useEffect(() => {
@@ -64,10 +66,13 @@ export function Lightbox({ ctx }) {
     setVideoQuality("original");
   }, [lightbox]);
 
-  // Keyboard navigation — use ref so effect is stable
+  // Keyboard navigation — use refs so effect is stable.
+  // Skip arrow keys when current item is a video: the VideoPlayer's own keyboard
+  // handler handles ArrowLeft/ArrowRight for seeking, and both handlers would fire.
   useEffect(() => {
     const onKey = (e) => {
       if (e.key === "Escape") { closeLightbox(); return; }
+      if (itemRef.current?.media_kind === "video") return;
       if (e.key === "ArrowLeft") goTo(currentIndexRef.current - 1);
       if (e.key === "ArrowRight") goTo(currentIndexRef.current + 1);
     };

@@ -62,6 +62,7 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
   // ─── Seek-restore state for quality switching ────────────────────────────────
   const pendingRestoreRef = useRef(null); // { time, wasPlaying }
   const bufferingTimerRef = useRef(null);
+  const durationRef = useRef(0);
 
   // ─── Auto-play tracking ──────────────────────────────────────────────────────
   // Set to true once the user has clicked play; thereafter onCanPlay will resume.
@@ -91,7 +92,7 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
       setCurrentTime(video.currentTime);
       if (video.buffered.length > 0) setBuffered(video.buffered.end(video.buffered.length - 1));
     };
-    const onDurationChange = () => setDuration(video.duration || 0);
+    const onDurationChange = () => { const d = video.duration || 0; setDuration(d); durationRef.current = d; };
     const onWaiting = () => {
       setBuffering(true);
       if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
@@ -210,8 +211,48 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     if (!seeking) return;
     const up = () => setSeeking(false);
     document.addEventListener("mouseup", up);
-    return () => document.removeEventListener("mouseup", up);
+    document.addEventListener("touchend", up, { passive: true });
+    return () => {
+      document.removeEventListener("mouseup", up);
+      document.removeEventListener("touchend", up);
+    };
   }, [seeking]);
+
+  // Touch seek — attached as non-passive so preventDefault() works on iOS Safari.
+  // Uses refs (videoRef, seekBarRef, durationRef) to avoid stale closures since
+  // the effect only re-runs when revealControls changes (which is stable).
+  useEffect(() => {
+    const bar = seekBarRef.current;
+    if (!bar) return;
+    const getTouchFraction = (e) => {
+      const touch = e.touches[0];
+      if (!touch) return null;
+      const rect = bar.getBoundingClientRect();
+      return clamp((touch.clientX - rect.left) / rect.width, 0, 1);
+    };
+    const applySeek = (fraction) => {
+      const video = videoRef.current;
+      const dur = durationRef.current;
+      if (!video || !dur || fraction === null) return;
+      video.currentTime = clamp(fraction * dur, 0, dur);
+    };
+    const onTouchStart = (e) => {
+      e.preventDefault();
+      setSeeking(true);
+      applySeek(getTouchFraction(e));
+      revealControls();
+    };
+    const onTouchMove = (e) => {
+      e.preventDefault();
+      applySeek(getTouchFraction(e));
+    };
+    bar.addEventListener("touchstart", onTouchStart, { passive: false });
+    bar.addEventListener("touchmove", onTouchMove, { passive: false });
+    return () => {
+      bar.removeEventListener("touchstart", onTouchStart);
+      bar.removeEventListener("touchmove", onTouchMove);
+    };
+  }, [revealControls]);
 
   // ─── Playback controls ───────────────────────────────────────────────────────
   function togglePlay() {
@@ -288,16 +329,16 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
   }
 
   // ─── Seek bar interaction ────────────────────────────────────────────────────
-  function seekBarFraction(event) {
+  function seekBarFraction(clientX) {
     const bar = seekBarRef.current;
     if (!bar) return 0;
     const rect = bar.getBoundingClientRect();
-    return clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    return clamp((clientX - rect.left) / rect.width, 0, 1);
   }
 
   function onSeekMouseDown(event) {
     setSeeking(true);
-    seek(seekBarFraction(event));
+    seek(seekBarFraction(event.clientX));
     revealControls();
   }
 

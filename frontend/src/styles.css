@@ -1584,7 +1584,6 @@ textarea:focus {
   height: 4px;
   background: rgba(255, 255, 255, 0.14);
   border-radius: 4px;
-  overflow: hidden;
   transition: height 160ms ease;
 }
 
@@ -1617,6 +1616,8 @@ textarea:focus {
 .vp-seek-thumb {
   position: absolute;
   right: -6px;
+  top: 50%;
+  transform: translateY(-50%);
   width: 12px;
   height: 12px;
   border-radius: 50%;
@@ -1628,7 +1629,7 @@ textarea:focus {
 
 .vp-seek-bar:hover .vp-seek-thumb {
   opacity: 1;
-  transform: scale(1.2);
+  transform: translateY(-50%) scale(1.2);
 }
 
 /* Seek tooltip */
