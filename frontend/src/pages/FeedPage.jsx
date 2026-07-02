@@ -75,7 +75,7 @@ export function FeedPage({ ctx, mode }) {
       ) : likedEmpty ? (
         <EmptyState title="You haven't liked any posts yet" />
       ) : (
-        <MediaGrid ctx={ctx} items={items} loading={loading} emptyTitle={mode === "liked" ? "No liked posts yet" : "No following posts yet"} onItemUpdated={handleItemUpdated} />
+        <MediaGrid ctx={ctx} items={items} loading={loading} emptyTitle={mode === "liked" ? "No liked posts yet" : "No following posts yet"} onItemUpdated={handleItemUpdated} onOpen={ctx.openLightbox} />
       )}
       <Pager page={page} hasNext={hasNext} loading={loading} onPage={setPage} />
     </Page>

@@ -13,18 +13,28 @@ function subcategoryNames(item) {
   return item?.subcategory_name ? [item.subcategory_name] : [];
 }
 
-export function MediaGrid({ ctx, items, loading = false, emptyTitle = "No media", onItemUpdated }) {
+export function MediaGrid({ ctx, items, loading = false, emptyTitle = "No media", onItemUpdated, onOpen, extraClass = "" }) {
   if (loading) return <SkeletonGrid count={8} />;
   if (!items?.length) return <EmptyState title={emptyTitle} />;
   const eagerCount = isPerfLiteRuntime() ? 1 : 4;
+  const densityClass = `media-grid-${ctx.settings.grid_density || "comfortable"}`;
   return (
-    <div className={`media-grid media-grid-${ctx.settings.grid_density || "comfortable"}`}>
-      {items.map((item, index) => <MediaCard ctx={ctx} item={item} key={item.id} eager={index < eagerCount} onItemUpdated={onItemUpdated} />)}
+    <div className={["media-grid", densityClass, extraClass].filter(Boolean).join(" ")}>
+      {items.map((item, index) => (
+        <MediaCard
+          ctx={ctx}
+          item={item}
+          key={item.id}
+          eager={index < eagerCount}
+          onItemUpdated={onItemUpdated}
+          onOpen={onOpen ? () => onOpen(items, index) : undefined}
+        />
+      ))}
     </div>
   );
 }
 
-export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onItemUpdated }) {
+export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onItemUpdated, onOpen }) {
   const actions = useMediaActions(ctx, onItemUpdated);
   const thumb = useMemo(() => (item.media_kind === "video" ? thumbUrl(item, 420) : thumbUrl(item)), [item]);
   const mutedPreview = ctx.settings.muted_previews !== false;
@@ -35,7 +45,12 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
   const videoThumbSources = useMemo(() => mediaImageSources(item, { width: 420, previewSize: "card" }), [item]);
   return (
     <article className={`media-card ${item.locked ? "is-locked" : ""}`}>
-      <Link className="media-link" to={`/media/${item.id}`} aria-label={item.title || `Open media ${item.id}`}>
+      <Link
+        className="media-link"
+        to={`/media/${item.id}`}
+        aria-label={item.title || `Open media ${item.id}`}
+        onClick={onOpen ? (e) => { if (!e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); onOpen(); } } : undefined}
+      >
         <div className="thumb-frame">
           {item.locked ? <Lock size={34} /> : item.media_kind === "video" ? (
             liveVideoPreview ? (

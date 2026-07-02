@@ -1,17 +1,44 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { RefreshCw, Search, SlidersHorizontal, Sparkles } from "lucide-react";
-import { apiFetch, cachedApiFetch, clearApiCache, prefetchApi, toQuery } from "../api.js";
-import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
+import { Columns2, Grid2X2, RefreshCw, Search, SlidersHorizontal, Sparkles, X as XIcon } from "lucide-react";
+import { apiFetch, cachedApiFetch, clearApiCache, toQuery } from "../api.js";
 import { PAGE_SIZE } from "../config.js";
 import { MediaGrid } from "../components/media.jsx";
-import { Notice, Page, Pager, TagCloud } from "../components/ui.jsx";
+import { Notice, Page, TagCloud } from "../components/ui.jsx";
 import { preloadMediaAssets, replaceMedia } from "../utils/media.js";
+
+const VIEW_MODE_KEY = "ig_discover_view";
 
 function pageSizeFor(settings) {
   const parsed = Number(settings?.items_per_page);
   if (!Number.isFinite(parsed)) return PAGE_SIZE;
   return Math.min(60, Math.max(12, Math.round(parsed)));
+}
+
+function getFilterChips(filters, categories) {
+  const chips = [];
+  if (filters.q) chips.push({ key: "q", label: `"${filters.q}"`, clear: { q: "" } });
+  if (filters.media_kind) {
+    chips.push({ key: "media_kind", label: filters.media_kind === "image" ? "Images & GIFs" : "Videos", clear: { media_kind: "" } });
+  }
+  if (filters.category_id) {
+    const cat = categories.find((c) => String(c.id) === String(filters.category_id));
+    chips.push({ key: "category_id", label: cat?.name || `Category ${filters.category_id}`, clear: { category_id: "", subcategory_id: "" } });
+  }
+  if (filters.subcategory_id) chips.push({ key: "subcategory_id", label: `Sub ${filters.subcategory_id}`, clear: { subcategory_id: "" } });
+  if (filters.uploader) chips.push({ key: "uploader", label: `By ${filters.uploader}`, clear: { uploader: "" } });
+  if (filters.min_size) chips.push({ key: "min_size", label: `≥${filters.min_size} MB`, clear: { min_size: "" } });
+  if (filters.max_size) chips.push({ key: "max_size", label: `≤${filters.max_size} MB`, clear: { max_size: "" } });
+  if (filters.date_from) chips.push({ key: "date_from", label: `From ${filters.date_from}`, clear: { date_from: "" } });
+  if (filters.date_to) chips.push({ key: "date_to", label: `To ${filters.date_to}`, clear: { date_to: "" } });
+  if (filters.adult !== "show") {
+    chips.push({ key: "adult", label: filters.adult === "hide" ? "No 18+" : "Only 18+", clear: { adult: "show" } });
+  }
+  if (filters.sort && filters.sort !== "new") {
+    const sortLabels = { popular: "Most liked", downloads: "Most downloaded", views: "Most viewed", old: "Oldest" };
+    chips.push({ key: "sort", label: sortLabels[filters.sort] || filters.sort, clear: { sort: "new" } });
+  }
+  return chips;
 }
 
 export function DiscoverPage({ ctx }) {
@@ -29,87 +56,123 @@ export function DiscoverPage({ ctx }) {
     date_to: searchParams.get("date_to") || "",
     adult: searchParams.get("adult") || "show",
     sort: searchParams.get("sort") || ctx.settings.default_sort || "new",
-    page: Number(searchParams.get("page") || "1") || 1,
   }));
   const [items, setItems] = useState([]);
   const [hasNext, setHasNext] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [randomPending, setRandomPending] = useState(false);
-  const handleItemUpdated = useCallback((item) => setItems((rows) => replaceMedia(rows, item)), []);
+  const [viewMode, setViewMode] = useState(() => localStorage.getItem(VIEW_MODE_KEY) || "grid");
 
-  const selectedCategory = useMemo(() => {
-    return ctx.lookups.categories.find((category) => String(category.id) === String(filters.category_id));
-  }, [ctx.lookups.categories, filters.category_id]);
-  const subcategories = selectedCategory?.subcategories || selectedCategory?.children || [];
+  const pageRef = useRef(1);
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
+  const sentinelRef = useRef(null);
+
   const pageSize = pageSizeFor(ctx.settings);
 
-  const loadMedia = useCallback(async ({ background = false } = {}) => {
-    if (!background) {
-      setLoading(true);
-      setError("");
-    }
+  const handleItemUpdated = useCallback((item) => setItems((rows) => replaceMedia(rows, item)), []);
+
+  const selectedCategory = ctx.lookups.categories.find(
+    (c) => String(c.id) === String(filters.category_id),
+  );
+  const subcategories = selectedCategory?.subcategories || selectedCategory?.children || [];
+
+  const loadMedia = useCallback(async ({ page = 1, append = false } = {}) => {
+    const f = filtersRef.current;
+    const queryParams = {
+      q: f.q,
+      media_kind: f.media_kind,
+      category_id: f.category_id,
+      subcategory_id: f.subcategory_id,
+      uploader: f.uploader,
+      min_size: f.min_size ? Number(f.min_size) * 1024 * 1024 : "",
+      max_size: f.max_size ? Number(f.max_size) * 1024 * 1024 : "",
+      date_from: f.date_from,
+      date_to: f.date_to,
+      adult: f.adult,
+      sort: f.sort,
+      limit: pageSize + 1,
+      offset: (page - 1) * pageSize,
+    };
+    const path = `/api/media${toQuery(queryParams)}`;
     try {
-      const page = Math.max(1, Number(filters.page) || 1);
-      const queryParams = {
-        q: filters.q,
-        media_kind: filters.media_kind,
-        category_id: filters.category_id,
-        subcategory_id: filters.subcategory_id,
-        uploader: filters.uploader,
-        min_size: filters.min_size ? Number(filters.min_size) * 1024 * 1024 : "",
-        max_size: filters.max_size ? Number(filters.max_size) * 1024 * 1024 : "",
-        date_from: filters.date_from,
-        date_to: filters.date_to,
-        adult: filters.adult,
-        sort: filters.sort,
-        limit: pageSize + 1,
-        offset: (page - 1) * pageSize,
-      };
-      const query = toQuery(queryParams);
-      const path = `/api/media${query}`;
-      const data = background
+      const data = append
         ? await apiFetch(path)
         : await cachedApiFetch(path, { ttl: 20_000, staleTtl: 5 * 60_000, storage: "session" });
       const rows = data.media || [];
-      setItems(rows.slice(0, pageSize));
+      const pageItems = rows.slice(0, pageSize);
+      if (append) {
+        setItems((prev) => [...prev, ...pageItems]);
+      } else {
+        setItems(pageItems);
+      }
       setHasNext(rows.length > pageSize);
       preloadMediaAssets(rows, { limit: 6 });
-      if (rows.length > pageSize) {
-        prefetchApi(`/api/media${toQuery({ ...queryParams, offset: page * pageSize })}`, { ttl: 30_000, staleTtl: 5 * 60_000, storage: "session" });
-      }
-    } catch (fetchError) {
-      if (!background) {
-        setError(fetchError.message);
-        setItems([]);
-        setHasNext(false);
-      }
+    } catch (err) {
+      if (!append) { setError(err.message); setItems([]); setHasNext(false); }
     } finally {
-      if (!background) setLoading(false);
+      if (!append) setLoading(false);
+      else setLoadingMore(false);
     }
-  }, [filters, pageSize]);
+  }, [pageSize]);
 
+  // Filter change → reset and reload
   useEffect(() => {
+    pageRef.current = 1;
+    setHasNext(false);
+    setLoading(true);
+    setError("");
+    setItems([]);
+    loadMedia({ page: 1, append: false });
+
     const next = { ...filters };
     Object.keys(next).forEach((key) => {
-      if (next[key] === "" || (key === "page" && Number(next[key]) === 1)) delete next[key];
+      if (next[key] === "" || (key === "adult" && next[key] === "show") || (key === "sort" && next[key] === "new")) {
+        delete next[key];
+      }
     });
     setSearchParams(next, { replace: true });
-    loadMedia();
-  }, [filters, loadMedia, setSearchParams]);
+  }, [filters]); // intentionally omit loadMedia/setSearchParams — stable refs
 
-  useLiveRefresh(() => loadMedia({ background: true }), {
-    enabled: Number(filters.page) === 1,
-    interval: ctx.user ? 18_000 : 28_000,
-  });
+  // Infinite scroll sentinel
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && hasNext && !loadingMore && !loading) {
+          const nextPage = pageRef.current + 1;
+          pageRef.current = nextPage;
+          setLoadingMore(true);
+          loadMedia({ page: nextPage, append: true });
+        }
+      },
+      { rootMargin: "300px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasNext, loadingMore, loading, loadMedia]);
 
   function updateFilter(key, value) {
     setFilters((current) => ({
       ...current,
       [key]: value,
-      page: 1,
       ...(key === "category_id" ? { subcategory_id: "" } : {}),
     }));
+  }
+
+  function applyFilterClear(patch) {
+    setFilters((current) => ({ ...current, ...patch }));
+  }
+
+  function clearAllFilters() {
+    setFilters({
+      q: "", media_kind: "", category_id: "", subcategory_id: "", uploader: "",
+      min_size: "", max_size: "", date_from: "", date_to: "",
+      adult: "show", sort: ctx.settings.default_sort || "new",
+    });
   }
 
   async function openRandom() {
@@ -125,6 +188,15 @@ export function DiscoverPage({ ctx }) {
     }
   }
 
+  function changeViewMode(mode) {
+    setViewMode(mode);
+    localStorage.setItem(VIEW_MODE_KEY, mode);
+  }
+
+  const openLightbox = ctx.openLightbox;
+  const filterChips = getFilterChips(filters, ctx.lookups.categories);
+  const gridExtraClass = viewMode === "masonry" ? "media-grid-masonry" : "";
+
   return (
     <Page
       title="Discover"
@@ -132,21 +204,33 @@ export function DiscoverPage({ ctx }) {
       lede="Search the archive, narrow by category or uploader, and scan the latest posts without losing your place."
       className="page-discover"
       actions={(
-      <>
-        <button type="button" onClick={openRandom} disabled={randomPending}><Sparkles size={16} />{randomPending ? "Loading" : "Surprise"}</button>
-        <button type="button" onClick={() => { clearApiCache("/api/media"); loadMedia(); }} disabled={loading}><RefreshCw size={16} />Refresh</button>
-      </>
+        <>
+          <button type="button" onClick={openRandom} disabled={randomPending}>
+            <Sparkles size={16} />{randomPending ? "Loading" : "Surprise"}
+          </button>
+          <button type="button" onClick={() => { pageRef.current = 1; setItems([]); setHasNext(false); setLoadingMore(false); setLoading(true); setError(""); clearApiCache("/api/media"); loadMedia({ page: 1, append: false }); }} disabled={loading}>
+            <RefreshCw size={16} />Refresh
+          </button>
+        </>
       )}
     >
       <section className="workspace">
         <aside className="filter-rail">
           <label className="field">
             <span>Search</span>
-            <div className="input-with-icon"><Search size={16} /><input value={filters.q} onChange={(event) => updateFilter("q", event.target.value)} type="search" placeholder="wallpaper, meme, vaporwave" /></div>
+            <div className="input-with-icon">
+              <Search size={16} />
+              <input
+                value={filters.q}
+                onChange={(e) => updateFilter("q", e.target.value)}
+                type="search"
+                placeholder="wallpaper, meme, vaporwave"
+              />
+            </div>
           </label>
           <label className="field">
             <span>Type</span>
-            <select value={filters.media_kind} onChange={(event) => updateFilter("media_kind", event.target.value)}>
+            <select value={filters.media_kind} onChange={(e) => updateFilter("media_kind", e.target.value)}>
               <option value="">All media</option>
               <option value="image">Images and GIFs</option>
               <option value="video">Videos</option>
@@ -154,21 +238,21 @@ export function DiscoverPage({ ctx }) {
           </label>
           <label className="field">
             <span>Category</span>
-            <select value={filters.category_id} onChange={(event) => updateFilter("category_id", event.target.value)}>
+            <select value={filters.category_id} onChange={(e) => updateFilter("category_id", e.target.value)}>
               <option value="">All categories</option>
-              {ctx.lookups.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+              {ctx.lookups.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           </label>
           <label className="field">
             <span>Subcategory</span>
-            <select value={filters.subcategory_id} onChange={(event) => updateFilter("subcategory_id", event.target.value)} disabled={!subcategories.length}>
+            <select value={filters.subcategory_id} onChange={(e) => updateFilter("subcategory_id", e.target.value)} disabled={!subcategories.length}>
               <option value="">All subcategories</option>
-              {subcategories.map((subcategory) => <option key={subcategory.id} value={subcategory.id}>{subcategory.name}</option>)}
+              {subcategories.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </label>
           <label className="field">
             <span>Sort</span>
-            <select value={filters.sort} onChange={(event) => updateFilter("sort", event.target.value)}>
+            <select value={filters.sort} onChange={(e) => updateFilter("sort", e.target.value)}>
               <option value="new">Newest</option>
               <option value="popular">Most liked</option>
               <option value="downloads">Most downloaded</option>
@@ -178,18 +262,18 @@ export function DiscoverPage({ ctx }) {
           </label>
           <details className="filter-details" open>
             <summary><SlidersHorizontal size={16} /> Advanced</summary>
-            <label className="field"><span>Uploader</span><input value={filters.uploader} onChange={(event) => updateFilter("uploader", event.target.value)} /></label>
+            <label className="field"><span>Uploader</span><input value={filters.uploader} onChange={(e) => updateFilter("uploader", e.target.value)} /></label>
             <div className="two-col">
-              <label className="field"><span>Min MB</span><input value={filters.min_size} onChange={(event) => updateFilter("min_size", event.target.value)} type="number" min="0" /></label>
-              <label className="field"><span>Max MB</span><input value={filters.max_size} onChange={(event) => updateFilter("max_size", event.target.value)} type="number" min="0" /></label>
+              <label className="field"><span>Min MB</span><input value={filters.min_size} onChange={(e) => updateFilter("min_size", e.target.value)} type="number" min="0" /></label>
+              <label className="field"><span>Max MB</span><input value={filters.max_size} onChange={(e) => updateFilter("max_size", e.target.value)} type="number" min="0" /></label>
             </div>
             <div className="two-col">
-              <label className="field"><span>From</span><input value={filters.date_from} onChange={(event) => updateFilter("date_from", event.target.value)} type="date" /></label>
-              <label className="field"><span>To</span><input value={filters.date_to} onChange={(event) => updateFilter("date_to", event.target.value)} type="date" /></label>
+              <label className="field"><span>From</span><input value={filters.date_from} onChange={(e) => updateFilter("date_from", e.target.value)} type="date" /></label>
+              <label className="field"><span>To</span><input value={filters.date_to} onChange={(e) => updateFilter("date_to", e.target.value)} type="date" /></label>
             </div>
             <label className="field">
               <span>18+ posts</span>
-              <select value={filters.adult} onChange={(event) => updateFilter("adult", event.target.value)}>
+              <select value={filters.adult} onChange={(e) => updateFilter("adult", e.target.value)}>
                 <option value="show">Show when allowed</option>
                 <option value="hide">Hide 18+</option>
                 <option value="only">Only 18+</option>
@@ -198,10 +282,73 @@ export function DiscoverPage({ ctx }) {
           </details>
           <TagCloud tags={ctx.lookups.tags} onPick={(tag) => updateFilter("q", tag.name || tag.tag || tag)} />
         </aside>
+
         <section className="content-panel">
+          {/* Toolbar: active filter chips + view mode toggle */}
+          <div className="discover-toolbar">
+            {filterChips.length > 0 ? (
+              <div className="active-filters">
+                {filterChips.map((chip) => (
+                  <button
+                    key={chip.key}
+                    type="button"
+                    className="filter-chip"
+                    onClick={() => applyFilterClear(chip.clear)}
+                    title={`Remove: ${chip.label}`}
+                  >
+                    {chip.label}
+                    <XIcon size={12} />
+                  </button>
+                ))}
+                <button type="button" className="filter-chip filter-chip-clear" onClick={clearAllFilters}>
+                  Clear all
+                </button>
+              </div>
+            ) : null}
+            <div className="view-toggle">
+              <button
+                type="button"
+                className={`icon-button ${viewMode === "grid" ? "active" : ""}`}
+                onClick={() => changeViewMode("grid")}
+                title="Grid view"
+                aria-label="Grid view"
+              >
+                <Grid2X2 size={16} />
+              </button>
+              <button
+                type="button"
+                className={`icon-button ${viewMode === "masonry" ? "active" : ""}`}
+                onClick={() => changeViewMode("masonry")}
+                title="Masonry view"
+                aria-label="Masonry view"
+              >
+                <Columns2 size={16} />
+              </button>
+            </div>
+          </div>
+
           {error ? <Notice kind="error">{error}</Notice> : null}
-          <MediaGrid ctx={ctx} items={items} loading={loading} emptyTitle="No posts match this view" onItemUpdated={handleItemUpdated} />
-          <Pager page={filters.page} hasNext={hasNext} loading={loading} onPage={(page) => setFilters((current) => ({ ...current, page }))} />
+          <MediaGrid
+            ctx={ctx}
+            items={items}
+            loading={loading}
+            emptyTitle="No posts match this view"
+            onItemUpdated={handleItemUpdated}
+            onOpen={openLightbox}
+            extraClass={gridExtraClass}
+          />
+
+          {/* Infinite scroll sentinel */}
+          <div ref={sentinelRef} className="scroll-sentinel" aria-hidden="true" />
+          {loadingMore ? (
+            <div className="load-more-spinner" aria-label="Loading more posts">
+              <span className="spinner-ring" />
+              <span>Loading more</span>
+            </div>
+          ) : null}
+          {!hasNext && !loading && items.length > 0 ? (
+            <div className="scroll-end">All caught up</div>
+          ) : null}
         </section>
       </section>
     </Page>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { apiFetch, cachedApiFetch, clearApiCache, forceRefreshRemoteOrigin, prefetchApi, readStoredUser, readToken, resolveApiUrl, toQuery, writeStoredUser, writeToken } from "./api.js";
 import { Shell } from "./components/Shell.jsx";
+import { Lightbox } from "./components/Lightbox.jsx";
 import { NotFound } from "./components/ui.jsx";
 import { DEFAULT_SETTINGS, PAGE_SIZE, setRuntimeMaxUploadBytes } from "./config.js";
 import { useLiveRefresh } from "./hooks/useLiveRefresh.js";
@@ -58,6 +59,9 @@ function galleryPageSize(settings) {
   return Math.min(60, Math.max(12, Math.round(parsed)));
 }
 
+const QUICK_THEME_KEY = "ig_quick_theme";
+const QUICK_THEME_CYCLE = { "": "dark", "dark": "light", "light": "" };
+
 function App() {
   const navigate = useNavigate();
   const [token, setTokenState] = useState(() => readToken());
@@ -70,9 +74,22 @@ function App() {
   const [bootLeaving, setBootLeaving] = useState(false);
   const [sessionReady, setSessionReady] = useState(() => !readToken());
   const [lookupsReady, setLookupsReady] = useState(false);
+  const [lightbox, setLightbox] = useState(null);
+  const [quickTheme, setQuickTheme] = useState(() => localStorage.getItem(QUICK_THEME_KEY) || "");
 
   const showToast = useCallback((message, kind = "info") => {
     setToast({ message, kind, id: Date.now() });
+  }, []);
+
+  const openLightbox = useCallback((items, index) => setLightbox({ items, index: index ?? 0 }), []);
+  const closeLightbox = useCallback(() => setLightbox(null), []);
+  const cycleTheme = useCallback(() => {
+    setQuickTheme((current) => {
+      const next = QUICK_THEME_CYCLE[current] ?? "";
+      if (next) localStorage.setItem(QUICK_THEME_KEY, next);
+      else localStorage.removeItem(QUICK_THEME_KEY);
+      return next;
+    });
   }, []);
 
   const setSessionUser = useCallback((nextUser) => {
@@ -315,10 +332,19 @@ function App() {
     };
   }, [bootDismissed, lookupsReady, sessionReady, user]);
 
+  const baseSettings = useMemo(
+    () => ({ ...DEFAULT_SETTINGS, ...(user?.user_settings || {}) }),
+    [user],
+  );
+  const effectiveSettings = useMemo(
+    () => (quickTheme ? { ...baseSettings, theme_mode: quickTheme } : baseSettings),
+    [baseSettings, quickTheme],
+  );
+
   const ctx = useMemo(() => ({
     token,
     user,
-    settings: { ...DEFAULT_SETTINGS, ...(user?.user_settings || {}) },
+    settings: effectiveSettings,
     lookups,
     loginWith,
     logout,
@@ -326,7 +352,12 @@ function App() {
     refreshLookups,
     setSessionUser,
     showToast,
-  }), [loginWith, logout, lookups, refreshLookups, refreshMe, setSessionUser, showToast, token, user]);
+    lightbox,
+    openLightbox,
+    closeLightbox,
+    quickTheme,
+    cycleTheme,
+  }), [closeLightbox, cycleTheme, effectiveSettings, lightbox, loginWith, logout, lookups, openLightbox, quickTheme, refreshLookups, refreshMe, setSessionUser, showToast, token, user]);
 
   return (
     <Shell ctx={ctx} className={galleryClassName(ctx.settings)} style={galleryStyle(ctx.settings)}>
@@ -355,6 +386,7 @@ function App() {
           tip={BOOT_TIPS[bootTipIndex]}
         />
       ) : null}
+      {lightbox ? <Lightbox ctx={ctx} /> : null}
       {toast ? (
         <div className={`toast toast-${toast.kind}`} role="status" aria-live="polite">
           <span className="toast-message">{toast.message}</span>

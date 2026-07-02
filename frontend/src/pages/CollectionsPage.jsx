@@ -181,7 +181,7 @@ export function CollectionsPage({ ctx }) {
                   ) : !picker.loading && picker.q ? <p className="muted-copy">No matching posts outside this collection.</p> : null}
                 </section>
               ) : null}
-              <MediaGrid ctx={ctx} items={media} emptyTitle="This collection is empty" onItemUpdated={handleItemUpdated} />
+              <MediaGrid ctx={ctx} items={media} emptyTitle="This collection is empty" onItemUpdated={handleItemUpdated} onOpen={ctx.openLightbox} />
             </>
           ) : <EmptyState title="Select a collection" />}
         </section>

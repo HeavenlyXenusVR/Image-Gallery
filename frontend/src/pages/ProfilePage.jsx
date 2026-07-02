@@ -147,7 +147,7 @@ export function ProfilePage({ ctx }) {
       <section className={`profile-sections ${profileClasses}`} style={profileSurface}>
         {showUploads ? <div className="profile-posts">
           <div className="section-head"><h2>Posts</h2><span>{data.media?.length || 0}</span></div>
-          <MediaGrid ctx={ctx} items={data.media || []} emptyTitle="No public posts" />
+          <MediaGrid ctx={ctx} items={data.media || []} emptyTitle="No public posts" onOpen={ctx.openLightbox} />
         </div> : null}
         <aside className="profile-rail">
           {showCollections ? <div className="side-box"><h3>Collections</h3>{(data.collections || []).map((collection) => <CollectionMini collection={collection} key={collection.id} />)}{!data.collections?.length ? <p>No public collections.</p> : null}</div> : null}

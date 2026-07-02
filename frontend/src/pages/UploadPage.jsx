@@ -37,6 +37,7 @@ export function UploadPage({ ctx }) {
   });
   const [preview, setPreview] = useState("");
   const [busy, setBusy] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0); // 0–100
   const [dragActive, setDragActive] = useState(false);
   const [analysis, setAnalysis] = useState(null);
@@ -96,6 +97,7 @@ export function UploadPage({ ctx }) {
   async function analyze() {
     if (!form.file) return;
     setBusy(true);
+    setAnalyzing(true);
     try {
       const body = new FormData();
       body.set("file", form.file);
@@ -119,6 +121,7 @@ export function UploadPage({ ctx }) {
       ctx.showToast(error.message, "error");
     } finally {
       setBusy(false);
+      setAnalyzing(false);
     }
   }
 
@@ -268,7 +271,7 @@ export function UploadPage({ ctx }) {
             </div>
           </div>
           <div className="form-actions">
-            <button type="button" onClick={analyze} disabled={busy || !form.file}><WandSparkles size={16} />Analyze</button>
+            <button type="button" onClick={analyze} disabled={busy || !form.file}><WandSparkles size={16} />{analyzing ? "Analyzing…" : "Analyze"}</button>
             <button className="primary" type="submit" disabled={busy || !form.file}><Upload size={16} />{busy ? "Working" : "Upload"}</button>
           </div>
         </section>

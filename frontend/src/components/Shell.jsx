@@ -1,6 +1,9 @@
 import { Link, NavLink } from "react-router-dom";
-import { Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Settings, Sparkles, Upload, UserPlus, Users } from "lucide-react";
+import { Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Moon, Settings, Sparkles, Sun, SunMoon, Upload, UserPlus, Users } from "lucide-react";
 import { Avatar } from "./ui.jsx";
+
+const THEME_ICONS = { dark: Moon, light: Sun, "": SunMoon };
+const THEME_LABELS = { dark: "Switch to light theme", light: "Switch to system theme", "": "Switch to dark theme" };
 
 export function Shell({ ctx, children, className = "", style }) {
   const checks = Array.isArray(ctx.lookups.live?.checks) ? ctx.lookups.live.checks : [];
@@ -31,6 +34,7 @@ export function Shell({ ctx, children, className = "", style }) {
         </nav>
         <div className="account-actions">
           <span className={`health-pill ${liveOk ? "is-live" : ""}`} title={telegram?.detail || ""}>{healthText}</span>
+          <ThemeToggle quickTheme={ctx.quickTheme} onCycle={ctx.cycleTheme} />
           {ctx.user ? (
             <>
               <Link className="account-badge" to={`/users/${ctx.user.username}`} title="Profile">
@@ -78,5 +82,15 @@ function IconButton({ to, icon: Icon, label }) {
       <Icon size={18} />
       <span className="sr-only">{label}</span>
     </Link>
+  );
+}
+
+function ThemeToggle({ quickTheme, onCycle }) {
+  const Icon = THEME_ICONS[quickTheme] ?? SunMoon;
+  const label = THEME_LABELS[quickTheme] ?? "Toggle theme";
+  return (
+    <button className="icon-button theme-toggle" type="button" onClick={onCycle} title={label} aria-label={label}>
+      <Icon size={16} />
+    </button>
   );
 }
