@@ -3635,7 +3635,7 @@ async def _stream_transcode_and_cache(
         "-map", "0:v:0", "-map", "0:a:0?",
         "-vf", scale_filter,
         "-c:v", "libx264",
-        "-preset", "ultrafast",
+        "-preset", str(profile.get("preset") or "ultrafast"),
         "-crf", str(int(profile["crf"])),
         "-profile:v", str(profile.get("profile") or "high"),
         "-level", "4.1",
@@ -3755,7 +3755,7 @@ async def _stdin_transcode_and_cache(
         "-map", "0:v:0", "-map", "0:a:0?",
         "-vf", scale_filter,
         "-c:v", "libx264",
-        "-preset", "ultrafast",
+        "-preset", str(profile.get("preset") or "ultrafast"),
         "-crf", str(int(profile["crf"])),
         "-profile:v", str(profile.get("profile") or "high"),
         "-level", "4.1",
@@ -3900,7 +3900,8 @@ async def _db_backed_transcode_and_cache(
 
 
 async def _video_variant_response(media_id: int, item: dict[str, Any], file_info: dict[str, Any] | None, legacy: Path | None, quality: str) -> Response | None:
-    profile = VIDEO_QUALITY_PROFILES.get(_normalize_video_quality(quality))
+    quality = _normalize_video_quality(quality)
+    profile = VIDEO_QUALITY_PROFILES.get(quality)
     if not profile or item.get("media_kind") != "video":
         return None
     digest = str((file_info or {}).get("sha256") or item.get("content_sha256") or item.get("updated_at") or item.get("created_at") or media_id)
