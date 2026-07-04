@@ -967,7 +967,9 @@ def _image_fingerprint(content: bytes, filename: str, mime_type: str, media_kind
                 "image_width": int(width),
                 "image_height": int(height),
             }
-    except Exception:
+    except Exception as _exc:
+        import logging as _logging
+        _logging.getLogger(__name__).debug("Image fingerprinting failed for %s: %s", filename, _exc)
         return None
 
 
@@ -1757,7 +1759,9 @@ def _media_size(content: bytes, filename: str, mime_type: str, media_kind: str) 
                     return tuple(int(part) for part in image.size)
             finally:
                 Image.MAX_IMAGE_PIXELS = _prev
-        except Exception:
+        except Exception as _exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug("Image size detection failed for %s: %s", filename, _exc)
             return None
     return _video_size(content, filename, mime_type) if media_kind == "video" else None
 
@@ -1786,7 +1790,9 @@ def _video_size(content: bytes, filename: str, mime_type: str) -> tuple[int, int
             width = int(stream.get("width") or 0)
             height = int(stream.get("height") or 0)
             return (width, height) if width and height else None
-        except Exception:
+        except Exception as _exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug("Video size detection (ffprobe) failed for %s: %s", filename, _exc)
             return None
 
 
@@ -1806,7 +1812,9 @@ def _preview_base64(content: bytes, filename: str, mime_type: str, media_kind: s
                     return base64.b64encode(output.getvalue()).decode("ascii")
             finally:
                 Image.MAX_IMAGE_PIXELS = _prev
-        except Exception:
+        except Exception as _exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug("Image preview generation failed for %s, falling back to raw bytes: %s", filename, _exc)
             return base64.b64encode(content).decode("ascii")
     if media_kind == "video":
         return _video_preview_base64(content, filename, mime_type)
@@ -1842,7 +1850,9 @@ def _video_preview_base64(content: bytes, filename: str, mime_type: str) -> str 
                 check=True,
             )
             return base64.b64encode(result.stdout).decode("ascii")
-        except Exception:
+        except Exception as _exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug("Video preview generation (ffmpeg) failed for %s: %s", filename, _exc)
             return None
 
 
