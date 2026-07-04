@@ -180,6 +180,29 @@ run_git() {
   fi
 }
 
+config_meaningfully_changed() {
+  local committed
+  committed="$(run_git show HEAD:live-config.json 2>/dev/null || true)"
+  COMMITTED_CONFIG_JSON="${committed}" CONFIG_FILE_PATH="${CONFIG_FILE}" python3 <<'PY'
+import json, os, sys
+
+def sig(raw):
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return None
+    return (
+        str(d.get("gallery_url") or ""),
+        str(d.get("status") or ""),
+        sorted(str(u) for u in (d.get("local_urls") or [])),
+    )
+
+committed = sig(os.environ.get("COMMITTED_CONFIG_JSON") or "{}")
+current = sig(open(os.environ["CONFIG_FILE_PATH"], encoding="utf-8").read())
+sys.exit(0 if committed != current else 1)
+PY
+}
+
 publish_config() {
   if [[ "${AUTO_PUSH_CONFIG}" != "1" ]]; then
     echo "GALLERY_AUTO_PUSH_CONFIG is disabled; live-config.json was updated locally only."
@@ -193,8 +216,12 @@ publish_config() {
     echo "Skipping live-config push because ${ROOT_DIR} is not a git work tree." >&2
     return
   fi
-  if run_git diff --quiet -- live-config.json; then
-    echo "live-config.json already matches the current tunnel URL."
+  # Compare only the fields that matter (gallery_url/status/local_urls), not the raw file diff —
+  # write_config() always rewrites updated_at, so a raw `git diff` looks "changed" on every single
+  # publish (even a same-URL service restart), which is what caused the git log's "Update live
+  # backend URL" commit spam. Only push when something a client would actually care about differs.
+  if ! config_meaningfully_changed; then
+    echo "live-config.json content is unchanged (only updated_at differs); skipping no-op publish."
     return
   fi
   local now last_push
