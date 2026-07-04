@@ -133,8 +133,22 @@ def _normalize_ai_provider(value: str | None) -> str:
     return ""
 
 
+GEMINI_API_KEY_ENV_NAMES = ("GALLERY_GEMINI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+
+
 def _gemini_api_key() -> str:
-    return _env_first("GALLERY_GEMINI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+    return _env_first(*GEMINI_API_KEY_ENV_NAMES)
+
+
+def _gemini_api_key_missing_message() -> str:
+    return (
+        "Gemini is selected, but no Gemini API key is configured in "
+        f"{', '.join(GEMINI_API_KEY_ENV_NAMES[:-1])}, or {GEMINI_API_KEY_ENV_NAMES[-1]}."
+    )
+
+
+def _resolved_gemini_api_key(ai_api_key: str | None = None) -> str:
+    return str(ai_api_key or _gemini_api_key() or "").strip()
 
 
 def _gemini_model(explicit_model: str | None = None) -> str:
@@ -143,6 +157,30 @@ def _gemini_model(explicit_model: str | None = None) -> str:
 
 def _gemini_model_configured(explicit_model: str | None = None) -> bool:
     return bool(_env_first("GALLERY_GEMINI_MODEL", "GEMINI_MODEL") or str(explicit_model or "").strip().lower().startswith("gemini"))
+
+
+def _ollama_configured() -> bool:
+    return bool(os.getenv("GALLERY_OLLAMA_MODEL") or os.getenv("GALLERY_OLLAMA_BASE_URL"))
+
+
+def _ollama_model(ai_model: str | None = None) -> str:
+    return str(os.getenv("GALLERY_OLLAMA_MODEL") or ai_model or "qwen2.5vl:3b").strip()
+
+
+def _ollama_base_url(ai_base_url: str | None = None) -> str:
+    return str(os.getenv("GALLERY_OLLAMA_BASE_URL") or ai_base_url or "http://127.0.0.1:11434").rstrip("/")
+
+
+def _openai_api_key(ai_api_key: str | None = None) -> str:
+    return str(ai_api_key or os.getenv("GALLERY_AI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+
+
+def _openai_model(ai_model: str | None = None) -> str:
+    return str(ai_model or os.getenv("GALLERY_AI_MODEL") or "gpt-5.4-nano").strip()
+
+
+def _openai_base_url(ai_base_url: str | None = None) -> str:
+    return str(ai_base_url or os.getenv("GALLERY_AI_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
 
 
 def _select_vision_provider(ai_api_key: str | None = None, ai_model: str | None = None) -> str:
@@ -157,9 +195,9 @@ def _select_vision_provider(ai_api_key: str | None = None, ai_model: str | None 
         return "gemini"
     if _local_vision_command():
         return "local"
-    if os.getenv("GALLERY_OLLAMA_MODEL") or os.getenv("GALLERY_OLLAMA_BASE_URL"):
+    if _ollama_configured():
         return "ollama"
-    if ai_api_key or os.getenv("GALLERY_AI_API_KEY") or os.getenv("OPENAI_API_KEY"):
+    if _openai_api_key(ai_api_key):
         return "openai"
     return "local"
 
@@ -373,13 +411,10 @@ def analyze_media_bytes(
     provider = _select_vision_provider(ai_api_key=ai_api_key, ai_model=ai_model)
     enabled_default = bool(
         local_classifier
-        or os.getenv("GALLERY_OLLAMA_MODEL")
-        or os.getenv("GALLERY_OLLAMA_BASE_URL")
+        or _ollama_configured()
         or ai_model
-        or ai_api_key
-        or os.getenv("GALLERY_AI_API_KEY")
+        or _openai_api_key(ai_api_key)
         or _gemini_api_key()
-        or os.getenv("OPENAI_API_KEY")
     )
     enabled = _resolve_bool(ai_enabled, env_name="GALLERY_AI_ENABLED", default=enabled_default)
     if not enabled:
@@ -390,6 +425,7 @@ def analyze_media_bytes(
                 filename=filename,
                 mime_type=mime_type,
                 media_kind=media_kind,
+                provider=provider,
             )
         return fallback
 
@@ -402,6 +438,7 @@ def analyze_media_bytes(
                 filename=filename,
                 mime_type=mime_type,
                 media_kind=media_kind,
+                provider=provider,
             )
         return fallback
 
@@ -427,6 +464,7 @@ def analyze_media_bytes(
                     filename=filename,
                     mime_type=mime_type,
                     media_kind=media_kind,
+                    provider=provider,
                 )
 
     if provider == "gemini" and _resolve_bool(None, env_name="GALLERY_GEMINI_BACKOFF_ENABLED", default=False):
@@ -447,6 +485,7 @@ def analyze_media_bytes(
                     filename=filename,
                     mime_type=mime_type,
                     media_kind=media_kind,
+                    provider=provider,
                 )
 
     try:
@@ -466,25 +505,30 @@ def analyze_media_bytes(
                     filename=filename,
                     mime_type=mime_type,
                     media_kind=media_kind,
+                    provider="local",
                 )
-            provider = _select_vision_provider(ai_api_key=ai_api_key, ai_model=ai_model)
-            api_key = str(ai_api_key or _gemini_api_key() or os.getenv("GALLERY_AI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
-            if provider == "local":
-                    if training_result:
-                        training_result["reason"] = training_result.get("reason") or "Learned gallery correction used after local vision failed."
-                        return _merge_analysis(
-                            ai_result=training_result,
-                            fallback=fallback,
-                            filename=filename,
-                            mime_type=mime_type,
-                            media_kind=media_kind,
-                        )
-                    fallback.reason = "Local vision classifier could not confidently identify this image."
-                    return fallback
+            # _select_vision_provider always returns "local" whenever a local classifier
+            # command is configured on disk (see _local_vision_command), regardless of
+            # whether it actually produced a result for THIS image — so once local is
+            # selected, a failed local_clip_result never falls through to Gemini/Ollama/
+            # OpenAI even if those are also configured. That's existing, intentional
+            # behavior (local is authoritative when configured), not a bug to fix here.
+            if training_result:
+                training_result["reason"] = training_result.get("reason") or "Learned gallery correction used after local vision failed."
+                return _merge_analysis(
+                    ai_result=training_result,
+                    fallback=fallback,
+                    filename=filename,
+                    mime_type=mime_type,
+                    media_kind=media_kind,
+                    provider=provider,
+                )
+            fallback.reason = "Local vision classifier could not confidently identify this image."
+            return fallback
 
         if provider == "ollama":
-            model = str(os.getenv("GALLERY_OLLAMA_MODEL") or ai_model or "qwen2.5vl:3b").strip()
-            base_url = str(os.getenv("GALLERY_OLLAMA_BASE_URL") or ai_base_url or "http://127.0.0.1:11434").rstrip("/")
+            model = _ollama_model(ai_model)
+            base_url = _ollama_base_url(ai_base_url)
             ai_result = _ollama_vision_analysis(
                 preview_image_b64=preview_image_b64,
                 original_image_b64=(base64.b64encode(content).decode("ascii") if media_kind == "image" else None),
@@ -502,18 +546,19 @@ def analyze_media_bytes(
             )
             VISION_BACKOFF.pop("ollama", None)
         elif provider == "gemini":
-            api_key = str(ai_api_key or _gemini_api_key() or "").strip()
+            api_key = _resolved_gemini_api_key(ai_api_key)
             if not api_key:
                 if training_result:
-                    training_result["reason"] = (training_result.get("reason") or "Learned gallery correction used.") + " Gemini is selected, but no Gemini API key is configured in GALLERY_GEMINI_API_KEY, GEMINI_API_KEY, or GOOGLE_API_KEY."
+                    training_result["reason"] = (training_result.get("reason") or "Learned gallery correction used.") + " " + _gemini_api_key_missing_message()
                     return _merge_analysis(
                         ai_result=training_result,
                         fallback=fallback,
                         filename=filename,
                         mime_type=mime_type,
                         media_kind=media_kind,
+                        provider="gemini",
                     )
-                fallback.reason = "Gemini is selected, but no Gemini API key is configured in GALLERY_GEMINI_API_KEY, GEMINI_API_KEY, or GOOGLE_API_KEY."
+                fallback.reason = _gemini_api_key_missing_message()
                 return fallback
             ai_result = _gemini_vision_analysis(
                 preview_image_b64=preview_image_b64,
@@ -534,7 +579,7 @@ def analyze_media_bytes(
                 ai_result.setdefault("source", "google-gemini")
             VISION_BACKOFF.pop("gemini", None)
         else:
-            api_key = str(ai_api_key or os.getenv("GALLERY_AI_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+            api_key = _openai_api_key(ai_api_key)
             if not api_key:
                 if training_result:
                     return _merge_analysis(
@@ -543,6 +588,7 @@ def analyze_media_bytes(
                         filename=filename,
                         mime_type=mime_type,
                         media_kind=media_kind,
+                        provider="openai",
                     )
                 fallback.reason = "OpenAI-compatible vision is selected, but no API key is configured."
                 return fallback
@@ -560,8 +606,8 @@ def analyze_media_bytes(
                 fallback=fallback,
                 training_examples=training_examples or [],
                 api_key=api_key,
-                base_url=str(ai_base_url or os.getenv("GALLERY_AI_BASE_URL") or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/"),
-                model=str(ai_model or os.getenv("GALLERY_AI_MODEL") or "gpt-5.4-nano").strip(),
+                base_url=_openai_base_url(ai_base_url),
+                model=_openai_model(ai_model),
                 timeout_seconds=timeout_seconds,
             )
     except Exception as exc:
@@ -585,6 +631,7 @@ def analyze_media_bytes(
                 filename=filename,
                 mime_type=mime_type,
                 media_kind=media_kind,
+                provider="local",
             )
         if training_result:
             training_result["reason"] = f"{training_result.get('reason') or 'Learned gallery correction used.'} Primary AI unavailable: {safe_exc}"
@@ -594,6 +641,7 @@ def analyze_media_bytes(
                 filename=filename,
                 mime_type=mime_type,
                 media_kind=media_kind,
+                provider=provider,
             )
         fallback.reason = f"AI suggestion unavailable, using local analyzer: {safe_exc}"
         return fallback
@@ -607,6 +655,7 @@ def analyze_media_bytes(
 
     return _merge_analysis(
         ai_result=ai_result,
+        provider=provider,
         fallback=fallback,
         filename=filename,
         mime_type=mime_type,
@@ -1137,6 +1186,7 @@ def _merge_analysis(
     filename: str,
     mime_type: str,
     media_kind: str,
+    provider: str | None = None,
 ) -> SmartMediaAnalysis:
     confidence = _clamp_float(ai_result.get("confidence"), 0.0, 1.0, fallback.confidence)
     ai_title = _clean_title(ai_result.get("title"))
@@ -1196,14 +1246,18 @@ def _merge_analysis(
         subcategory_name=subcategory_name,
         suggested_base=_clean_filename_base(ai_result.get("suggested_filename_base")),
     )
+    # `provider` is the actual provider analyze_media_bytes resolved and used for this
+    # specific analysis; callers that don't know it (or have none, e.g. no online AI ran)
+    # fall back to a bare env-only lookup, same as before this was made explicit.
+    effective_provider = provider if provider is not None else _select_vision_provider()
     inferred_source = (_clean_label(ai_result.get("source")) or "").lower()
     if inferred_source and confidence >= 0.45:
         source = inferred_source
-    elif _select_vision_provider() == "gemini" and confidence >= 0.45:
+    elif effective_provider == "gemini" and confidence >= 0.45:
         source = "google-gemini"
-    elif _select_vision_provider() == "ollama" and confidence >= 0.45:
+    elif effective_provider == "ollama" and confidence >= 0.45:
         source = "ollama"
-    elif _select_vision_provider() == "openai" and confidence >= 0.45:
+    elif effective_provider == "openai" and confidence >= 0.45:
         source = "openai"
     else:
         source = fallback.source
