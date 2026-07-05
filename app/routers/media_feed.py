@@ -8,16 +8,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 import app.main as main
-from ..auth import require_auth
 from ._shared import (
     _api_cache_key,
     _api_cache_response,
     _auth_optional,
     _bounded_query_limit,
     _bounded_query_offset,
+    _current_user,
     _legacy_upload_path,
     _store_api_cache_response,
     _user_id,
@@ -227,8 +227,7 @@ async def _site_background_rotation_loop() -> None:
 
 
 @router.get("/api/feed/following")
-async def following_feed(request: Request, limit: int = 60, offset: int = 0) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def following_feed(request: Request, limit: int = 60, offset: int = 0, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     adult_allowed = await _viewer_can_open_adult(request)
     limit = _bounded_query_limit(limit, default=60)
     offset = _bounded_query_offset(offset)

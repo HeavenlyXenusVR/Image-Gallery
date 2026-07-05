@@ -69,9 +69,13 @@ export function useMediaActions(ctx, onItemUpdated) {
 
   const copyPageLink = useCallback(async (item) => {
     try {
-      const basename = String(window.IMAGE_GALLERY_BASENAME || "").replace(/\/+$/, "");
-      const url = new URL(`${basename}/media/${item.id}`, window.location.origin);
-      await navigator.clipboard.writeText(url.toString());
+      // Always resolve against the real backend origin, never window.location.origin:
+      // on the GitHub Pages mirror that's a static host that can't render the
+      // per-post Open Graph tags Discord/social previews need, but the backend
+      // (which also serves this same SPA) can.
+      const resolved = await resolveApiUrl(`/media/${item.id}`);
+      const url = /^https?:\/\//i.test(resolved) ? resolved : new URL(resolved, window.location.origin).toString();
+      await navigator.clipboard.writeText(url);
       ctxRef.current.showToast("Post link copied.", "success");
     } catch (error) {
       ctxRef.current.showToast(error.message || "Could not copy post link.", "error");

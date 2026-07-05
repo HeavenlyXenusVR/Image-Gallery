@@ -6,14 +6,14 @@ import secrets
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 
 import app.main as main
-from ..auth import SESSION_COOKIE_NAME, issue_token, require_auth
+from ..auth import SESSION_COOKIE_NAME, issue_token
 from ..emailer import EmailDeliveryError, send_verification_email
 from ..schemas import EmailCodeRequest, EmailUpdateRequest, LoginRequest, RegisterRequest
-from ._shared import _jsonable, _rate_limit
+from ._shared import _current_user, _jsonable, _rate_limit
 
 router = APIRouter()
 
@@ -148,8 +148,7 @@ async def verify_email(request: Request, token: str):
 
 
 @router.post("/api/auth/resend-verification")
-async def resend_verification(request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def resend_verification(request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     await _rate_limit(f"resend-verification:{auth['id']}", limit=8, window_seconds=3600)
     user = await main.db.get_user(int(auth["id"]))
     if not user:
@@ -165,8 +164,7 @@ async def resend_verification(request: Request) -> dict[str, Any]:
 
 
 @router.post("/api/me/email")
-async def update_email(payload: EmailUpdateRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def update_email(payload: EmailUpdateRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     await _rate_limit(f"email-update:{auth['id']}", limit=8, window_seconds=3600)
     try:
         user = await main.db.update_user_email(int(auth["id"]), payload.email)
@@ -181,8 +179,7 @@ async def update_email(payload: EmailUpdateRequest, request: Request) -> dict[st
 
 
 @router.post("/api/me/email/verify")
-async def verify_email_code(payload: EmailCodeRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def verify_email_code(payload: EmailCodeRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     await _rate_limit(f"email-verify:{auth['id']}", limit=20, window_seconds=3600)
     code = re.sub(r"\D+", "", str(payload.code or ""))[:12]
     if not code:

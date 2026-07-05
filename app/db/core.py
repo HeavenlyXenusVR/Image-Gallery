@@ -478,6 +478,25 @@ class CoreMixin:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                     """,
                 )
+                await ensure_table(
+                    "notifications",
+                    """
+                    CREATE TABLE notifications (
+                      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                      recipient_id BIGINT UNSIGNED NOT NULL,
+                      actor_id BIGINT UNSIGNED NULL,
+                      kind ENUM('follow','friend_request','friend_accept','comment','message') NOT NULL,
+                      media_id BIGINT UNSIGNED NULL,
+                      preview VARCHAR(160) NULL,
+                      read_at TIMESTAMP NULL DEFAULT NULL,
+                      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      KEY idx_notifications_recipient (recipient_id, read_at, created_at),
+                      CONSTRAINT fk_notifications_recipient FOREIGN KEY (recipient_id) REFERENCES users(id) ON DELETE CASCADE,
+                      CONSTRAINT fk_notifications_actor FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL,
+                      CONSTRAINT fk_notifications_media FOREIGN KEY (media_id) REFERENCES media_items(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
         await self.ensure_user_columns()
         await self.ensure_subcategory_tables()
         await self.ensure_media_columns()

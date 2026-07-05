@@ -40,6 +40,7 @@ from .helpers import HelpersMixin
 from .media import MediaMixin
 from .media_storage import MediaBlobMixin
 from .messages import MessagingMixin
+from .notifications import NotificationsMixin
 from .social import ProfileFriendsMixin
 
 __all__ = [
@@ -79,6 +80,7 @@ class GalleryDatabase(
     FeedSocialMixin,
     ProfileFriendsMixin,
     MessagingMixin,
+    NotificationsMixin,
     AIVisionMixin,
     AdminMixin,
 ):

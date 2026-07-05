@@ -7,11 +7,10 @@ import os
 import re
 from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 import app.main as main
 from ..ai_metadata import analyze_media_bytes, is_low_signal_filename, _image_fingerprint
-from ..auth import require_auth
 from ..database import MAX_MEDIA_SUBCATEGORIES, normalize_subcategory_names
 from ..schemas import (
     BookmarkRequest,
@@ -24,6 +23,7 @@ from ..schemas import (
     VisionTrainingRequest,
 )
 from ._shared import (
+    _current_user,
     _detect_media_kind,
     _ensure_media_visible_to_viewer,
     _invalidate_api_cache,
@@ -670,9 +670,8 @@ async def upload_media(
     comments_enabled: bool = Form(True),
     downloads_enabled: bool = Form(True),
     pinned: bool = Form(False),
-    auto_ai: bool = Form(True),
+    auto_ai: bool = Form(True), auth: dict[str, Any] = Depends(_current_user),
 ) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
     category_id_int = _optional_form_int(category_id, "category_id")
     subcategory_id_int = _optional_form_int(subcategory_id, "subcategory_id")
     selected_subcategory_ids = _parse_form_int_list(subcategory_ids_json, "subcategory_ids_json")
@@ -778,9 +777,8 @@ async def analyze_media_upload(
     file: UploadFile = File(...),
     title: str = Form(""),
     description: str = Form(""),
-    tags: str = Form(""),
+    tags: str = Form(""), auth: dict[str, Any] = Depends(_current_user),
 ) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
     await _rate_limit(f"analyze:{auth['id']}", limit=main.settings.analyze_rate_limit_per_hour, window_seconds=3600)
     uploaded = await _read_validated_upload(file, main.settings.max_upload_bytes)
     training_examples = await _ai_training_examples_for(int(auth["id"]))
@@ -821,8 +819,7 @@ async def media_detail(media_id: int, request: Request) -> dict[str, Any]:
 
 
 @router.patch("/api/media/{media_id}")
-async def edit_media(media_id: int, payload: MediaUpdateRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def edit_media(media_id: int, payload: MediaUpdateRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     previous_item = await main.db.get_media(media_id, int(auth["id"]))
     try:
         item = await main.db.update_media(media_id, int(auth["id"]), payload.model_dump())
@@ -849,8 +846,7 @@ async def edit_media(media_id: int, payload: MediaUpdateRequest, request: Reques
 
 
 @router.post("/api/media/{media_id}/ai/train")
-async def train_media_ai(media_id: int, payload: VisionTrainingRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def train_media_ai(media_id: int, payload: VisionTrainingRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     item = await main.db.get_media(media_id, int(auth["id"]))
     if not item:
         raise HTTPException(status_code=404, detail="Media not found.")
@@ -872,8 +868,7 @@ async def train_media_ai(media_id: int, payload: VisionTrainingRequest, request:
 
 
 @router.patch("/api/media/{media_id}/controls")
-async def edit_media_controls(media_id: int, payload: MediaControlRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def edit_media_controls(media_id: int, payload: MediaControlRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     try:
         item = await main.db.set_media_controls(media_id, int(auth["id"]), payload.model_dump(exclude_none=True))
     except PermissionError as exc:
@@ -888,8 +883,7 @@ async def edit_media_controls(media_id: int, payload: MediaControlRequest, reque
 
 
 @router.post("/api/media/{media_id}/restore")
-async def restore_media(media_id: int, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def restore_media(media_id: int, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     try:
         item = await main.db.restore_media(media_id, int(auth["id"]))
     except PermissionError as exc:
@@ -902,8 +896,7 @@ async def restore_media(media_id: int, request: Request) -> dict[str, Any]:
 
 
 @router.post("/api/media/{media_id}/like")
-async def like_media(media_id: int, payload: LikeRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def like_media(media_id: int, payload: LikeRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     viewer_id = int(auth["id"])
     existing = await main.db.get_media(media_id, viewer_id)
     _ensure_media_visible_to_viewer(existing, viewer_id)
@@ -916,8 +909,7 @@ async def like_media(media_id: int, payload: LikeRequest, request: Request) -> d
 
 
 @router.post("/api/media/{media_id}/bookmark")
-async def bookmark_media(media_id: int, payload: BookmarkRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def bookmark_media(media_id: int, payload: BookmarkRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     viewer_id = int(auth["id"])
     existing = await main.db.get_media(media_id, viewer_id)
     _ensure_media_visible_to_viewer(existing, viewer_id)
@@ -930,8 +922,7 @@ async def bookmark_media(media_id: int, payload: BookmarkRequest, request: Reque
 
 
 @router.post("/api/media/{media_id}/comments")
-async def add_comment(media_id: int, payload: CommentRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def add_comment(media_id: int, payload: CommentRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     viewer_id = int(auth["id"])
     existing = await main.db.get_media(media_id, viewer_id)
     _ensure_media_visible_to_viewer(existing, viewer_id)
@@ -941,13 +932,15 @@ async def add_comment(media_id: int, payload: CommentRequest, request: Request) 
         raise HTTPException(status_code=403, detail=str(exc)) from None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    await main.db.create_notification(
+        int(existing["user_id"]), viewer_id, "comment", media_id=media_id, preview=payload.body,
+    )
     _invalidate_api_cache("media")
     return {"comment": _jsonable(comment)}
 
 
 @router.delete("/api/comments/{comment_id}")
-async def delete_comment(comment_id: int, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def delete_comment(comment_id: int, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     try:
         deleted = await main.db.delete_comment(comment_id, int(auth["id"]))
     except PermissionError as exc:
@@ -959,8 +952,7 @@ async def delete_comment(comment_id: int, request: Request) -> dict[str, Any]:
 
 
 @router.post("/api/media/{media_id}/report")
-async def report_media(media_id: int, payload: ReportRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def report_media(media_id: int, payload: ReportRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     viewer_id = int(auth["id"])
     existing = await main.db.get_media(media_id, viewer_id)
     _ensure_media_visible_to_viewer(existing, viewer_id)
@@ -999,8 +991,7 @@ async def report_media_load_diagnostic(media_id: int, payload: MediaLoadDiagnost
 
 
 @router.delete("/api/media/{media_id}")
-async def delete_media(media_id: int, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def delete_media(media_id: int, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     item = await main.db.delete_media(media_id, int(auth["id"]))
     if not item:
         raise HTTPException(status_code=404, detail="Media not found.")

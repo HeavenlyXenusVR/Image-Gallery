@@ -90,8 +90,18 @@ def _ensure_media_visible_to_viewer(item: dict[str, Any] | None, viewer_id: int 
         raise HTTPException(status_code=403, detail="This post is private.")
 
 
+def _current_user(request: Request) -> dict[str, Any]:
+    """FastAPI dependency: the decoded session/token payload for the caller.
+
+    Raises 401 via require_auth() if there's no valid session. Use as
+    `auth: dict[str, Any] = Depends(_current_user)` instead of calling
+    require_auth(...) inline in every handler.
+    """
+    return require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+
+
 async def _require_site_owner(request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+    auth = _current_user(request)
     user = await main.db.get_user(int(auth["id"]))
     if not _is_site_owner_user(user):
         raise HTTPException(status_code=403, detail="Only the verified site owner can use this action.")

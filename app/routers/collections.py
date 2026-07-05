@@ -2,12 +2,11 @@
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 import app.main as main
-from ..auth import require_auth
 from ..schemas import CollectionItemRequest, CollectionRequest
-from ._shared import _auth_optional, _user_id, _viewer_can_open_adult, _with_collection_urls, _with_urls
+from ._shared import _auth_optional, _current_user, _user_id, _viewer_can_open_adult, _with_collection_urls, _with_urls
 
 router = APIRouter()
 
@@ -23,8 +22,7 @@ async def collections(request: Request, mine: bool = False) -> dict[str, Any]:
 
 
 @router.post("/api/collections")
-async def create_collection(payload: CollectionRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def create_collection(payload: CollectionRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     try:
         collection = await main.db.create_collection(int(auth["id"]), payload.name, payload.description, payload.is_public)
     except ValueError as exc:
@@ -48,8 +46,7 @@ async def collection_detail(collection_id: int, request: Request) -> dict[str, A
 
 
 @router.post("/api/collections/{collection_id}/items")
-async def save_collection_item(collection_id: int, payload: CollectionItemRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def save_collection_item(collection_id: int, payload: CollectionItemRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     collection = await main.db.set_collection_item(collection_id, payload.media_id, int(auth["id"]), payload.saved)
     if not collection:
         raise HTTPException(status_code=404, detail="Collection not found.")

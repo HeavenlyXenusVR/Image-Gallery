@@ -5,11 +5,10 @@ import os
 import urllib.request
 from typing import Any
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 
 import app.main as main
-from ..auth import require_auth
-from ._shared import _jsonable
+from ._shared import _current_user, _jsonable
 
 router = APIRouter()
 
@@ -24,8 +23,7 @@ def _jsonl_response(rows: list[dict[str, Any]], filename: str) -> Response:
 
 
 @router.get("/api/ai/vision/status")
-async def ai_vision_status(request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def ai_vision_status(request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     provider = str(main.settings.ai_provider or "").strip().lower()
     if provider in {"google", "google-gemini"}:
         provider = "gemini"
@@ -60,15 +58,13 @@ async def ai_vision_status(request: Request) -> dict[str, Any]:
 
 
 @router.get("/api/ai/vision/training")
-async def list_ai_training(request: Request, limit: int = 50) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def list_ai_training(request: Request, limit: int = 50, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     rows = await main.db.list_ai_vision_training_examples(int(auth["id"]), limit=limit)
     return {"training_examples": _jsonable(rows)}
 
 
 @router.get("/api/ai/vision/training/export")
-async def export_ai_training(request: Request, limit: int = 500) -> Response:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def export_ai_training(request: Request, limit: int = 500, auth: dict[str, Any] = Depends(_current_user)) -> Response:
     rows = await main.db.export_ai_vision_training_examples(int(auth["id"]), limit=limit)
     return _jsonl_response(rows, "gallery-ai-vision-training.jsonl")
 

@@ -2,12 +2,11 @@
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 import app.main as main
-from ..auth import require_auth
 from ..schemas import FollowRequest, FriendActionRequest
-from ._shared import _auth_optional, _bounded_query_limit, _jsonable, _user_id, _viewer_can_open_adult, _with_collection_urls, _with_urls, _with_user_urls
+from ._shared import _auth_optional, _bounded_query_limit, _current_user, _jsonable, _user_id, _viewer_can_open_adult, _with_collection_urls, _with_urls, _with_user_urls
 
 router = APIRouter()
 
@@ -61,30 +60,30 @@ async def profile_page(username: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/api/users/{user_id}/follow")
-async def follow_user(user_id: int, payload: FollowRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def follow_user(user_id: int, payload: FollowRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     try:
         result = await main.db.set_follow(int(auth["id"]), user_id, payload.following)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     if not result:
         raise HTTPException(status_code=404, detail="User not found.")
+    if payload.following:
+        await main.db.create_notification(user_id, int(auth["id"]), "follow")
     return result
 
 
 @router.post("/api/users/{user_id}/friend-request")
-async def send_friend_request(user_id: int, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def send_friend_request(user_id: int, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     try:
         result = await main.db.send_friend_request(int(auth["id"]), user_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    await main.db.create_notification(user_id, int(auth["id"]), "friend_request")
     return _jsonable(result)
 
 
 @router.get("/api/friends/requests")
-async def friend_requests(request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def friend_requests(request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     incoming = await main.db.list_friend_requests(int(auth["id"]), mode="incoming")
     outgoing = await main.db.list_friend_requests(int(auth["id"]), mode="outgoing")
     return {
@@ -94,20 +93,20 @@ async def friend_requests(request: Request) -> dict[str, Any]:
 
 
 @router.post("/api/friends/requests/{request_id}")
-async def respond_friend_request(request_id: int, payload: FriendActionRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def respond_friend_request(request_id: int, payload: FriendActionRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     try:
         result = await main.db.respond_friend_request(int(auth["id"]), request_id, payload.action)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     if not result:
         raise HTTPException(status_code=404, detail="Friend request not found.")
+    if result.get("status") == "accepted":
+        await main.db.create_notification(int(result["requester_id"]), int(auth["id"]), "friend_accept")
     return {"request": _jsonable(result)}
 
 
 @router.get("/api/me/friends")
-async def my_friends(request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def my_friends(request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     friends = await main.db.list_friends(int(auth["id"]), viewer_id=int(auth["id"]))
     return {"friends": [_with_user_urls(request, user) for user in friends]}
 

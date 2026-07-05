@@ -3,14 +3,14 @@
 from datetime import date, datetime
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 import app.main as main
-from ..auth import require_auth
 from ..schemas import AccountDeleteRequest, AgeVerifyRequest, PasswordChangeRequest, ProfileUpdateRequest, SettingsUpdateRequest
 from ._shared import (
     _bounded_query_limit,
     _bounded_query_offset,
+    _current_user,
     _invalidate_api_cache,
     _rate_limit,
     _read_validated_upload,
@@ -31,8 +31,7 @@ def _age_from_birthdate(birthdate: date) -> int:
 
 
 @router.get("/api/me")
-async def me(request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def me(request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     user = await main.db.get_user(int(auth["id"]))
     if not user:
         raise HTTPException(status_code=401, detail="Account no longer exists.")
@@ -40,8 +39,7 @@ async def me(request: Request) -> dict[str, Any]:
 
 
 @router.patch("/api/me/profile")
-async def update_profile(payload: ProfileUpdateRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def update_profile(payload: ProfileUpdateRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     try:
         user = await main.db.update_user_profile(int(auth["id"]), payload.model_dump())
     except ValueError as exc:
@@ -51,8 +49,7 @@ async def update_profile(payload: ProfileUpdateRequest, request: Request) -> dic
 
 
 @router.patch("/api/me/settings")
-async def update_settings(payload: SettingsUpdateRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def update_settings(payload: SettingsUpdateRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     try:
         user = await main.db.update_user_settings(
             int(auth["id"]),
@@ -64,8 +61,7 @@ async def update_settings(payload: SettingsUpdateRequest, request: Request) -> d
 
 
 @router.post("/api/me/avatar")
-async def update_avatar(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def update_avatar(request: Request, file: UploadFile = File(...), auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     await _rate_limit(f"avatar:{auth['id']}", limit=20, window_seconds=3600)
     uploaded = await _read_validated_upload(file, 5 * 1024 * 1024, image_only=True)
 
@@ -88,8 +84,7 @@ async def update_avatar(request: Request, file: UploadFile = File(...)) -> dict[
 
 
 @router.post("/api/me/age-verification")
-async def verify_age(payload: AgeVerifyRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def verify_age(payload: AgeVerifyRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     if not payload.confirm_over_18:
         raise HTTPException(status_code=400, detail="Confirm that you are 18 or older to continue.")
     try:
@@ -105,24 +100,21 @@ async def verify_age(payload: AgeVerifyRequest, request: Request) -> dict[str, A
 
 
 @router.get("/api/me/bookmarks")
-async def my_bookmarks(request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def my_bookmarks(request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     items = await main.db.list_bookmarks(int(auth["id"]))
     adult_allowed = await _viewer_can_open_adult(request)
     return {"media": [_with_urls(request, item, adult_allowed) for item in items]}
 
 
 @router.get("/api/me/media")
-async def my_media(request: Request, include_deleted: bool = True) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def my_media(request: Request, include_deleted: bool = True, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     items = await main.db.list_user_media(int(auth["id"]), include_deleted=include_deleted)
     adult_allowed = await _viewer_can_open_adult(request)
     return {"media": [_with_urls(request, item, adult_allowed) for item in items]}
 
 
 @router.post("/api/me/password")
-async def change_password(payload: PasswordChangeRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def change_password(payload: PasswordChangeRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     ok = await main.db.change_password(int(auth["id"]), payload.old_password, payload.new_password)
     if not ok:
         raise HTTPException(status_code=401, detail="Current password is incorrect.")
@@ -130,8 +122,7 @@ async def change_password(payload: PasswordChangeRequest, request: Request) -> d
 
 
 @router.delete("/api/me")
-async def delete_account(payload: AccountDeleteRequest, request: Request) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def delete_account(payload: AccountDeleteRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     ok = await main.db.delete_account(int(auth["id"]), payload.password)
     if not ok:
         raise HTTPException(status_code=401, detail="Password is incorrect.")
@@ -139,8 +130,7 @@ async def delete_account(payload: AccountDeleteRequest, request: Request) -> dic
 
 
 @router.get("/api/me/likes")
-async def my_likes(request: Request, limit: int = 80, offset: int = 0) -> dict[str, Any]:
-    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+async def my_likes(request: Request, limit: int = 80, offset: int = 0, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     adult_allowed = await _viewer_can_open_adult(request)
     limit = _bounded_query_limit(limit, default=80)
     offset = _bounded_query_offset(offset)
