@@ -226,9 +226,12 @@ def test_media_quality_profiles_are_upgraded() -> None:
     assert main._preview_options("mini") == ("mini", 360, 78)
     assert main._preview_options("card") == ("card", 880, 86)
     assert main._preview_options("detail") == ("detail", 1920, 92)
-    assert main.VIDEO_QUALITY_PROFILES["medium"]["max_width"] == 1600
-    assert main.VIDEO_QUALITY_PROFILES["medium"]["crf"] == 19
-    assert main.VIDEO_QUALITY_PROFILES["low"]["audio_bitrate"] == "128k"
+    # "medium"/"low" are legacy aliases normalized to "720p"/"480p" by
+    # _normalize_video_quality; VIDEO_QUALITY_PROFILES itself is keyed by the
+    # canonical resolution names.
+    assert main.VIDEO_QUALITY_PROFILES["720p"]["max_width"] == 1280
+    assert main.VIDEO_QUALITY_PROFILES["720p"]["crf"] == 25
+    assert main.VIDEO_QUALITY_PROFILES["480p"]["audio_bitrate"] == "192k"
 
 
 def test_site_background_returns_rotating_snapshot(monkeypatch) -> None:
@@ -317,13 +320,18 @@ def test_background_candidates_use_batched_prefix_reads(monkeypatch) -> None:
             },
         ]
 
-    async def fake_get_media_file_prefixes(media_ids: list[int]):
+    async def fake_get_media_file_prefixes(media_ids: list[int], limit: int = 1048576):
+        assert limit == 65536
         calls.append(list(media_ids))
         tall_header = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8 + (1080).to_bytes(4, "big") + (1920).to_bytes(4, "big")
         return {101: png_header, 102: tall_header}
 
+    async def fake_set_media_dimensions(media_id: int, width: int, height: int) -> None:
+        pass
+
     monkeypatch.setattr(main.db, "list_public_background_candidates", fake_list_public_background_candidates)
     monkeypatch.setattr(main.db, "get_media_file_prefixes", fake_get_media_file_prefixes)
+    monkeypatch.setattr(main.db, "set_media_dimensions", fake_set_media_dimensions)
     main._background_cache["items"] = []
     main._background_cache["built_at"] = 0.0
 

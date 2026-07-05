@@ -63,7 +63,7 @@ def test_dedup_guard_serves_cache_when_transcode_already_running(
     the cache file appears and then returns a FileResponse.
     """
     media_id = 943101
-    quality = "low"
+    quality = "480p"
     sha256 = "dedup-sha-101"
     cache_file = _cache_path(tmp_path, media_id, quality, sha256)
 
@@ -105,7 +105,7 @@ def test_dedup_guard_returns_none_when_transcode_stalls(
     the guard returns None so the caller can fall back to raw streaming.
     """
     media_id = 943102
-    quality = "medium"
+    quality = "720p"
     sha256 = "dedup-sha-102"
 
     async def instant_sleep(_delay):
@@ -139,7 +139,7 @@ def test_dedup_guard_not_triggered_without_active_stream(
     so we just verify the response type and live-transcode headers here.)
     """
     media_id = 943103
-    quality = "low"
+    quality = "480p"
 
     monkeypatch.setattr(main, "VIDEO_CACHE_DIR", tmp_path)
 
@@ -184,7 +184,7 @@ def test_live_transcode_response_declares_accept_ranges_none(
     stop sending Range requests that would each start a fresh transcode.
     """
     media_id = 943201
-    quality = "low"
+    quality = "480p"
 
     monkeypatch.setattr(main, "VIDEO_CACHE_DIR", tmp_path)
     source = tmp_path / "vid.mp4"
@@ -216,7 +216,7 @@ def test_cached_transcode_response_does_not_restrict_ranges(
     Starlette's FileResponse handles range negotiation itself.
     """
     media_id = 943202
-    quality = "medium"
+    quality = "720p"
     sha256 = "cached-202"
     cache_file = _cache_path(tmp_path, media_id, quality, sha256)
     cache_file.write_bytes(b"cached")
@@ -242,7 +242,7 @@ def test_cache_hit_returns_file_response_immediately(
 ) -> None:
     """When the cache file exists with non-zero size, serve it without ffmpeg."""
     media_id = 943301
-    quality = "low"
+    quality = "480p"
     sha256 = "hit-301"
     cache_file = _cache_path(tmp_path, media_id, quality, sha256)
     cache_file.write_bytes(b"mp4data")
@@ -269,11 +269,11 @@ def test_cache_hit_returns_file_response_immediately(
 
 
 def test_large_db_backed_file_skips_transcode(monkeypatch, tmp_path: Path) -> None:
-    """Files > 300 MB are too large to transcode; fall through to raw streaming."""
+    """Files > 500 MB are too large to transcode; fall through to raw streaming."""
     media_id = 943302
     monkeypatch.setattr(main, "VIDEO_CACHE_DIR", tmp_path)
 
-    big = _file_info(59, "big-302", size=400 * 1024 * 1024)
+    big = _file_info(59, "big-302", size=600 * 1024 * 1024)
     response = asyncio.run(
         main._video_variant_response(
             media_id, _video_item(media_id), big, None, "medium",
@@ -314,7 +314,7 @@ def test_serve_media_file_video_cache_hit_serves_file_response(
     with proper video headers (not 206, which would indicate raw DB streaming).
     """
     media_id = 943401
-    quality = "low"
+    quality = "480p"
     sha256 = "integ-401"
     cache_file = _cache_path(tmp_path, media_id, quality, sha256)
     cache_file.write_bytes(b"mp4")
