@@ -84,26 +84,26 @@ from .routers.media_streaming import VIDEO_CACHE_DIR, _video_thumb_warm_loop  # 
 import hashlib  # noqa: E402,F401
 import random  # noqa: E402,F401
 from .schemas import MediaLoadDiagnosticRequest  # noqa: E402,F401
-from .routers._shared import (  # noqa: E402
+from .routers._shared import (  # noqa: E402,F401
     _bounded_query_limit,
     _bounded_query_offset,
     _ensure_media_visible_to_viewer,
     _sniff_magic,
     _with_collection_urls,
 )
-from .routers.media import (  # noqa: E402
+from .routers.media import (  # noqa: E402,F401
     _merge_upload_tags,
     _parse_tags,
     _store_uploaded_media,
     report_media_load_diagnostic,
 )
-from .routers.media_feed import (  # noqa: E402
+from .routers.media_feed import (  # noqa: E402,F401
     SITE_BACKGROUND_ROTATION_SECONDS,
     _background_candidate_rows,
     _site_background_snapshot,
     site_background,
 )
-from .routers.media_streaming import (  # noqa: E402
+from .routers.media_streaming import (  # noqa: E402,F401
     THUMB_CACHE_DIR,
     VIDEO_QUALITY_PROFILES,
     _preview_options,

@@ -201,7 +201,7 @@ def _render_video_frame_thumb(source_path: Path, cache_path: Path, width: int) -
         str(tmp_path),
     ]
     try:
-        result = subprocess.run(command, check=True, timeout=60, capture_output=True, text=True)
+        subprocess.run(command, check=True, timeout=60, capture_output=True, text=True)
         if tmp_path.exists() and tmp_path.stat().st_size > 0:
             tmp_path.replace(cache_path)
             return True

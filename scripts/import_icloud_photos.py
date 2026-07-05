@@ -72,8 +72,8 @@ PROJECT_ROOT = resolve_project_root()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.ai_metadata import analyze_media_path, analyze_media_bytes
-from app.classification import canonical_category_pair, infer_category_pair
+from app.ai_metadata import analyze_media_path
+from app.classification import canonical_category_pair
 
 Image.MAX_IMAGE_PIXELS = None
 

@@ -236,7 +236,6 @@ async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> d
 
     category_id = int(item.get("category_id") or 0)
     subcategory_id = item.get("subcategory_id")
-    next_category = current_category
     next_subcategory_names = list(current_subcategory_names)
     media_kind = str(item.get("media_kind") or "image")
     analysis_category_name = _clean_category_label(getattr(analysis, "category_name", ""))
@@ -253,7 +252,6 @@ async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> d
     if allow_taxonomy_creation and analysis_category_name and (_category_is_generic(current_category) or not current_category):
         category = await main.db.create_category(analysis_category_name, media_kind, int(item["user_id"]))
         category_id = int(category["id"])
-        next_category = analysis_category_name
         next_subcategory_names = analysis_subcategory_names
         resolved_subcategory_ids = await main.db.resolve_subcategory_ids(
             category_id=category_id,

@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import signal
-import sys
 import threading
-import time
 
 import pinggy
 

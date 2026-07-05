@@ -5,7 +5,6 @@ import argparse
 import asyncio
 import json
 import mimetypes
-import shutil
 import sys
 import tempfile
 from pathlib import Path
