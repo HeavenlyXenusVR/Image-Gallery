@@ -21,6 +21,19 @@ class PasswordChangeRequest(BaseModel):
     new_password: str
 
 
+class TwoFactorVerifyRequest(BaseModel):
+    pending_token: str
+    code: str
+
+
+class TotpConfirmRequest(BaseModel):
+    code: str
+
+
+class TotpDisableRequest(BaseModel):
+    password: str
+
+
 class AccountDeleteRequest(BaseModel):
     password: str
 
@@ -139,6 +152,7 @@ class SettingsUpdateRequest(BaseModel):
     profile_show_collections: bool | None = None
     profile_show_friends: bool | None = None
     profile_show_follow_counts: bool | None = None
+    discord_webhook_url: str | None = None
 
 
 class AgeVerifyRequest(BaseModel):
@@ -159,6 +173,10 @@ class CollectionRequest(BaseModel):
 class CollectionItemRequest(BaseModel):
     media_id: int
     saved: bool = True
+
+
+class BulkDownloadRequest(BaseModel):
+    media_ids: list[int]
 
 
 class ReportRequest(BaseModel):

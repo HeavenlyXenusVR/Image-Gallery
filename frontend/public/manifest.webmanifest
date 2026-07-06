@@ -1,0 +1,16 @@
+{
+  "name": "Image Gallery",
+  "short_name": "Gallery",
+  "description": "Curated media gallery — browse, upload, collect, and manage media.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#101318",
+  "theme_color": "#101318",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "/static/react/pwa-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/react/pwa-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/react/pwa-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

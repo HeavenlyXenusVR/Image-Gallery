@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Film, Image as ImageIcon, PlusCircle, RefreshCw, Save, Search } from "lucide-react";
-import { apiFetch, cachedApiFetch, clearApiCache, toQuery } from "../api.js";
+import { Download, Film, Image as ImageIcon, PlusCircle, RefreshCw, Save, Search } from "lucide-react";
+import { apiFetch, apiFetchBlob, cachedApiFetch, clearApiCache, downloadBlob, toQuery } from "../api.js";
 import { MediaGrid } from "../components/media.jsx";
 import { CollectionCover, EmptyState, Notice, Page, ResilientImage, Segmented, SkeletonList } from "../components/ui.jsx";
 import { formatDate } from "../utils/format.js";
@@ -119,6 +119,20 @@ export function CollectionsPage({ ctx }) {
   const canEditSelected = Boolean(ctx.user && selected && Number(selected.user_id) === Number(ctx.user.id));
   const handleItemUpdated = useCallback((item) => setMedia((rows) => replaceMedia(rows, item)), []);
 
+  const [downloadingAll, setDownloadingAll] = useState(false);
+  const downloadCollection = useCallback(async () => {
+    if (!selected) return;
+    setDownloadingAll(true);
+    try {
+      const { blob, filename } = await apiFetchBlob(`/api/collections/${selected.id}/download`);
+      downloadBlob(blob, filename.endsWith(".zip") ? filename : `${selected.name || "collection"}.zip`);
+    } catch (downloadError) {
+      showToast(downloadError.message, "error");
+    } finally {
+      setDownloadingAll(false);
+    }
+  }, [selected, showToast]);
+
   return (
     <Page title="Collections" eyebrow="Stacks" actions={(
       <>
@@ -151,6 +165,9 @@ export function CollectionsPage({ ctx }) {
               <div className="section-head collection-detail-head">
                 <div><h2>{selected.name}</h2><p>{selected.description || "No description"}</p></div>
                 <span>{selected.is_public ? "Public" : "Private"}</span>
+                <button type="button" onClick={downloadCollection} disabled={downloadingAll || !media.length}>
+                  <Download size={16} />{downloadingAll ? "Zipping…" : "Download all"}
+                </button>
               </div>
               {canEditSelected ? (
                 <section className="collection-add-panel">

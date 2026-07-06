@@ -1,6 +1,7 @@
 import { Link, NavLink } from "react-router-dom";
 import { Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Moon, Settings, Sparkles, Sun, SunMoon, Upload, UserPlus, Users } from "lucide-react";
 import { Avatar } from "./ui.jsx";
+import { NotificationBell } from "./NotificationBell.jsx";
 
 const THEME_ICONS = { dark: Moon, light: Sun, "": SunMoon };
 const THEME_LABELS = { dark: "Switch to light theme", light: "Switch to system theme", "": "Switch to dark theme" };
@@ -35,6 +36,7 @@ export function Shell({ ctx, children, className = "", style }) {
         <div className="account-actions">
           <span className={`health-pill ${liveOk ? "is-live" : ""}`} title={telegram?.detail || ""}>{healthText}</span>
           <ThemeToggle quickTheme={ctx.quickTheme} onCycle={ctx.cycleTheme} />
+          <NotificationBell ctx={ctx} />
           {ctx.user ? (
             <>
               <Link className="account-badge" to={`/users/${ctx.user.username}`} title="Profile">

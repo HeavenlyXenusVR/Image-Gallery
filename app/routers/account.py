@@ -6,7 +6,15 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 import app.main as main
-from ..schemas import AccountDeleteRequest, AgeVerifyRequest, PasswordChangeRequest, ProfileUpdateRequest, SettingsUpdateRequest
+from ..schemas import (
+    AccountDeleteRequest,
+    AgeVerifyRequest,
+    PasswordChangeRequest,
+    ProfileUpdateRequest,
+    SettingsUpdateRequest,
+    TotpConfirmRequest,
+    TotpDisableRequest,
+)
 from ._shared import (
     _bounded_query_limit,
     _bounded_query_offset,
@@ -136,4 +144,32 @@ async def my_likes(request: Request, limit: int = 80, offset: int = 0, auth: dic
     offset = _bounded_query_offset(offset)
     items = await main.db.list_liked_media(int(auth["id"]), limit=limit, offset=offset)
     return {"media": [_with_urls(request, item, adult_allowed) for item in items], "limit": limit, "offset": offset}
+
+
+@router.get("/api/me/2fa/status")
+async def totp_status(auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    return await main.db.get_totp_status(int(auth["id"]))
+
+
+@router.post("/api/me/2fa/enroll")
+async def totp_enroll(auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    return await main.db.begin_totp_enrollment(int(auth["id"]), str(auth["username"]))
+
+
+@router.post("/api/me/2fa/confirm")
+async def totp_confirm(payload: TotpConfirmRequest, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    try:
+        recovery_codes = await main.db.confirm_totp_enrollment(int(auth["id"]), payload.code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"enabled": True, "recovery_codes": recovery_codes}
+
+
+@router.post("/api/me/2fa/disable")
+async def totp_disable(payload: TotpDisableRequest, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    try:
+        await main.db.disable_totp(int(auth["id"]), payload.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"enabled": False}
 

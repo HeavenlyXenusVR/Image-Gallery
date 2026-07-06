@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 from typing import Any
@@ -12,6 +13,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 import app.main as main
 from ..ai_metadata import analyze_media_bytes, is_low_signal_filename, _image_fingerprint
 from ..database import MAX_MEDIA_SUBCATEGORIES, normalize_subcategory_names
+from ..discord_webhook import send_discord_webhook
 from ..schemas import (
     BookmarkRequest,
     CommentRequest,
@@ -57,6 +59,38 @@ GENERIC_MEDIA_CATEGORIES = {
 }
 
 router = APIRouter()
+log = logging.getLogger(__name__)
+
+
+def _notify_discord_upload(request: Request, auth: dict[str, Any], item: dict[str, Any]) -> None:
+    # Fire-and-forget: a slow/broken webhook must never delay or fail the upload response.
+    asyncio.create_task(_notify_discord_upload_async(request, int(auth["id"]), item))
+
+
+async def _notify_discord_upload_async(request: Request, user_id: int, item: dict[str, Any]) -> None:
+    try:
+        uploader = await main.db.get_user(user_id)
+        webhook_url = (uploader.get("user_settings") or {}).get("discord_webhook_url") if uploader else ""
+        if not webhook_url:
+            return
+        page_url = f"{str(request.base_url).rstrip('/')}/media/{item['id']}"
+        embed: dict[str, Any] = {
+            "title": (item.get("title") or "New upload")[:256],
+            "url": page_url,
+            "color": 0x37C9A7,
+            "author": {"name": uploader.get("display_name") or uploader.get("username") or "Someone"},
+        }
+        description = (item.get("description") or "").strip()
+        if description:
+            embed["description"] = description[:300]
+        image_url = item.get("url") or item.get("preview_url")
+        if image_url and item.get("media_kind") != "video":
+            embed["image"] = {"url": image_url}
+        elif item.get("thumb_url"):
+            embed["thumbnail"] = {"url": item["thumb_url"]}
+        await send_discord_webhook(webhook_url, embeds=[embed])
+    except Exception:
+        log.warning("Discord upload webhook notification failed for user %s", user_id, exc_info=True)
 
 
 async def _analyze_media_safely(**kwargs: Any):
@@ -768,7 +802,9 @@ async def upload_media(
         _queue_video_thumb_warmup(int(item["id"]), item=item, widths=VIDEO_THUMB_WARM_WIDTHS)
     adult_allowed = await _viewer_can_open_adult(request)
     _invalidate_api_cache("media", "tags", "categories")
-    return {"media": _with_urls(request, item, adult_allowed)}
+    enriched = _with_urls(request, item, adult_allowed)
+    _notify_discord_upload(request, auth, enriched)
+    return {"media": enriched}
 
 
 @router.post("/api/media/analyze")

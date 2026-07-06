@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Eye, KeyRound, Mail, Palette, Save, ShieldCheck, UserRound } from "lucide-react";
 import { apiFetch, clearApiCache } from "../api.js";
 import { Avatar, ChipRow, Page, RequireLogin } from "../components/ui.jsx";
@@ -29,6 +29,23 @@ export function SettingsPage({ ctx }) {
   const [emailCode, setEmailCode] = useState("");
   const [age, setAge] = useState({ birthdate: "", confirm_over_18: false });
   const [password, setPassword] = useState({ old_password: "", new_password: "" });
+  const [totp, setTotp] = useState({ enabled: false, recovery_codes_remaining: 0 });
+  const [totpEnroll, setTotpEnroll] = useState(null);
+  const [totpCode, setTotpCode] = useState("");
+  const [totpRecoveryCodes, setTotpRecoveryCodes] = useState(null);
+  const [totpDisablePassword, setTotpDisablePassword] = useState("");
+
+  const refreshTotpStatus = useCallback(async () => {
+    try {
+      setTotp(await apiFetch("/api/me/2fa/status"));
+    } catch (_error) {
+      // Non-critical background read; the enable/disable actions surface their own errors.
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshTotpStatus();
+  }, [refreshTotpStatus]);
 
   // Only re-initialize form state when the logged-in user's identity changes
   // (login, logout, or switch). Background refreshMe polls update ctx.user every
@@ -141,6 +158,42 @@ export function SettingsPage({ ctx }) {
       await apiFetch("/api/me/password", { method: "POST", body: JSON.stringify(password) });
       setPassword({ old_password: "", new_password: "" });
       ctx.showToast("Password changed.", "success");
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    }
+  }
+
+  async function beginTotpEnroll() {
+    try {
+      setTotpEnroll(await apiFetch("/api/me/2fa/enroll", { method: "POST" }));
+      setTotpRecoveryCodes(null);
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    }
+  }
+
+  async function confirmTotpEnroll(event) {
+    event.preventDefault();
+    try {
+      const data = await apiFetch("/api/me/2fa/confirm", { method: "POST", body: JSON.stringify({ code: totpCode }) });
+      setTotpRecoveryCodes(data.recovery_codes);
+      setTotpEnroll(null);
+      setTotpCode("");
+      refreshTotpStatus();
+      ctx.showToast("Two-factor authentication enabled.", "success");
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    }
+  }
+
+  async function disableTotp(event) {
+    event.preventDefault();
+    try {
+      await apiFetch("/api/me/2fa/disable", { method: "POST", body: JSON.stringify({ password: totpDisablePassword }) });
+      setTotpDisablePassword("");
+      setTotpRecoveryCodes(null);
+      refreshTotpStatus();
+      ctx.showToast("Two-factor authentication disabled.", "success");
     } catch (error) {
       ctx.showToast(error.message, "error");
     }
@@ -323,6 +376,20 @@ export function SettingsPage({ ctx }) {
               <label className="check-row"><input checked={prefs.open_original_in_new_tab} onChange={(event) => updatePrefs("open_original_in_new_tab", event.target.checked)} type="checkbox" />Originals in new tab</label>
             </div>
           </div>
+            <div className="settings-cluster">
+            <div className="settings-cluster-head"><h3>Integrations</h3><p>Get a Discord message in your own server whenever one of your uploads goes live.</p></div>
+            <label className="field">
+              <span>Discord webhook URL</span>
+              <input
+                value={prefs.discord_webhook_url ?? ""}
+                onChange={(event) => updatePrefs("discord_webhook_url", event.target.value)}
+                placeholder="https://discord.com/api/webhooks/..."
+              />
+            </label>
+            {prefs.discord_webhook_url && !/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(prefs.discord_webhook_url) ? (
+              <p className="field-hint field-hint-error">Must start with https://discord.com/api/webhooks/ — create one in your Discord server's Integrations settings.</p>
+            ) : null}
+          </div>
             <div className="form-actions settings-actions">
               <button className="primary" type="submit"><Save size={16} />Save Preferences</button>
             </div>
@@ -364,6 +431,37 @@ export function SettingsPage({ ctx }) {
             <label className="field"><span>New</span><input type="password" value={password.new_password} onChange={(event) => setPassword((current) => ({ ...current, new_password: event.target.value }))} /></label>
             <div className="form-actions settings-actions"><button type="submit">Change Password</button></div>
           </form>
+          <div className="side-box stacked-form settings-form-card">
+            <h2><ShieldCheck size={18} /> Two-Factor Authentication</h2>
+            {totpRecoveryCodes ? (
+              <div className="totp-recovery-codes">
+                <p>Save these recovery codes somewhere safe — each works once if you lose access to your authenticator app. They won't be shown again.</p>
+                <ul>{totpRecoveryCodes.map((recoveryCode) => <li key={recoveryCode}><code>{recoveryCode}</code></li>)}</ul>
+                <button type="button" onClick={() => setTotpRecoveryCodes(null)}>Done</button>
+              </div>
+            ) : totpEnroll ? (
+              <form className="mini-form settings-inline-form" onSubmit={confirmTotpEnroll}>
+                <p>Scan this into your authenticator app (Google Authenticator, Authy, etc.) or enter the secret manually, then confirm with the 6-digit code it shows.</p>
+                <label className="field"><span>Secret</span><input readOnly value={totpEnroll.secret} onFocus={(event) => event.target.select()} /></label>
+                <label className="field"><span>Confirm code</span><input value={totpCode} onChange={(event) => setTotpCode(event.target.value)} inputMode="numeric" autoFocus required /></label>
+                <div className="form-actions settings-actions">
+                  <button className="primary" type="submit"><Check size={16} />Confirm and enable</button>
+                  <button type="button" onClick={() => { setTotpEnroll(null); setTotpCode(""); }}>Cancel</button>
+                </div>
+              </form>
+            ) : totp.enabled ? (
+              <form className="mini-form settings-inline-form" onSubmit={disableTotp}>
+                <div className="verified-state"><ShieldCheck size={18} /><strong>2FA Enabled</strong><span>{totp.recovery_codes_remaining} recovery code{totp.recovery_codes_remaining === 1 ? "" : "s"} remaining.</span></div>
+                <label className="field"><span>Password</span><input type="password" value={totpDisablePassword} onChange={(event) => setTotpDisablePassword(event.target.value)} placeholder="Confirm password to disable" /></label>
+                <div className="form-actions settings-actions"><button className="danger" type="submit">Disable 2FA</button></div>
+              </form>
+            ) : (
+              <>
+                <p>Require a code from an authenticator app in addition to your password when signing in.</p>
+                <div className="form-actions settings-actions"><button className="primary" type="button" onClick={beginTotpEnroll}><ShieldCheck size={16} />Enable 2FA</button></div>
+              </>
+            )}
+          </div>
         </div>
       </section>
     </Page>

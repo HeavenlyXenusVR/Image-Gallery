@@ -148,7 +148,12 @@ export function Lightbox({ ctx }) {
               <Avatar user={item} compact />
               <span>{item.display_name || item.username || "User"}</span>
             </Link>
-            <Link className="button-link lb-fullpage" to={`/media/${item.id}`} onClick={closeLightbox}>
+            <Link
+              className="button-link lb-fullpage"
+              to={`/media/${item.id}`}
+              state={{ siblingIds: items.map((row) => row.id), atIndex: currentIndex }}
+              onClick={closeLightbox}
+            >
               <ExternalLink size={13} />Full page
             </Link>
           </div>

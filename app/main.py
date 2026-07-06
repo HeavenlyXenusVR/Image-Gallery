@@ -60,6 +60,7 @@ from .routers import (  # noqa: E402
     auth,
     categories,
     collections,
+    downloads,
     health,
     media,
     media_feed,
@@ -712,6 +713,7 @@ app.include_router(categories.router)
 app.include_router(messages.router)
 app.include_router(notifications.router)
 app.include_router(collections.router)
+app.include_router(downloads.router)
 app.include_router(account.router)
 app.include_router(auth.router)
 app.include_router(social.router)

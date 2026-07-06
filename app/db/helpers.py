@@ -104,6 +104,9 @@ class HelpersMixin:
         user["adult_content_consent"] = bool(user.get("adult_content_consent"))
         user["age_verified"] = bool(user.get("age_verified_at"))
         user["email_verified"] = bool(user.get("email_verified_at"))
+        if "totp_enabled_at" in user:
+            user["totp_enabled"] = bool(user.get("totp_enabled_at"))
+            user.pop("totp_enabled_at", None)
         user["is_online"] = self._is_recently_seen(user.get("last_seen_at"))
         tags = user.get("featured_tags")
         if isinstance(tags, str):

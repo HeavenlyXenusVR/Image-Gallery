@@ -73,6 +73,17 @@ async def robots_txt() -> Response:
     )
 
 
+@router.get("/service-worker.js", include_in_schema=False)
+async def service_worker() -> Response:
+    # Served at the site root (rather than under /static/react/) so its default
+    # scope covers every navigable route (/media/123, /users/alice, ...), not just
+    # the JS/CSS bundle path controlled by vite's `base` config.
+    path = ROOT_DIR / "app" / "static" / "react" / "service-worker.js"
+    if not path.exists():
+        return Response(status_code=404)
+    return FileResponse(path, media_type="application/javascript", headers={"Cache-Control": "no-cache"})
+
+
 @router.get("/collections")
 @router.get("/following")
 @router.get("/liked")

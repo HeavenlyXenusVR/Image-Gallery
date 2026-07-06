@@ -103,6 +103,34 @@ export async function apiFetch(path, options = {}) {
   return payload;
 }
 
+export async function apiFetchBlob(path, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const token = options.token ?? readToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  const response = await fetchWithRemoteRetry(path, options, headers);
+  if (!response.ok) {
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json") ? await response.json().catch(() => null) : await response.text();
+    const error = new Error(errorMessage(payload, response.status));
+    error.status = response.status;
+    throw error;
+  }
+  const filename = /filename="?([^";]+)"?/.exec(response.headers.get("content-disposition") || "")?.[1] || "download";
+  return { blob: await response.blob(), filename };
+}
+
+export function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 export function postClientDiagnostic(path, payload) {
   const headers = new Headers({ "Content-Type": "application/json" });
   const token = readToken();

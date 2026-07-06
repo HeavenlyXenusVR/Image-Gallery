@@ -10,9 +10,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 
 import app.main as main
-from ..auth import SESSION_COOKIE_NAME, issue_token
+from ..auth import SESSION_COOKIE_NAME, issue_2fa_pending_token, issue_token, verify_2fa_pending_token
 from ..emailer import EmailDeliveryError, send_verification_email
-from ..schemas import EmailCodeRequest, EmailUpdateRequest, LoginRequest, RegisterRequest
+from ..schemas import EmailCodeRequest, EmailUpdateRequest, LoginRequest, RegisterRequest, TwoFactorVerifyRequest
 from ._shared import _current_user, _jsonable, _rate_limit
 
 router = APIRouter()
@@ -204,6 +204,25 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
     await main.db.record_auth_attempt(username, ip, bool(user))
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password.")
+    if user.get("totp_enabled"):
+        pending_token = issue_2fa_pending_token(main.settings.session_secret, int(user["id"]))
+        return {"needs_2fa": True, "pending_token": pending_token}
+    token = issue_token(main.settings.session_secret, user)
+    _set_session_cookie(response, token, request)
+    return {"user": _jsonable(user), "token": token}
+
+
+@router.post("/api/auth/2fa/verify")
+async def verify_2fa(payload: TwoFactorVerifyRequest, request: Request, response: Response) -> dict[str, Any]:
+    user_id = verify_2fa_pending_token(payload.pending_token, main.settings.session_secret)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Your sign-in attempt expired. Log in again.")
+    await _rate_limit(f"2fa-verify:{user_id}", limit=10, window_seconds=600)
+    if not await main.db.verify_totp_or_recovery(user_id, payload.code):
+        raise HTTPException(status_code=400, detail="Invalid authentication code.")
+    user = await main.db.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Account not found.")
     token = issue_token(main.settings.session_secret, user)
     _set_session_cookie(response, token, request)
     return {"user": _jsonable(user), "token": token}

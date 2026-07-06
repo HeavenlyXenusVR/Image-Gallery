@@ -69,6 +69,7 @@ DEFAULT_USER_SETTINGS = {
     "card_info_display": "below",
     "column_gap": "normal",
     "watermark_text": "",
+    "discord_webhook_url": "",
 }
 USER_COLUMNS = (
     ("email", "VARCHAR(255) NULL"),
@@ -96,6 +97,9 @@ USER_COLUMNS = (
     ("age_verified_at", "TIMESTAMP NULL DEFAULT NULL"),
     ("adult_content_consent", "TINYINT(1) NOT NULL DEFAULT 0"),
     ("user_settings", "JSON NULL"),
+    ("totp_secret", "VARCHAR(64) NULL"),
+    ("totp_enabled_at", "TIMESTAMP NULL DEFAULT NULL"),
+    ("totp_recovery_codes", "JSON NULL"),
     ("updated_at", "TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
 )
 MEDIA_COLUMNS = (

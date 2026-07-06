@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
-import { apiFetch } from "../api.js";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Download, RefreshCw } from "lucide-react";
+import { apiFetch, apiFetchBlob, downloadBlob } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { StudioItem } from "../components/media.jsx";
 import { EmptyState, Metric, Page, RequireLogin, SkeletonList } from "../components/ui.jsx";
@@ -9,9 +9,39 @@ import { replaceMedia } from "../utils/media.js";
 export function StudioPage({ ctx }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [downloading, setDownloading] = useState(false);
 
   const showToast = ctx.showToast;
   const userId = ctx.user?.id;
+
+  const toggleSelect = useCallback((id) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  const downloadSelected = useCallback(async () => {
+    if (!selectedIds.size) return;
+    setDownloading(true);
+    try {
+      const { blob, filename } = await apiFetchBlob("/api/media/download-batch", {
+        method: "POST",
+        body: JSON.stringify({ media_ids: Array.from(selectedIds) }),
+      });
+      downloadBlob(blob, filename.endsWith(".zip") ? filename : "gallery-selection.zip");
+      showToast(`Downloaded ${selectedIds.size} post${selectedIds.size === 1 ? "" : "s"}.`, "success");
+    } catch (error) {
+      showToast(error.message, "error");
+    } finally {
+      setDownloading(false);
+    }
+  }, [selectedIds, showToast]);
 
   const loadStudio = useCallback(async ({ background = false } = {}) => {
     if (!userId) return;
@@ -47,9 +77,36 @@ export function StudioPage({ ctx }) {
         <Metric label="Likes" value={totals.likes} />
         <Metric label="Downloads" value={totals.downloads} />
       </div>
+      {selectedIds.size ? (
+        <div className="studio-bulk-bar">
+          <span>{selectedIds.size} selected</span>
+          <button type="button" onClick={downloadSelected} disabled={downloading}>
+            <Download size={16} />{downloading ? "Zipping…" : "Download selected"}
+          </button>
+          <button type="button" onClick={clearSelection}>Clear</button>
+        </div>
+      ) : null}
       {loading ? <SkeletonList /> : (
         <div className="studio-list">
-          {items.map((item) => <StudioItem ctx={ctx} item={item} key={item.id} onChanged={(updated) => setItems((rows) => replaceMedia(rows, updated))} onRemoved={(id) => setItems((rows) => rows.filter((row) => Number(row.id) !== Number(id)))} />)}
+          {items.map((item) => (
+            <StudioItem
+              ctx={ctx}
+              item={item}
+              key={item.id}
+              selected={selectedIds.has(item.id)}
+              onToggleSelect={() => toggleSelect(item.id)}
+              onChanged={(updated) => setItems((rows) => replaceMedia(rows, updated))}
+              onRemoved={(id) => {
+                setItems((rows) => rows.filter((row) => Number(row.id) !== Number(id)));
+                setSelectedIds((current) => {
+                  if (!current.has(id)) return current;
+                  const next = new Set(current);
+                  next.delete(id);
+                  return next;
+                });
+              }}
+            />
+          ))}
         </div>
       )}
       {!loading && !items.length ? <EmptyState title="No uploads yet" /> : null}

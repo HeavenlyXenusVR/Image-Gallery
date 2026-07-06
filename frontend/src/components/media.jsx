@@ -252,7 +252,7 @@ export function MediaActionPanel({ ctx, media, actions }) {
   );
 }
 
-export function StudioItem({ ctx, item, onChanged, onRemoved }) {
+export function StudioItem({ ctx, item, onChanged, onRemoved, selected = false, onToggleSelect }) {
   async function remove() {
     if (!window.confirm("Delete this post? This cannot be undone from here.")) return;
     try {
@@ -264,7 +264,12 @@ export function StudioItem({ ctx, item, onChanged, onRemoved }) {
   }
 
   return (
-    <article className="studio-item">
+    <article className={`studio-item ${selected ? "is-selected" : ""}`}>
+      {onToggleSelect ? (
+        <label className="studio-select">
+          <input type="checkbox" checked={selected} onChange={onToggleSelect} aria-label={`Select ${item.title || "post"}`} />
+        </label>
+      ) : null}
       <Link to={`/media/${item.id}`} className="studio-thumb">
         {item.media_kind === "video"
           ? <ResilientImage className={ctx.settings.blur_video_previews ? "blurred-video-thumb" : ""} sources={mediaImageSources(item, { width: 420, previewSize: "card" })} diagnostics={{ mediaId: item.id, mediaKind: item.media_kind, context: "studio-video-thumb" }} alt="" loading="lazy" decoding="async" fallback={<div className="video-thumb-placeholder"><Film size={34} /></div>} />

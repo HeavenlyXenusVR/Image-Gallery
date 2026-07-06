@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
-import { Bookmark, Copy, Download, Heart, Link as LinkIcon, Lock, MessageCircle, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { Bookmark, ChevronLeft, ChevronRight, Copy, Download, Heart, Link as LinkIcon, Lock, MessageCircle, Trash2 } from "lucide-react";
 import { apiFetch } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
@@ -17,6 +17,10 @@ function subcategoryNames(item) {
 
 export function MediaDetailPage({ ctx }) {
   const { mediaId } = useParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const siblingIds = useMemo(() => (Array.isArray(location.state?.siblingIds) ? location.state.siblingIds : []), [location.state]);
+  const siblingIndex = useMemo(() => siblingIds.findIndex((id) => String(id) === String(mediaId)), [siblingIds, mediaId]);
   const [media, setMedia] = useState(null);
   const [comments, setComments] = useState([]);
   const [commentBody, setCommentBody] = useState("");
@@ -63,6 +67,24 @@ export function MediaDetailPage({ ctx }) {
   }, [mediaId]);
 
   useLiveRefresh(() => loadDetail({ background: true }), { enabled: Boolean(mediaId) && media?.media_kind !== "video", interval: 45_000 });
+
+  const goToSibling = useCallback((nextIndex) => {
+    if (nextIndex < 0 || nextIndex >= siblingIds.length) return;
+    navigate(`/media/${siblingIds[nextIndex]}`, { state: { siblingIds, atIndex: nextIndex }, replace: true });
+  }, [navigate, siblingIds]);
+
+  useEffect(() => {
+    if (siblingIndex < 0 || siblingIds.length < 2) return undefined;
+    const onKey = (event) => {
+      const target = event.target;
+      const typing = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
+      if (typing || media?.media_kind === "video") return;
+      if (event.key === "ArrowLeft") goToSibling(siblingIndex - 1);
+      if (event.key === "ArrowRight") goToSibling(siblingIndex + 1);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [goToSibling, media?.media_kind, siblingIndex, siblingIds.length]);
 
   async function addComment(event) {
     event.preventDefault();
@@ -135,6 +157,17 @@ export function MediaDetailPage({ ctx }) {
     )}>
       <section className="detail-layout">
         <article className="media-stage">
+          {siblingIndex >= 0 && siblingIds.length > 1 ? (
+            <div className="detail-stage-nav">
+              <button type="button" className="icon-button" disabled={siblingIndex <= 0} onClick={() => goToSibling(siblingIndex - 1)} aria-label="Previous media">
+                <ChevronLeft size={18} />
+              </button>
+              <span>{siblingIndex + 1} / {siblingIds.length}</span>
+              <button type="button" className="icon-button" disabled={siblingIndex >= siblingIds.length - 1} onClick={() => goToSibling(siblingIndex + 1)} aria-label="Next media">
+                <ChevronRight size={18} />
+              </button>
+            </div>
+          ) : null}
           {media.locked ? (
             <div className="locked-state"><Lock size={38} /><h2>Age verification required</h2></div>
           ) : media.media_kind === "video" ? (

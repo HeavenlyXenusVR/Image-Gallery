@@ -15,6 +15,10 @@ _auth_log = logging.getLogger(__name__)
 TOKEN_SALT = "image_gallery_api_token"
 SESSION_COOKIE_NAME = "image_gallery_session"
 PBKDF2_ITERATIONS = 260_000
+# Distinct salt from TOKEN_SALT so a 2FA-pending token can never be replayed as a
+# real session token (itsdangerous ties a signature to its salt).
+TOTP_PENDING_SALT = "image_gallery_2fa_pending"
+TOTP_PENDING_TTL_SECONDS = 300
 
 
 def hash_password(password: str) -> str:
@@ -54,6 +58,22 @@ def verify_token(token: str | None, secret_key: str, max_age_seconds: int) -> di
     except (BadSignature, SignatureExpired):
         return None
     return data if isinstance(data, dict) else None
+
+
+def issue_2fa_pending_token(secret_key: str, user_id: int) -> str:
+    serializer = URLSafeTimedSerializer(secret_key, salt=TOTP_PENDING_SALT)
+    return serializer.dumps({"id": user_id})
+
+
+def verify_2fa_pending_token(token: str | None, secret_key: str) -> int | None:
+    if not token:
+        return None
+    serializer = URLSafeTimedSerializer(secret_key, salt=TOTP_PENDING_SALT)
+    try:
+        data = serializer.loads(token, max_age=TOTP_PENDING_TTL_SECONDS)
+    except (BadSignature, SignatureExpired):
+        return None
+    return int(data["id"]) if isinstance(data, dict) and "id" in data else None
 
 
 def extract_bearer_token(request: Request) -> str | None:

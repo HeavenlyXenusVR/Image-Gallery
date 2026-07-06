@@ -8,6 +8,7 @@ from typing import Any
 import aiomysql
 
 from ..auth import hash_password, verify_password
+from ..discord_webhook import is_valid_discord_webhook_url
 from ._shared import DEFAULT_USER_SETTINGS, normalize_email, normalize_username, verification_token_hash
 
 # TTL (seconds) for the in-memory user cache used by get_user().
@@ -178,7 +179,7 @@ class AccountMixin:
                            featured_tags, profile_color,
                            email, email_verified_at, avatar_path, avatar_file_id, avatar_mime_type, avatar_original_filename, public_profile,
                            show_liked_count, show_collections, show_recent_uploads, show_friends,
-                           birthdate, age_verified_at, adult_content_consent,
+                           birthdate, age_verified_at, adult_content_consent, totp_enabled_at,
                            user_settings, created_at, updated_at, last_seen_at
                     FROM users WHERE id=%s
                     """,
@@ -308,6 +309,11 @@ class AccountMixin:
                     raise ValueError("Backdrop strength must be a number.") from None
             elif key == "watermark_text":
                 text = str(value or "").strip()[:40]
+                settings[key] = text
+            elif key == "discord_webhook_url":
+                text = str(value or "").strip()[:300]
+                if text and not is_valid_discord_webhook_url(text):
+                    raise ValueError("Discord webhook URL must start with https://discord.com/api/webhooks/.")
                 settings[key] = text
             else:
                 settings[key] = bool(value)
