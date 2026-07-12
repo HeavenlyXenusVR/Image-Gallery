@@ -307,6 +307,48 @@ class CoreMixin:
                     """,
                 )
                 await ensure_table(
+                    "message_threads",
+                    """
+                    CREATE TABLE message_threads (
+                      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                      name VARCHAR(120) NULL,
+                      created_by BIGINT UNSIGNED NOT NULL,
+                      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      KEY idx_message_threads_creator (created_by, created_at),
+                      CONSTRAINT fk_message_threads_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+                await ensure_table(
+                    "message_thread_members",
+                    """
+                    CREATE TABLE message_thread_members (
+                      thread_id BIGINT UNSIGNED NOT NULL,
+                      user_id BIGINT UNSIGNED NOT NULL,
+                      joined_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      PRIMARY KEY (thread_id, user_id),
+                      KEY idx_thread_members_user (user_id, thread_id),
+                      CONSTRAINT fk_thread_members_thread FOREIGN KEY (thread_id) REFERENCES message_threads(id) ON DELETE CASCADE,
+                      CONSTRAINT fk_thread_members_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+                await ensure_table(
+                    "thread_messages",
+                    """
+                    CREATE TABLE thread_messages (
+                      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                      thread_id BIGINT UNSIGNED NOT NULL,
+                      sender_id BIGINT UNSIGNED NOT NULL,
+                      body VARCHAR(2000) NOT NULL,
+                      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      KEY idx_thread_messages_thread (thread_id, created_at),
+                      CONSTRAINT fk_thread_messages_thread FOREIGN KEY (thread_id) REFERENCES message_threads(id) ON DELETE CASCADE,
+                      CONSTRAINT fk_thread_messages_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+                await ensure_table(
                     "auth_attempts",
                     """
                     CREATE TABLE auth_attempts (
