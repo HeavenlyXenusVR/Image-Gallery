@@ -307,6 +307,48 @@ class CoreMixin:
                     """,
                 )
                 await ensure_table(
+                    "message_threads",
+                    """
+                    CREATE TABLE message_threads (
+                      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                      name VARCHAR(120) NULL,
+                      created_by BIGINT UNSIGNED NOT NULL,
+                      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      KEY idx_message_threads_creator (created_by, created_at),
+                      CONSTRAINT fk_message_threads_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+                await ensure_table(
+                    "message_thread_members",
+                    """
+                    CREATE TABLE message_thread_members (
+                      thread_id BIGINT UNSIGNED NOT NULL,
+                      user_id BIGINT UNSIGNED NOT NULL,
+                      joined_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      PRIMARY KEY (thread_id, user_id),
+                      KEY idx_thread_members_user (user_id, thread_id),
+                      CONSTRAINT fk_thread_members_thread FOREIGN KEY (thread_id) REFERENCES message_threads(id) ON DELETE CASCADE,
+                      CONSTRAINT fk_thread_members_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+                await ensure_table(
+                    "thread_messages",
+                    """
+                    CREATE TABLE thread_messages (
+                      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                      thread_id BIGINT UNSIGNED NOT NULL,
+                      sender_id BIGINT UNSIGNED NOT NULL,
+                      body VARCHAR(2000) NOT NULL,
+                      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      KEY idx_thread_messages_thread (thread_id, created_at),
+                      CONSTRAINT fk_thread_messages_thread FOREIGN KEY (thread_id) REFERENCES message_threads(id) ON DELETE CASCADE,
+                      CONSTRAINT fk_thread_messages_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+                await ensure_table(
                     "auth_attempts",
                     """
                     CREATE TABLE auth_attempts (
@@ -504,7 +546,32 @@ class CoreMixin:
         await self.ensure_media_subcategory_links()
         await self.ensure_ai_training_columns()
         await self.ensure_ai_media_learning_tables()
+        await self.ensure_collection_columns()
         await self.seed_default_categories()
+
+
+    async def ensure_collection_columns(self) -> None:
+        """Idempotently add smart-collection support (filter_json/is_smart) to media_collections.
+
+        MySQL/MariaDB versions in use here don't support ADD COLUMN IF NOT EXISTS, so — matching
+        ensure_user_columns/ensure_media_columns above — this checks information_schema first.
+        """
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA=%s AND TABLE_NAME='media_collections'
+                    """,
+                    (self.settings.db_schema,),
+                )
+                existing = {row["COLUMN_NAME"] for row in await cur.fetchall()}
+                for name, definition in (
+                    ("filter_json", "TEXT NULL"),
+                    ("is_smart", "TINYINT(1) NOT NULL DEFAULT 0"),
+                ):
+                    if name not in existing:
+                        await cur.execute(f"ALTER TABLE media_collections ADD COLUMN {name} {definition}")
 
 
     async def ensure_user_columns(self) -> None:

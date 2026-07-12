@@ -16,6 +16,8 @@ from ..database import MAX_MEDIA_SUBCATEGORIES, normalize_subcategory_names
 from ..discord_webhook import send_discord_webhook
 from ..schemas import (
     BookmarkRequest,
+    BulkMediaDeleteRequest,
+    BulkMediaPatchRequest,
     CommentRequest,
     LikeRequest,
     MediaControlRequest,
@@ -29,6 +31,7 @@ from ._shared import (
     _detect_media_kind,
     _ensure_media_visible_to_viewer,
     _invalidate_api_cache,
+    _is_site_owner_user,
     _jsonable,
     _rate_limit,
     _read_validated_upload,
@@ -1024,6 +1027,117 @@ async def report_media_load_diagnostic(media_id: int, payload: MediaLoadDiagnost
         request_id or "none",
     )
     return {"ok": True}
+
+
+_BULK_PATCH_FIELDS = {"visibility", "comments_enabled", "downloads_enabled", "pinned", "is_adult"}
+
+
+@router.post("/api/media/bulk")
+async def bulk_edit_media(payload: BulkMediaPatchRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    """Apply a small patch (visibility/comments/downloads/pinned/is_adult, plus an optional add_tag)
+    to many posts at once, reusing update_media per id so the single-post edit rules stay authoritative."""
+    caller_id = int(auth["id"])
+    is_site_owner = _is_site_owner_user(await main.db.get_user(caller_id))
+    ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in payload.ids:
+        try:
+            media_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if media_id > 0 and media_id not in seen:
+            seen.add(media_id)
+            ids.append(media_id)
+    ids = ids[:200]
+    add_tag = _normalize_upload_tag(payload.patch.get("add_tag")) if payload.patch.get("add_tag") else ""
+    overrides = {key: value for key, value in payload.patch.items() if key in _BULK_PATCH_FIELDS}
+
+    results: list[dict[str, Any]] = []
+    changed_any = False
+    for media_id in ids:
+        try:
+            existing = await main.db.get_media(media_id, caller_id)
+            if not existing or existing.get("deleted_at"):
+                results.append({"id": media_id, "ok": False, "error": "Not found."})
+                continue
+            owner_id = int(existing["user_id"])
+            if owner_id != caller_id and not is_site_owner:
+                results.append({"id": media_id, "ok": False, "error": "Forbidden."})
+                continue
+            tags = list(existing.get("tags") or [])
+            if add_tag and add_tag not in tags:
+                tags = [*tags, add_tag][:main.settings.max_tags_per_upload]
+            merged = {
+                "title": existing.get("title"),
+                "description": existing.get("description"),
+                "tags": tags,
+                "category_id": existing.get("category_id"),
+                "subcategory_id": existing.get("subcategory_id"),
+                "subcategory_ids": existing.get("subcategory_ids") or [],
+                "subcategory_names": existing.get("subcategory_names") or [],
+                "visibility": existing.get("visibility"),
+                "comments_enabled": existing.get("comments_enabled", True),
+                "downloads_enabled": existing.get("downloads_enabled", True),
+                "pinned": bool(existing.get("pinned_at")),
+                "is_adult": existing.get("is_adult"),
+                **overrides,
+            }
+            updated = await main.db.update_media(media_id, owner_id, merged)
+            results.append({"id": media_id, "ok": bool(updated)})
+            changed_any = changed_any or bool(updated)
+        except PermissionError as exc:
+            results.append({"id": media_id, "ok": False, "error": str(exc)})
+        except ValueError as exc:
+            results.append({"id": media_id, "ok": False, "error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - one bad row must not abort the whole batch
+            log.warning("Bulk media edit failed for media %s: %s", media_id, exc)
+            results.append({"id": media_id, "ok": False, "error": "Unexpected error."})
+    if changed_any:
+        _invalidate_api_cache("media", "tags", "categories")
+    return {"results": results}
+
+
+@router.post("/api/media/bulk-delete")
+async def bulk_delete_media(payload: BulkMediaDeleteRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    """Soft-delete many posts at once, reusing the existing single-post delete_media path per id."""
+    caller_id = int(auth["id"])
+    is_site_owner = _is_site_owner_user(await main.db.get_user(caller_id))
+    ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in payload.ids:
+        try:
+            media_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if media_id > 0 and media_id not in seen:
+            seen.add(media_id)
+            ids.append(media_id)
+    ids = ids[:200]
+
+    results: list[dict[str, Any]] = []
+    changed_any = False
+    for media_id in ids:
+        try:
+            item = await main.db.get_media(media_id, caller_id)
+            if not item or item.get("deleted_at"):
+                results.append({"id": media_id, "ok": False, "error": "Not found."})
+                continue
+            owner_id = int(item["user_id"])
+            if owner_id == caller_id:
+                deleted = await main.db.delete_media(media_id, caller_id)
+            elif is_site_owner:
+                deleted = await main.db.moderator_delete_media(media_id)
+            else:
+                results.append({"id": media_id, "ok": False, "error": "Forbidden."})
+                continue
+            results.append({"id": media_id, "ok": bool(deleted)})
+            changed_any = changed_any or bool(deleted)
+        except Exception as exc:  # noqa: BLE001 - one bad row must not abort the whole batch
+            log.warning("Bulk media delete failed for media %s: %s", media_id, exc)
+            results.append({"id": media_id, "ok": False, "error": "Unexpected error."})
+    if changed_any:
+        _invalidate_api_cache("media", "tags", "categories")
+    return {"results": results}
 
 
 @router.delete("/api/media/{media_id}")

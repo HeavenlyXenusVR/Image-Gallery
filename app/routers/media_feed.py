@@ -308,6 +308,25 @@ async def media(
     )
 
 
+@router.get("/api/media/trending")
+async def trending_media(request: Request, days: int = 7, limit: int = 30) -> Response:
+    viewer_id = _user_id(_auth_optional(request))
+    adult_allowed = await _viewer_can_open_adult(request)
+    window_days = max(1, min(int(days or 7), 90))
+    row_limit = _bounded_query_limit(limit, default=30, max_limit=100)
+    cache_key = _api_cache_key("media-trending", request, viewer_id or "anon", int(bool(adult_allowed)), window_days, row_limit)
+    cached = _api_cache_response(request, cache_key)
+    if cached:
+        return cached
+    items = await main.db.trending_media(viewer_id=viewer_id, days=window_days, limit=row_limit)
+    return _store_api_cache_response(
+        request,
+        cache_key,
+        {"media": [_with_urls(request, item, adult_allowed) for item in items], "days": window_days, "limit": row_limit},
+        MEDIA_LIST_CACHE_SECONDS,
+    )
+
+
 @router.get("/api/media/random")
 async def random_media(request: Request) -> dict[str, Any]:
     viewer_id = _user_id(_auth_optional(request))

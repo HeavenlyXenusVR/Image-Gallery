@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Film, Image as ImageIcon, PlusCircle, RefreshCw, Save, Search } from "lucide-react";
+import { Download, Film, Image as ImageIcon, PlusCircle, RefreshCw, Save, Search, Sparkles } from "lucide-react";
 import { apiFetch, apiFetchBlob, cachedApiFetch, clearApiCache, downloadBlob, toQuery } from "../api.js";
 import { MediaGrid } from "../components/media.jsx";
 import { CollectionCover, EmptyState, Notice, Page, ResilientImage, Segmented, SkeletonList } from "../components/ui.jsx";
@@ -154,7 +154,10 @@ export function CollectionsPage({ ctx }) {
           {loading ? <SkeletonList /> : collections.map((collection) => (
             <button className={`collection-row ${selected?.id === collection.id ? "active" : ""}`} key={collection.id} type="button" onClick={() => openCollection(collection.id)}>
               <CollectionCover collection={collection} />
-              <span><strong>{collection.name}</strong><small>{collection.item_count || 0} posts</small></span>
+              <span>
+                <strong>{collection.name}{collection.is_smart ? <span className="smart-collection-badge"><Sparkles size={11} />Smart</span> : null}</strong>
+                <small>{collection.is_smart ? "Live filter" : `${collection.item_count || 0} posts`}</small>
+              </span>
             </button>
           ))}
           {!loading && !collections.length ? <EmptyState title="No collections" /> : null}
@@ -163,13 +166,13 @@ export function CollectionsPage({ ctx }) {
           {selected ? (
             <>
               <div className="section-head collection-detail-head">
-                <div><h2>{selected.name}</h2><p>{selected.description || "No description"}</p></div>
+                <div><h2>{selected.name}{selected.is_smart ? <span className="smart-collection-badge"><Sparkles size={11} />Smart</span> : null}</h2><p>{selected.description || "No description"}</p></div>
                 <span>{selected.is_public ? "Public" : "Private"}</span>
                 <button type="button" onClick={downloadCollection} disabled={downloadingAll || !media.length}>
                   <Download size={16} />{downloadingAll ? "Zipping…" : "Download all"}
                 </button>
               </div>
-              {canEditSelected ? (
+              {canEditSelected && !selected.is_smart ? (
                 <section className="collection-add-panel">
                   <div>
                     <h3>Add existing posts</h3>

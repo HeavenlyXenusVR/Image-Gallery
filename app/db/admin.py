@@ -9,6 +9,56 @@ import aiomysql
 
 
 class AdminMixin:
+    async def list_reports(self, *, status: str | None = None, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        clauses = []
+        params: list[Any] = []
+        if status in {"open", "reviewed", "dismissed"}:
+            clauses.append("r.status=%s")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    f"""
+                    SELECT r.id, r.media_id, r.user_id, r.reason, r.details, r.status, r.created_at,
+                           m.title AS media_title, m.media_kind, m.mime_type,
+                           m.deleted_at AS media_deleted_at, m.user_id AS media_owner_id,
+                           ru.username AS reporter_username, ru.display_name AS reporter_display_name,
+                           mu.username AS media_owner_username, mu.display_name AS media_owner_display_name
+                    FROM media_reports r
+                    JOIN media_items m ON m.id = r.media_id
+                    JOIN users ru ON ru.id = r.user_id
+                    JOIN users mu ON mu.id = m.user_id
+                    {where}
+                    ORDER BY r.created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (*params, max(1, min(int(limit or 50), 200)), max(0, int(offset or 0))),
+                )
+                return list(await cur.fetchall())
+
+
+    async def resolve_report(self, report_id: int, status: str) -> dict[str, Any] | None:
+        if status not in {"open", "reviewed", "dismissed"}:
+            raise ValueError("Invalid report status.")
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute("UPDATE media_reports SET status=%s WHERE id=%s", (status, report_id))
+                await cur.execute("SELECT * FROM media_reports WHERE id=%s", (report_id,))
+                return await cur.fetchone()
+
+
+    async def moderator_delete_media(self, media_id: int) -> bool:
+        """Soft-delete any media item regardless of ownership — site-owner moderation only."""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE media_items SET deleted_at=CURRENT_TIMESTAMP, visibility='private' WHERE id=%s AND deleted_at IS NULL",
+                    (media_id,),
+                )
+                return cur.rowcount > 0
+
+
     async def stats(self) -> dict[str, Any]:
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:

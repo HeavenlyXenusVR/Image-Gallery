@@ -168,6 +168,8 @@ class CollectionRequest(BaseModel):
     name: str
     description: str | None = None
     is_public: bool = True
+    is_smart: bool = False
+    filter_json: dict = {}
 
 
 class CollectionItemRequest(BaseModel):
@@ -191,6 +193,29 @@ class MediaLoadDiagnosticRequest(BaseModel):
     selected_source: str | None = None
     failed_sources: list[str] = []
     source_count: int = 0
+
+
+class ReportResolveRequest(BaseModel):
+    status: str
+    delete_media: bool = False
+
+
+class BulkMediaPatchRequest(BaseModel):
+    ids: list[int]
+    patch: dict
+
+
+class BulkMediaDeleteRequest(BaseModel):
+    ids: list[int]
+
+
+class ThreadCreateRequest(BaseModel):
+    member_ids: list[int]
+    name: str | None = None
+
+
+class ThreadMessageRequest(BaseModel):
+    body: str
 
 
 class VisionTrainingRequest(BaseModel):

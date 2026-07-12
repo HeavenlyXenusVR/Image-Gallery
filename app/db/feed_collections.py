@@ -1,10 +1,59 @@
 """Home/following feeds, background candidates, bookmarks, and collections."""
 
+import json
+import re
 from typing import Any
 
 import aiomysql
 
 from ._shared import MEDIA_CATEGORY_JOIN, MEDIA_CATEGORY_SELECT
+
+# Query params a "smart" collection is allowed to persist — the same filter surface
+# GET /api/media supports (see media_feed.py), just stored instead of passed each time.
+SMART_COLLECTION_FILTER_KEYS = {
+    "media_kind", "category_id", "subcategory_id", "q", "uploader",
+    "min_size", "max_size", "date_from", "date_to", "adult", "sort",
+}
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _sanitize_smart_collection_filter(filter_json: dict[str, Any] | None) -> dict[str, Any]:
+    """Coerce/validate a saved smart-collection filter the same way the /api/media
+    query params would be, so a bad value can't reach list_media() unvalidated and
+    crash the collection view for every future viewer (e.g. int(min_size) on a
+    non-numeric string, or a malformed date string reaching a raw SQL comparison)."""
+    cleaned: dict[str, Any] = {}
+    for key, value in (filter_json or {}).items():
+        if key not in SMART_COLLECTION_FILTER_KEYS or value in (None, ""):
+            continue
+        if key == "media_kind":
+            if value in {"image", "video"}:
+                cleaned[key] = value
+        elif key in {"category_id", "subcategory_id"}:
+            try:
+                coerced = int(value)
+            except (TypeError, ValueError):
+                continue
+            if coerced > 0:
+                cleaned[key] = coerced
+        elif key in {"min_size", "max_size"}:
+            try:
+                cleaned[key] = max(0, int(value))
+            except (TypeError, ValueError):
+                continue
+        elif key in {"date_from", "date_to"}:
+            text = str(value).strip()[:10]
+            if _DATE_RE.match(text):
+                cleaned[key] = text
+        elif key == "adult":
+            if value in {"only", "hide"}:
+                cleaned[key] = value
+        elif key == "sort":
+            if isinstance(value, str):
+                cleaned[key] = value[:20]
+        else:  # q, uploader — free-text, just cap length
+            cleaned[key] = str(value)[:200]
+    return cleaned
 
 
 class FeedSocialMixin:
@@ -242,14 +291,26 @@ class FeedSocialMixin:
         return await self._attach_media_subcategories(rows)
 
 
-    async def create_collection(self, user_id: int, name: str, description: str | None, is_public: bool) -> dict[str, Any]:
+    async def create_collection(
+        self,
+        user_id: int,
+        name: str,
+        description: str | None,
+        is_public: bool,
+        *,
+        is_smart: bool = False,
+        filter_json: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         name = self._clean_text(name, 100, required=True)
         description = self._clean_text(description, 500)
+        stored_filter = None
+        if is_smart:
+            stored_filter = json.dumps(_sanitize_smart_collection_filter(filter_json))[:8000]
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "INSERT INTO media_collections (user_id, name, description, is_public) VALUES (%s, %s, %s, %s)",
-                    (user_id, name, description, 1 if is_public else 0),
+                    "INSERT INTO media_collections (user_id, name, description, is_public, is_smart, filter_json) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (user_id, name, description, 1 if is_public else 0, 1 if is_smart else 0, stored_filter),
                 )
                 return await self.get_collection(cur.lastrowid, user_id)
 
@@ -373,6 +434,28 @@ class FeedSocialMixin:
         collection = await self.get_collection(collection_id, viewer_id)
         if not collection:
             return []
+        if collection.get("is_smart"):
+            # Smart collections have no static collection_items rows — they re-run the same
+            # media_kind/category/query/etc. filters GET /api/media supports, live, using the
+            # filter persisted at creation time.
+            # Re-sanitize on read too, not just at creation time — covers any row
+            # written before this validation existed, or ever written directly.
+            saved_filter = _sanitize_smart_collection_filter(collection.get("filter") or {})
+            return await self.list_media(
+                viewer_id=viewer_id,
+                media_kind=saved_filter.get("media_kind"),
+                category_id=saved_filter.get("category_id"),
+                subcategory_id=saved_filter.get("subcategory_id"),
+                query=saved_filter.get("q"),
+                uploader=saved_filter.get("uploader"),
+                min_size=saved_filter.get("min_size"),
+                max_size=saved_filter.get("max_size"),
+                date_from=saved_filter.get("date_from"),
+                date_to=saved_filter.get("date_to"),
+                adult=saved_filter.get("adult"),
+                sort=saved_filter.get("sort") or "new",
+                limit=120,
+            )
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(

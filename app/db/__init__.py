@@ -42,6 +42,7 @@ from .media_storage import MediaBlobMixin
 from .messages import MessagingMixin
 from .notifications import NotificationsMixin
 from .social import ProfileFriendsMixin
+from .threads import ThreadsMixin
 from .totp import TotpMixin
 
 __all__ = [
@@ -81,6 +82,7 @@ class GalleryDatabase(
     FeedSocialMixin,
     ProfileFriendsMixin,
     MessagingMixin,
+    ThreadsMixin,
     NotificationsMixin,
     AIVisionMixin,
     AdminMixin,

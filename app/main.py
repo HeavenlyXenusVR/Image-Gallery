@@ -69,6 +69,7 @@ from .routers import (  # noqa: E402
     notifications,
     pages,
     social,
+    threads,
 )
 from .routers._shared import _auth_optional, _user_id  # noqa: E402
 from .routers.media import _ai_background_learning_loop  # noqa: E402
@@ -711,6 +712,7 @@ app.include_router(health.router)
 app.include_router(admin.router)
 app.include_router(categories.router)
 app.include_router(messages.router)
+app.include_router(threads.router)
 app.include_router(notifications.router)
 app.include_router(collections.router)
 app.include_router(downloads.router)

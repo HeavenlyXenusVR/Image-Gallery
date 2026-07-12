@@ -7,7 +7,9 @@ import { NotFound } from "./components/ui.jsx";
 import { DEFAULT_SETTINGS, PAGE_SIZE, setRuntimeMaxUploadBytes } from "./config.js";
 import { useLiveRefresh } from "./hooks/useLiveRefresh.js";
 import { galleryClassName, galleryStyle } from "./utils/appearance.js";
+import { AdminPage } from "./pages/AdminPage.jsx";
 import { AuthPage } from "./pages/AuthPage.jsx";
+import { CategoryPage } from "./pages/CategoryPage.jsx";
 import { CollectionsPage } from "./pages/CollectionsPage.jsx";
 import { DiscoverPage } from "./pages/DiscoverPage.jsx";
 import { FeedPage } from "./pages/FeedPage.jsx";
@@ -17,6 +19,7 @@ import { MessagesPage } from "./pages/MessagesPage.jsx";
 import { ProfilePage } from "./pages/ProfilePage.jsx";
 import { SettingsPage } from "./pages/SettingsPage.jsx";
 import { StudioPage } from "./pages/StudioPage.jsx";
+import { TrendingPage } from "./pages/TrendingPage.jsx";
 import { UploadPage } from "./pages/UploadPage.jsx";
 import { UsersPage } from "./pages/UsersPage.jsx";
 
@@ -363,6 +366,8 @@ function App() {
     <Shell ctx={ctx} className={galleryClassName(ctx.settings)} style={galleryStyle(ctx.settings)}>
       <Routes>
         <Route path="/" element={<DiscoverPage ctx={ctx} />} />
+        <Route path="/trending" element={<TrendingPage ctx={ctx} />} />
+        <Route path="/category/:categoryId" element={<CategoryPage ctx={ctx} />} />
         <Route path="/following" element={<FeedPage ctx={ctx} mode="following" />} />
         <Route path="/liked" element={<FeedPage ctx={ctx} mode="liked" />} />
         <Route path="/media/:mediaId" element={<MediaDetailPage ctx={ctx} />} />
@@ -375,6 +380,7 @@ function App() {
         <Route path="/profile" element={ctx.user ? <Navigate to={`/users/${ctx.user.username}`} replace /> : <Navigate to="/login" replace />} />
         <Route path="/upload" element={<UploadPage ctx={ctx} />} />
         <Route path="/settings" element={<SettingsPage ctx={ctx} />} />
+        <Route path="/admin" element={<AdminPage ctx={ctx} />} />
         <Route path="/login" element={<AuthPage ctx={ctx} />} />
         <Route path="*" element={<NotFound />} />
       </Routes>

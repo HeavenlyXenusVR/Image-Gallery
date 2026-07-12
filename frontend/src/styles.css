@@ -4271,6 +4271,17 @@ textarea:focus {
   border-color: rgba(255, 107, 107, 0.55);
 }
 
+.filter-chip-save {
+  margin-left: auto;
+  background: color-mix(in srgb, var(--accent, #37c9a7) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #37c9a7) 45%, var(--line));
+  color: var(--accent, #37c9a7);
+}
+
+.filter-chip-save:hover {
+  background: color-mix(in srgb, var(--accent, #37c9a7) 26%, transparent);
+}
+
 .view-toggle {
   display: flex;
   gap: 4px;
@@ -4591,4 +4602,154 @@ textarea:focus {
   box-shadow:
     0 12px 36px rgba(39, 55, 75, 0.18),
     0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Admin moderation reports */
+.admin-reports-list {
+  display: grid;
+  gap: 12px;
+}
+
+.admin-report-row {
+  display: grid;
+  grid-template-columns: 96px 1fr auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.admin-report-thumb {
+  display: grid;
+  place-items: center;
+  width: 96px;
+  height: 72px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #090d12;
+  color: var(--muted);
+}
+
+.admin-report-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.admin-report-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.admin-report-reason {
+  color: var(--text);
+}
+
+.admin-report-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.report-status-pill {
+  justify-self: start;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  text-transform: capitalize;
+  background: var(--panel-3, var(--panel-2));
+  color: var(--muted);
+  width: fit-content;
+}
+
+.report-status-pill.status-open {
+  color: #e0a72f;
+  background: rgba(224, 167, 47, 0.15);
+}
+
+.report-status-pill.status-reviewed {
+  color: var(--accent, #37c9a7);
+  background: color-mix(in srgb, var(--accent, #37c9a7) 18%, transparent);
+}
+
+.report-status-pill.status-dismissed {
+  color: var(--muted);
+}
+
+/* Bulk selection toolbars (studio) */
+.studio-bulk-bar {
+  flex-wrap: wrap;
+}
+
+.studio-bulk-bar select {
+  padding: 6px 8px;
+}
+
+.smart-collection-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  background: color-mix(in srgb, var(--accent, #37c9a7) 18%, transparent);
+  color: var(--accent, #37c9a7);
+}
+
+.category-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.category-chip-row a,
+.category-chip-row button {
+  padding: 6px 12px;
+  min-height: 0;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-2);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.category-chip-row a.active,
+.category-chip-row button.active {
+  border-color: var(--accent, #37c9a7);
+  color: var(--accent, #37c9a7);
+}
+
+/* Group messaging */
+.group-member-picker {
+  display: grid;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.chip-row span button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+  padding: 0;
+  min-height: 0;
+  width: 14px;
+  height: 14px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.group-avatar {
+  display: inline-grid;
+  place-items: center;
+  background: var(--panel-3, var(--panel-2));
 }
