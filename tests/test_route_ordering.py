@@ -31,3 +31,7 @@ def test_media_random_registered_before_media_id_param() -> None:
 
 def test_messages_threads_registered_before_user_id_param() -> None:
     assert _route_index("/api/messages/threads", "GET") < _route_index("/api/messages/{user_id}", "GET")
+
+
+def test_media_trending_registered_before_media_id_param() -> None:
+    assert _route_index("/api/media/trending", "GET") < _route_index("/api/media/{media_id}", "GET")
