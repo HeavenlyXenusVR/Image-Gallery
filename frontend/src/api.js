@@ -90,7 +90,13 @@ export async function apiFetch(path, options = {}) {
   if (options.body && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetchWithRemoteRetry(path, options, headers);
+  let response;
+  try {
+    response = await fetchWithRemoteRetry(path, options, headers);
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error("Request timed out. Please try again.");
+    throw error;
+  }
   const contentType = response.headers.get("content-type") || "";
   const isJson = contentType.includes("application/json");
   const payload = isJson ? await response.json().catch(() => null) : await response.text();

@@ -104,7 +104,10 @@ export function UploadPage({ ctx }) {
       body.set("title", form.title);
       body.set("description", form.description);
       body.set("tags", form.tags);
-      const data = await apiFetch("/api/media/analyze", { method: "POST", body });
+      // AI vision analysis can legitimately take up to ai_timeout_seconds+10 on the
+      // backend (default 55s) before falling back to local heuristics, well past the
+      // default 12s apiFetch timeout — use a longer timeout so real analyses don't abort.
+      const data = await apiFetch("/api/media/analyze", { method: "POST", body, timeoutMs: 90_000 });
       setAnalysis(data.analysis);
       setForm((current) => ({
         ...current,
