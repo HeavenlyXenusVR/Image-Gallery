@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Download, RefreshCw } from "lucide-react";
-import { apiFetch, apiFetchBlob, downloadBlob } from "../api.js";
+import { Download, Eye, RefreshCw, Tag, Trash2 } from "lucide-react";
+import { apiFetch, apiFetchBlob, clearApiCache, downloadBlob } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { StudioItem } from "../components/media.jsx";
 import { EmptyState, Metric, Page, RequireLogin, SkeletonList } from "../components/ui.jsx";
@@ -11,6 +11,9 @@ export function StudioPage({ ctx }) {
   const [loading, setLoading] = useState(true);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [downloading, setDownloading] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkVisibility, setBulkVisibility] = useState("public");
+  const [bulkTag, setBulkTag] = useState("");
 
   const showToast = ctx.showToast;
   const userId = ctx.user?.id;
@@ -42,6 +45,72 @@ export function StudioPage({ ctx }) {
       setDownloading(false);
     }
   }, [selectedIds, showToast]);
+
+  const summarizeBulkResults = useCallback((results, successVerb) => {
+    const ok = results.filter((row) => row.ok).length;
+    const failed = results.length - ok;
+    if (ok) showToast(`${successVerb} ${ok} post${ok === 1 ? "" : "s"}.${failed ? ` ${failed} failed.` : ""}`, failed ? "info" : "success");
+    else showToast("No posts were updated.", "error");
+  }, [showToast]);
+
+  const bulkSetVisibility = useCallback(async () => {
+    if (!selectedIds.size) return;
+    setBulkBusy(true);
+    try {
+      const data = await apiFetch("/api/media/bulk", {
+        method: "POST",
+        body: JSON.stringify({ ids: Array.from(selectedIds), patch: { visibility: bulkVisibility } }),
+      });
+      clearApiCache();
+      summarizeBulkResults(data.results || [], "Updated");
+      await loadStudio();
+    } catch (error) {
+      showToast(error.message, "error");
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [selectedIds, bulkVisibility, summarizeBulkResults, showToast]);
+
+  const bulkAddTag = useCallback(async () => {
+    const tag = bulkTag.trim();
+    if (!selectedIds.size || !tag) return;
+    setBulkBusy(true);
+    try {
+      const data = await apiFetch("/api/media/bulk", {
+        method: "POST",
+        body: JSON.stringify({ ids: Array.from(selectedIds), patch: { add_tag: tag } }),
+      });
+      clearApiCache();
+      summarizeBulkResults(data.results || [], "Tagged");
+      setBulkTag("");
+      await loadStudio();
+    } catch (error) {
+      showToast(error.message, "error");
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [selectedIds, bulkTag, summarizeBulkResults, showToast]);
+
+  const bulkDelete = useCallback(async () => {
+    if (!selectedIds.size) return;
+    if (!window.confirm(`Delete ${selectedIds.size} selected post${selectedIds.size === 1 ? "" : "s"}? This cannot be undone from here.`)) return;
+    setBulkBusy(true);
+    try {
+      const data = await apiFetch("/api/media/bulk-delete", {
+        method: "POST",
+        body: JSON.stringify({ ids: Array.from(selectedIds) }),
+      });
+      clearApiCache();
+      summarizeBulkResults(data.results || [], "Deleted");
+      const removedIds = new Set((data.results || []).filter((row) => row.ok).map((row) => Number(row.id)));
+      setItems((rows) => rows.filter((row) => !removedIds.has(Number(row.id))));
+      setSelectedIds(new Set());
+    } catch (error) {
+      showToast(error.message, "error");
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [selectedIds, summarizeBulkResults, showToast]);
 
   const loadStudio = useCallback(async ({ background = false } = {}) => {
     if (!userId) return;
@@ -80,10 +149,32 @@ export function StudioPage({ ctx }) {
       {selectedIds.size ? (
         <div className="studio-bulk-bar">
           <span>{selectedIds.size} selected</span>
-          <button type="button" onClick={downloadSelected} disabled={downloading}>
+          <button type="button" onClick={downloadSelected} disabled={downloading || bulkBusy}>
             <Download size={16} />{downloading ? "Zipping…" : "Download selected"}
           </button>
-          <button type="button" onClick={clearSelection}>Clear</button>
+          <select value={bulkVisibility} onChange={(event) => setBulkVisibility(event.target.value)} disabled={bulkBusy} aria-label="Bulk visibility">
+            <option value="public">Public</option>
+            <option value="unlisted">Unlisted</option>
+            <option value="private">Private</option>
+          </select>
+          <button type="button" onClick={bulkSetVisibility} disabled={bulkBusy}>
+            <Eye size={16} />Set visibility
+          </button>
+          <input
+            value={bulkTag}
+            onChange={(event) => setBulkTag(event.target.value)}
+            placeholder="Add tag to selected"
+            maxLength={32}
+            disabled={bulkBusy}
+            aria-label="Tag to add to selected posts"
+          />
+          <button type="button" onClick={bulkAddTag} disabled={bulkBusy || !bulkTag.trim()}>
+            <Tag size={16} />Add tag
+          </button>
+          <button type="button" className="danger" onClick={bulkDelete} disabled={bulkBusy}>
+            <Trash2 size={16} />Delete selected
+          </button>
+          <button type="button" onClick={clearSelection} disabled={bulkBusy}>Clear</button>
         </div>
       ) : null}
       {loading ? <SkeletonList /> : (
