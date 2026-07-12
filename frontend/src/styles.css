@@ -4271,6 +4271,17 @@ textarea:focus {
   border-color: rgba(255, 107, 107, 0.55);
 }
 
+.filter-chip-save {
+  margin-left: auto;
+  background: color-mix(in srgb, var(--accent, #37c9a7) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent, #37c9a7) 45%, var(--line));
+  color: var(--accent, #37c9a7);
+}
+
+.filter-chip-save:hover {
+  background: color-mix(in srgb, var(--accent, #37c9a7) 26%, transparent);
+}
+
 .view-toggle {
   display: flex;
   gap: 4px;

@@ -168,6 +168,8 @@ class CollectionRequest(BaseModel):
     name: str
     description: str | None = None
     is_public: bool = True
+    is_smart: bool = False
+    filter_json: dict = {}
 
 
 class CollectionItemRequest(BaseModel):

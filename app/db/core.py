@@ -546,7 +546,32 @@ class CoreMixin:
         await self.ensure_media_subcategory_links()
         await self.ensure_ai_training_columns()
         await self.ensure_ai_media_learning_tables()
+        await self.ensure_collection_columns()
         await self.seed_default_categories()
+
+
+    async def ensure_collection_columns(self) -> None:
+        """Idempotently add smart-collection support (filter_json/is_smart) to media_collections.
+
+        MySQL/MariaDB versions in use here don't support ADD COLUMN IF NOT EXISTS, so — matching
+        ensure_user_columns/ensure_media_columns above — this checks information_schema first.
+        """
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA=%s AND TABLE_NAME='media_collections'
+                    """,
+                    (self.settings.db_schema,),
+                )
+                existing = {row["COLUMN_NAME"] for row in await cur.fetchall()}
+                for name, definition in (
+                    ("filter_json", "TEXT NULL"),
+                    ("is_smart", "TINYINT(1) NOT NULL DEFAULT 0"),
+                ):
+                    if name not in existing:
+                        await cur.execute(f"ALTER TABLE media_collections ADD COLUMN {name} {definition}")
 
 
     async def ensure_user_columns(self) -> None:

@@ -103,7 +103,8 @@ export function CollectionSaveControl({ ctx, media, compact = false, openLabel =
     setLoading(true);
     try {
       const data = await apiFetch("/api/collections?mine=true");
-      const rows = data.collections || [];
+      // Smart collections are populated live from their saved filter, not manual adds.
+      const rows = (data.collections || []).filter((collection) => !collection.is_smart);
       setCollections(rows);
       setCollectionId((current) => current || String(rows[0]?.id || ""));
       setLoaded(true);

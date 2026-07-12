@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Columns2, Grid2X2, RefreshCw, Search, SlidersHorizontal, Sparkles, X as XIcon } from "lucide-react";
+import { Columns2, Grid2X2, RefreshCw, Save, Search, SlidersHorizontal, Sparkles, X as XIcon } from "lucide-react";
 import { apiFetch, cachedApiFetch, clearApiCache, toQuery } from "../api.js";
 import { PAGE_SIZE } from "../config.js";
 import { MediaGrid } from "../components/media.jsx";
@@ -64,6 +64,7 @@ export function DiscoverPage({ ctx }) {
   const [error, setError] = useState("");
   const [randomPending, setRandomPending] = useState(false);
   const [viewMode, setViewMode] = useState(() => localStorage.getItem(VIEW_MODE_KEY) || "grid");
+  const [savingSmart, setSavingSmart] = useState(false);
 
   const pageRef = useRef(1);
   const filtersRef = useRef(filters);
@@ -193,6 +194,46 @@ export function DiscoverPage({ ctx }) {
     localStorage.setItem(VIEW_MODE_KEY, mode);
   }
 
+  async function saveSmartCollection() {
+    if (!ctx.user) {
+      ctx.showToast("Login required to save collections.", "error");
+      return;
+    }
+    if (!filterChips.length) {
+      ctx.showToast("Set at least one filter before saving it as a smart collection.", "error");
+      return;
+    }
+    const name = window.prompt("Name this smart collection", filters.q || "My smart collection");
+    if (!name || !name.trim()) return;
+    setSavingSmart(true);
+    try {
+      const f = filters;
+      const filterPayload = {
+        q: f.q || undefined,
+        media_kind: f.media_kind || undefined,
+        category_id: f.category_id || undefined,
+        subcategory_id: f.subcategory_id || undefined,
+        uploader: f.uploader || undefined,
+        min_size: f.min_size ? Number(f.min_size) * 1024 * 1024 : undefined,
+        max_size: f.max_size ? Number(f.max_size) * 1024 * 1024 : undefined,
+        date_from: f.date_from || undefined,
+        date_to: f.date_to || undefined,
+        adult: f.adult && f.adult !== "show" ? f.adult : undefined,
+        sort: f.sort && f.sort !== "new" ? f.sort : undefined,
+      };
+      await apiFetch("/api/collections", {
+        method: "POST",
+        body: JSON.stringify({ name: name.trim(), is_public: true, is_smart: true, filter_json: filterPayload }),
+      });
+      clearApiCache("/api/collections");
+      ctx.showToast(`Saved "${name.trim()}" as a smart collection.`, "success");
+    } catch (saveError) {
+      ctx.showToast(saveError.message, "error");
+    } finally {
+      setSavingSmart(false);
+    }
+  }
+
   const openLightbox = ctx.openLightbox;
   const filterChips = getFilterChips(filters, ctx.lookups.categories);
   const gridExtraClass = viewMode === "masonry" ? "media-grid-masonry" : "";
@@ -303,6 +344,11 @@ export function DiscoverPage({ ctx }) {
                 <button type="button" className="filter-chip filter-chip-clear" onClick={clearAllFilters}>
                   Clear all
                 </button>
+                {ctx.user ? (
+                  <button type="button" className="filter-chip filter-chip-save" onClick={saveSmartCollection} disabled={savingSmart}>
+                    <Save size={12} />{savingSmart ? "Saving…" : "Save as smart collection"}
+                  </button>
+                ) : null}
               </div>
             ) : null}
             <div className="view-toggle">

@@ -139,6 +139,15 @@ class HelpersMixin:
     def _decode_collection(self, row: dict[str, Any]) -> dict[str, Any]:
         row["is_public"] = bool(row.get("is_public"))
         row["cover_is_adult"] = bool(row.get("cover_is_adult"))
+        row["is_smart"] = bool(row.get("is_smart"))
+        filter_json = row.get("filter_json")
+        if isinstance(filter_json, str) and filter_json:
+            try:
+                row["filter"] = json.loads(filter_json)
+            except json.JSONDecodeError:
+                row["filter"] = {}
+        else:
+            row["filter"] = {}
         for key in ("item_count",):
             if isinstance(row.get(key), Decimal):
                 row[key] = int(row[key])

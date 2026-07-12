@@ -24,7 +24,14 @@ async def collections(request: Request, mine: bool = False) -> dict[str, Any]:
 @router.post("/api/collections")
 async def create_collection(payload: CollectionRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     try:
-        collection = await main.db.create_collection(int(auth["id"]), payload.name, payload.description, payload.is_public)
+        collection = await main.db.create_collection(
+            int(auth["id"]),
+            payload.name,
+            payload.description,
+            payload.is_public,
+            is_smart=payload.is_smart,
+            filter_json=payload.filter_json,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     adult_allowed = await _viewer_can_open_adult(request)
