@@ -183,6 +183,50 @@ class MediaMixin:
         return await self._attach_media_subcategories(rows)
 
 
+    async def trending_media(self, *, viewer_id: int | None = None, days: int = 7, limit: int = 30) -> list[dict[str, Any]]:
+        """Rank recent public posts by a simple weighted score of views/likes/comments.
+
+        Weighting favors engagement (likes, comments) over raw views since views accrue
+        passively just from appearing in feeds, while likes/comments are deliberate signals.
+        """
+        viewer = viewer_id or 0
+        window_days = max(1, min(int(days or 7), 90))
+        row_limit = max(1, min(int(limit or 30), 100))
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    f"""
+                    SELECT m.*, {MEDIA_CATEGORY_SELECT}
+                           u.username,
+                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
+                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
+                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
+                           u.profile_color, u.public_profile,
+                           COUNT(DISTINCT l.user_id) AS like_count,
+                           COUNT(DISTINCT cm.id) AS comment_count,
+                           MAX(CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END) AS bookmarked_by_me,
+                           MAX(CASE WHEN l2.user_id IS NULL THEN 0 ELSE 1 END) AS liked_by_me,
+                           (m.views + COUNT(DISTINCT l.user_id) * 3 + COUNT(DISTINCT cm.id) * 2) AS trend_score
+                    FROM media_items m
+                    {MEDIA_CATEGORY_JOIN}
+                    JOIN users u ON u.id = m.user_id
+                    LEFT JOIN media_likes l ON l.media_id = m.id
+                    LEFT JOIN media_likes l2 ON l2.media_id = m.id AND l2.user_id = %s
+                    LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id = %s
+                    LEFT JOIN media_comments cm ON cm.media_id = m.id
+                    WHERE m.deleted_at IS NULL AND (m.visibility='public' OR m.user_id=%s)
+                      AND m.created_at >= (UTC_TIMESTAMP() - INTERVAL %s DAY)
+                    GROUP BY m.id
+                    ORDER BY trend_score DESC, m.created_at DESC
+                    LIMIT %s
+                    """,
+                    (viewer, viewer, viewer, viewer, viewer, viewer, viewer, window_days, row_limit),
+                )
+                rows = [self._decode_media(row) for row in await cur.fetchall()]
+        return await self._attach_media_subcategories(rows)
+
+
     async def tag_cloud(self, limit: int = 30) -> list[dict[str, Any]]:
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:

@@ -1,5 +1,5 @@
 import { Link, NavLink } from "react-router-dom";
-import { Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Moon, Settings, ShieldAlert, Sparkles, Sun, SunMoon, Upload, UserPlus, Users } from "lucide-react";
+import { Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Moon, Settings, ShieldAlert, Sparkles, Sun, SunMoon, TrendingUp, Upload, UserPlus, Users } from "lucide-react";
 import { Avatar } from "./ui.jsx";
 import { NotificationBell } from "./NotificationBell.jsx";
 
@@ -24,6 +24,7 @@ export function Shell({ ctx, children, className = "", style }) {
         </Link>
         <nav className="primary-nav" aria-label="Main">
           <NavItem to="/" icon={Home} label="Discover" />
+          <NavItem to="/trending" icon={TrendingUp} label="Trending" />
           <NavItem to="/collections" icon={Folder} label="Collections" />
           <NavItem to="/users" icon={Users} label="Users" />
           <NavItem to="/following" icon={Sparkles} label="Following" />
