@@ -193,6 +193,29 @@ class MediaLoadDiagnosticRequest(BaseModel):
     source_count: int = 0
 
 
+class ReportResolveRequest(BaseModel):
+    status: str
+    delete_media: bool = False
+
+
+class BulkMediaPatchRequest(BaseModel):
+    ids: list[int]
+    patch: dict
+
+
+class BulkMediaDeleteRequest(BaseModel):
+    ids: list[int]
+
+
+class ThreadCreateRequest(BaseModel):
+    member_ids: list[int]
+    name: str | None = None
+
+
+class ThreadMessageRequest(BaseModel):
+    body: str
+
+
 class VisionTrainingRequest(BaseModel):
     title: str
     category_name: str | None = None

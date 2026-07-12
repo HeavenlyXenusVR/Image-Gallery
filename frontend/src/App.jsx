@@ -7,6 +7,7 @@ import { NotFound } from "./components/ui.jsx";
 import { DEFAULT_SETTINGS, PAGE_SIZE, setRuntimeMaxUploadBytes } from "./config.js";
 import { useLiveRefresh } from "./hooks/useLiveRefresh.js";
 import { galleryClassName, galleryStyle } from "./utils/appearance.js";
+import { AdminPage } from "./pages/AdminPage.jsx";
 import { AuthPage } from "./pages/AuthPage.jsx";
 import { CollectionsPage } from "./pages/CollectionsPage.jsx";
 import { DiscoverPage } from "./pages/DiscoverPage.jsx";
@@ -375,6 +376,7 @@ function App() {
         <Route path="/profile" element={ctx.user ? <Navigate to={`/users/${ctx.user.username}`} replace /> : <Navigate to="/login" replace />} />
         <Route path="/upload" element={<UploadPage ctx={ctx} />} />
         <Route path="/settings" element={<SettingsPage ctx={ctx} />} />
+        <Route path="/admin" element={<AdminPage ctx={ctx} />} />
         <Route path="/login" element={<AuthPage ctx={ctx} />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
