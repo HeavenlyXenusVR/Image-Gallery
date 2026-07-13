@@ -56,6 +56,45 @@ def _sanitize_smart_collection_filter(filter_json: dict[str, Any] | None) -> dic
     return cleaned
 
 
+def _media_matches_saved_search_filter(media: dict[str, Any], filter_json: dict[str, Any]) -> bool:
+    """Evaluates a saved-search filter (same validated shape as a smart collection's
+    filter_json) against a single freshly-uploaded item, in Python rather than SQL —
+    this runs once per upload against a handful of saved searches, not per page view."""
+    if filter_json.get("media_kind") and media.get("media_kind") != filter_json["media_kind"]:
+        return False
+    if filter_json.get("category_id") and int(media.get("category_id") or 0) != int(filter_json["category_id"]):
+        return False
+    if filter_json.get("subcategory_id"):
+        subcategory_ids = {int(sc.get("id")) for sc in (media.get("subcategories") or []) if sc.get("id")}
+        if media.get("subcategory_id"):
+            subcategory_ids.add(int(media["subcategory_id"]))
+        if int(filter_json["subcategory_id"]) not in subcategory_ids:
+            return False
+    if filter_json.get("adult") == "only" and not media.get("is_adult"):
+        return False
+    if filter_json.get("adult") == "hide" and media.get("is_adult"):
+        return False
+    if filter_json.get("min_size") is not None and int(media.get("file_size") or 0) < int(filter_json["min_size"]):
+        return False
+    if filter_json.get("max_size") is not None and int(media.get("file_size") or 0) > int(filter_json["max_size"]):
+        return False
+    if filter_json.get("uploader"):
+        needle = str(filter_json["uploader"]).lower()
+        haystack = f"{media.get('username') or ''} {media.get('display_name') or ''}".lower()
+        if needle not in haystack:
+            return False
+    if filter_json.get("q"):
+        needle = str(filter_json["q"]).lower()
+        haystack = " ".join([
+            str(media.get("title") or ""),
+            str(media.get("description") or ""),
+            " ".join(media.get("tags") or []),
+        ]).lower()
+        if needle not in haystack:
+            return False
+    return True
+
+
 class FeedSocialMixin:
     async def random_media(self, viewer_id: int | None = None) -> dict[str, Any] | None:
         # Use ORDER BY RAND() with a small LIMIT to avoid loading 100 rows just to pick one.
@@ -145,12 +184,16 @@ class FeedSocialMixin:
                     LEFT JOIN media_likes l2 ON l2.media_id=m.id AND l2.user_id=%s
                     LEFT JOIN media_bookmarks b ON b.media_id=m.id AND b.user_id=%s
                     LEFT JOIN media_comments cm ON cm.media_id=m.id
+                    LEFT JOIN user_blocks ub1 ON ub1.blocker_id=%s AND ub1.blocked_id=f.followed_id
+                    LEFT JOIN user_blocks ub2 ON ub2.blocker_id=f.followed_id AND ub2.blocked_id=%s AND ub2.kind='block'
                     WHERE f.follower_id=%s AND m.deleted_at IS NULL AND m.visibility='public'
+                          AND (m.publish_at IS NULL OR m.publish_at <= UTC_TIMESTAMP())
+                          AND ub1.id IS NULL AND ub2.id IS NULL
                     GROUP BY m.id
                     ORDER BY m.created_at DESC
                     LIMIT %s OFFSET %s
                     """,
-                    (viewer, viewer, viewer, max(1, min(limit, 100)), max(0, offset)),
+                    (viewer, viewer, viewer, viewer, viewer, max(1, min(limit, 100)), max(0, offset)),
                 )
                 rows = [self._decode_media(row) for row in await cur.fetchall()]
         return await self._attach_media_subcategories(rows)
@@ -212,11 +255,12 @@ class FeedSocialMixin:
                     LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id = %s
                     LEFT JOIN media_comments cm ON cm.media_id = m.id
                     WHERE m.user_id=%s AND m.deleted_at IS NULL AND (m.visibility='public' OR m.user_id=%s)
+                          AND (m.publish_at IS NULL OR m.publish_at <= UTC_TIMESTAMP() OR m.user_id=%s)
                     GROUP BY m.id
                     ORDER BY m.pinned_at DESC, m.created_at DESC
                     LIMIT %s OFFSET %s
                     """,
-                    (viewer, viewer, viewer, viewer, viewer, viewer, user_id, viewer, max(1, min(limit, 100)), max(0, offset)),
+                    (viewer, viewer, viewer, viewer, viewer, viewer, user_id, viewer, viewer, max(1, min(limit, 100)), max(0, offset)),
                 )
                 rows = [self._decode_media(row) for row in await cur.fetchall()]
         return await self._attach_media_subcategories(rows)
@@ -490,4 +534,70 @@ class FeedSocialMixin:
                 )
                 rows = [self._decode_media(row) for row in await cur.fetchall()]
         return await self._attach_media_subcategories(rows)
+
+
+    async def create_saved_search(self, user_id: int, name: str, filter_json: dict[str, Any] | None) -> dict[str, Any]:
+        name = " ".join(str(name or "").strip().split())[:80]
+        if not name:
+            raise ValueError("Name is required.")
+        cleaned = _sanitize_smart_collection_filter(filter_json)
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "INSERT INTO saved_searches (user_id, name, filter_json) VALUES (%s, %s, %s)",
+                    (user_id, name, json.dumps(cleaned)),
+                )
+                search_id = cur.lastrowid
+                await cur.execute("SELECT * FROM saved_searches WHERE id=%s", (search_id,))
+                row = await cur.fetchone()
+        row["filter_json"] = json.loads(row["filter_json"])
+        return row
+
+
+    async def list_saved_searches(self, user_id: int) -> list[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT * FROM saved_searches WHERE user_id=%s ORDER BY created_at DESC",
+                    (user_id,),
+                )
+                rows = list(await cur.fetchall())
+        for row in rows:
+            try:
+                row["filter_json"] = json.loads(row["filter_json"])
+            except (TypeError, json.JSONDecodeError):
+                row["filter_json"] = {}
+        return rows
+
+
+    async def delete_saved_search(self, search_id: int, user_id: int) -> bool:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("DELETE FROM saved_searches WHERE id=%s AND user_id=%s", (search_id, user_id))
+                return cur.rowcount > 0
+
+
+    async def find_saved_searches_matching(self, media: dict[str, Any], *, exclude_user_id: int) -> list[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT * FROM saved_searches WHERE user_id != %s",
+                    (exclude_user_id,),
+                )
+                rows = list(await cur.fetchall())
+        matched = []
+        for row in rows:
+            try:
+                filter_json = json.loads(row["filter_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if _media_matches_saved_search_filter(media, filter_json):
+                matched.append(row)
+        return matched
+
+
+    async def touch_saved_search_notified(self, search_id: int) -> None:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("UPDATE saved_searches SET last_notified_at=CURRENT_TIMESTAMP WHERE id=%s", (search_id,))
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Columns2, Grid2X2, RefreshCw, Save, Search, SlidersHorizontal, Sparkles, X as XIcon } from "lucide-react";
+import { Bell, Columns2, Grid2X2, RefreshCw, Save, Search, SlidersHorizontal, Sparkles, X as XIcon } from "lucide-react";
 import { apiFetch, cachedApiFetch, clearApiCache, toQuery } from "../api.js";
 import { PAGE_SIZE } from "../config.js";
 import { MediaGrid } from "../components/media.jsx";
@@ -65,6 +65,7 @@ export function DiscoverPage({ ctx }) {
   const [randomPending, setRandomPending] = useState(false);
   const [viewMode, setViewMode] = useState(() => localStorage.getItem(VIEW_MODE_KEY) || "grid");
   const [savingSmart, setSavingSmart] = useState(false);
+  const [savingAlert, setSavingAlert] = useState(false);
 
   const pageRef = useRef(1);
   const filtersRef = useRef(filters);
@@ -194,6 +195,22 @@ export function DiscoverPage({ ctx }) {
     localStorage.setItem(VIEW_MODE_KEY, mode);
   }
 
+  function filterPayloadFromFilters(f) {
+    return {
+      q: f.q || undefined,
+      media_kind: f.media_kind || undefined,
+      category_id: f.category_id || undefined,
+      subcategory_id: f.subcategory_id || undefined,
+      uploader: f.uploader || undefined,
+      min_size: f.min_size ? Number(f.min_size) * 1024 * 1024 : undefined,
+      max_size: f.max_size ? Number(f.max_size) * 1024 * 1024 : undefined,
+      date_from: f.date_from || undefined,
+      date_to: f.date_to || undefined,
+      adult: f.adult && f.adult !== "show" ? f.adult : undefined,
+      sort: f.sort && f.sort !== "new" ? f.sort : undefined,
+    };
+  }
+
   async function saveSmartCollection() {
     if (!ctx.user) {
       ctx.showToast("Login required to save collections.", "error");
@@ -207,23 +224,9 @@ export function DiscoverPage({ ctx }) {
     if (!name || !name.trim()) return;
     setSavingSmart(true);
     try {
-      const f = filters;
-      const filterPayload = {
-        q: f.q || undefined,
-        media_kind: f.media_kind || undefined,
-        category_id: f.category_id || undefined,
-        subcategory_id: f.subcategory_id || undefined,
-        uploader: f.uploader || undefined,
-        min_size: f.min_size ? Number(f.min_size) * 1024 * 1024 : undefined,
-        max_size: f.max_size ? Number(f.max_size) * 1024 * 1024 : undefined,
-        date_from: f.date_from || undefined,
-        date_to: f.date_to || undefined,
-        adult: f.adult && f.adult !== "show" ? f.adult : undefined,
-        sort: f.sort && f.sort !== "new" ? f.sort : undefined,
-      };
       await apiFetch("/api/collections", {
         method: "POST",
-        body: JSON.stringify({ name: name.trim(), is_public: true, is_smart: true, filter_json: filterPayload }),
+        body: JSON.stringify({ name: name.trim(), is_public: true, is_smart: true, filter_json: filterPayloadFromFilters(filters) }),
       });
       clearApiCache("/api/collections");
       ctx.showToast(`Saved "${name.trim()}" as a smart collection.`, "success");
@@ -231,6 +234,31 @@ export function DiscoverPage({ ctx }) {
       ctx.showToast(saveError.message, "error");
     } finally {
       setSavingSmart(false);
+    }
+  }
+
+  async function saveSearchAlert() {
+    if (!ctx.user) {
+      ctx.showToast("Login required to save alerts.", "error");
+      return;
+    }
+    if (!filterChips.length) {
+      ctx.showToast("Set at least one filter before saving it as an alert.", "error");
+      return;
+    }
+    const name = window.prompt("Name this saved search / alert", filters.q || "My saved search");
+    if (!name || !name.trim()) return;
+    setSavingAlert(true);
+    try {
+      await apiFetch("/api/saved-searches", {
+        method: "POST",
+        body: JSON.stringify({ name: name.trim(), filter_json: filterPayloadFromFilters(filters) }),
+      });
+      ctx.showToast(`Saved "${name.trim()}" — you'll be notified when new matches are uploaded.`, "success");
+    } catch (saveError) {
+      ctx.showToast(saveError.message, "error");
+    } finally {
+      setSavingAlert(false);
     }
   }
 
@@ -347,6 +375,11 @@ export function DiscoverPage({ ctx }) {
                 {ctx.user ? (
                   <button type="button" className="filter-chip filter-chip-save" onClick={saveSmartCollection} disabled={savingSmart}>
                     <Save size={12} />{savingSmart ? "Saving…" : "Save as smart collection"}
+                  </button>
+                ) : null}
+                {ctx.user ? (
+                  <button type="button" className="filter-chip filter-chip-save" onClick={saveSearchAlert} disabled={savingAlert}>
+                    <Bell size={12} />{savingAlert ? "Saving…" : "Save as alert"}
                   </button>
                 ) : null}
               </div>

@@ -9,7 +9,7 @@ import time
 from urllib.parse import urlparse
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -19,6 +19,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .config import ROOT_DIR, load_settings
 from .database import GalleryDatabase
+from .discord_webhook import send_discord_webhook
 from .paths import APP_SHELL_PATHS, _LIVE_CONFIG_PATH
 from .telegram import TelegramPollingService
 
@@ -68,6 +69,7 @@ from .routers import (  # noqa: E402
     messages,
     notifications,
     pages,
+    saved_searches,
     social,
     threads,
 )
@@ -526,6 +528,37 @@ async def _send_telegram_alert(key: str, title: str, detail: str) -> None:
             logger.exception("Image Gallery Telegram alert delivery failed for chat %s.", chat_id)
 
 
+async def _moderation_digest_loop() -> None:
+    """Periodic operator digest of moderation activity — new reports, bans, signups,
+    pending-review uploads, and storage growth — sent via Telegram and/or Discord."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            site_settings = await db.get_site_settings()
+            since = site_settings.get("last_digest_at") or (datetime.now(timezone.utc) - timedelta(hours=settings.digest_interval_hours))
+            counts = await db.digest_counts_since(since)
+            lines = [
+                f"New reports: {counts.get('new_reports', 0)}",
+                f"New bans: {counts.get('new_bans', 0)}",
+                f"New signups: {counts.get('new_signups', 0)}",
+                f"Pending review uploads: {counts.get('pending_review', 0)}",
+                f"New storage: {counts.get('new_bytes', 0) / (1024 * 1024):.1f} MB",
+            ]
+            detail = "\n".join(lines)
+            await _send_telegram_alert("moderation_digest", "Image Gallery moderation digest", detail)
+            if settings.admin_discord_webhook_url:
+                await send_discord_webhook(
+                    settings.admin_discord_webhook_url,
+                    embeds=[{"title": "Image Gallery moderation digest", "description": detail}],
+                )
+            await db.touch_site_digest()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Image Gallery moderation digest loop failed.")
+        await asyncio.sleep(max(3600, settings.digest_interval_hours * 3600))
+
+
 async def _telegram_health_watch_loop() -> None:
     await asyncio.sleep(20)
     while True:
@@ -599,6 +632,7 @@ async def lifespan(app: FastAPI):
     ai_learning_task = asyncio.create_task(_ai_background_learning_loop())
     video_thumb_task = asyncio.create_task(_video_thumb_warm_loop())
     site_background_task = asyncio.create_task(_site_background_rotation_loop())
+    digest_task = asyncio.create_task(_moderation_digest_loop())
     telegram_service = TelegramPollingService(
         token=settings.telegram_bot_token,
         name="Image Gallery",
@@ -658,6 +692,13 @@ async def lifespan(app: FastAPI):
             pass
         except Exception as exc:
             logger.warning("Gallery site background rotation task ended during shutdown: %s", exc)
+        digest_task.cancel()
+        try:
+            await digest_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("Gallery moderation digest task ended during shutdown: %s", exc)
         await db.close()
 
 
@@ -715,6 +756,7 @@ app.include_router(messages.router)
 app.include_router(threads.router)
 app.include_router(notifications.router)
 app.include_router(collections.router)
+app.include_router(saved_searches.router)
 app.include_router(downloads.router)
 app.include_router(account.router)
 app.include_router(auth.router)

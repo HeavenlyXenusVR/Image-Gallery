@@ -4679,6 +4679,100 @@ textarea:focus {
   color: var(--muted);
 }
 
+.admin-tab {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.admin-tab-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Emoji reactions on media detail */
+.reaction-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.reaction-pill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-2);
+  font-size: 0.85rem;
+}
+
+.reaction-pill.active {
+  border-color: var(--accent, #37c9a7);
+  background: color-mix(in srgb, var(--accent, #37c9a7) 18%, transparent);
+}
+
+/* Threaded comment replies */
+.reply-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  grid-column: 1 / -1;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.comment-replies {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 4px 32px;
+}
+
+.comment-reply {
+  background: var(--panel-2);
+}
+
+/* Similar media rail */
+.similar-media-panel {
+  margin-top: 18px;
+}
+
+.similar-media-rail {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.similar-media-rail .profile-media-mini {
+  flex: 0 0 140px;
+}
+
+/* Site-wide announcement banner + maintenance gate */
+.site-announcement-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 18px;
+  background: color-mix(in srgb, var(--accent, #37c9a7) 20%, transparent);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.site-announcement-banner.level-warning {
+  background: rgba(224, 167, 47, 0.18);
+}
+
+.site-announcement-banner.level-critical {
+  background: rgba(224, 80, 80, 0.2);
+}
+
+.maintenance-gate {
+  display: grid;
+  place-items: center;
+  min-height: 60vh;
+}
+
 /* Bulk selection toolbars (studio) */
 .studio-bulk-bar {
   flex-wrap: wrap;

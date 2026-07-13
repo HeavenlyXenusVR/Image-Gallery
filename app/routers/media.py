@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -23,6 +24,7 @@ from ..schemas import (
     MediaControlRequest,
     MediaLoadDiagnosticRequest,
     MediaUpdateRequest,
+    ReactionRequest,
     ReportRequest,
     VisionTrainingRequest,
 )
@@ -402,6 +404,19 @@ def _optional_form_int(value: Any, field_name: str) -> int | None:
         raise HTTPException(status_code=422, detail=f"{field_name} must be a number.") from None
 
 
+def _parse_future_publish_at(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="publish_at must be an ISO datetime.") from None
+    parsed = parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+    if parsed <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=422, detail="publish_at must be in the future.")
+    return parsed
+
+
 def _parse_form_json_list(value: Any, field_name: str) -> list[Any]:
     if value in (None, ""):
         return []
@@ -473,7 +488,12 @@ def _moderate_upload(
     filename: str,
     mime_type: str,
     user_marked_adult: bool,
+    human_confirmed: bool = True,
 ) -> dict[str, Any]:
+    """human_confirmed distinguishes the uploader's own 18+ checkbox from an AI/keyword
+    determination folded into user_marked_adult by the caller — when content is flagged
+    adult but no human confirmed it, the post stays gated but its admin-visible status
+    is "pending_review" instead of "adult", surfacing it in the flagged-uploads queue."""
     combined = " ".join([title, description or "", " ".join(tags), filename, mime_type]).lower()
     normalized = re.sub(r"[^a-z0-9+]+", " ", combined)
     hits = sorted({word for word in ADULT_KEYWORDS if word in normalized or word in combined})
@@ -484,11 +504,15 @@ def _moderate_upload(
         reason_parts.append("Uploader marked this post as 18+.")
     if hits:
         reason_parts.append(f"Automatic moderation matched: {', '.join(hits[:5])}.")
+    if is_adult:
+        status = "adult" if human_confirmed else "pending_review"
+    else:
+        status = "clear"
     return {
         "is_adult": is_adult,
         "adult_marked_by_user": bool(user_marked_adult),
         "adult_marked_by_ai": adult_by_ai,
-        "moderation_status": "adult" if is_adult else "clear",
+        "moderation_status": status,
         "moderation_score": 0.96 if adult_by_ai else (0.75 if user_marked_adult else 0),
         "moderation_reason": " ".join(reason_parts)[:300] or None,
     }
@@ -707,8 +731,10 @@ async def upload_media(
     comments_enabled: bool = Form(True),
     downloads_enabled: bool = Form(True),
     pinned: bool = Form(False),
+    publish_at: str | None = Form(None),
     auto_ai: bool = Form(True), auth: dict[str, Any] = Depends(_current_user),
 ) -> dict[str, Any]:
+    publish_at_value = _parse_future_publish_at(publish_at)
     category_id_int = _optional_form_int(category_id, "category_id")
     subcategory_id_int = _optional_form_int(subcategory_id, "subcategory_id")
     selected_subcategory_ids = _parse_form_int_list(subcategory_ids_json, "subcategory_ids_json")
@@ -775,6 +801,7 @@ async def upload_media(
         filename=stored_filename,
         mime_type=uploaded["mime_type"],
         user_marked_adult=bool(is_adult or analysis.is_adult),
+        human_confirmed=bool(is_adult),
     )
     media_kind = uploaded["media_kind"]
     storage_info = await _store_uploaded_media(int(auth["id"]), uploaded, stored_filename)
@@ -798,6 +825,7 @@ async def upload_media(
             "comments_enabled": comments_enabled,
             "downloads_enabled": downloads_enabled,
             "pinned": pinned,
+            "publish_at": publish_at_value,
             **moderation,
         }
     )
@@ -807,7 +835,29 @@ async def upload_media(
     _invalidate_api_cache("media", "tags", "categories")
     enriched = _with_urls(request, item, adult_allowed)
     _notify_discord_upload(request, auth, enriched)
+    if visibility == "public" and not publish_at_value:
+        asyncio.create_task(_notify_matching_saved_searches(int(auth["id"]), item))
     return {"media": enriched}
+
+
+async def _notify_matching_saved_searches(uploader_id: int, item: dict[str, Any]) -> None:
+    try:
+        matches = await main.db.find_saved_searches_matching(item, exclude_user_id=uploader_id)
+    except Exception:
+        main.logger.warning("Could not evaluate saved searches for media %s", item.get("id"), exc_info=True)
+        return
+    for search in matches:
+        owner_id = int(search["user_id"])
+        try:
+            if await main.db.is_blocked_either_way(owner_id, uploader_id) or await main.db.is_muted(owner_id, uploader_id):
+                continue
+            await main.db.create_notification(
+                owner_id, uploader_id, "saved_search", media_id=int(item["id"]),
+                preview=f"New match for \"{search.get('name')}\": {item.get('title')}",
+            )
+            await main.db.touch_saved_search_notified(int(search["id"]))
+        except Exception:
+            main.logger.warning("Could not notify saved search %s", search.get("id"), exc_info=True)
 
 
 @router.post("/api/media/analyze")
@@ -854,7 +904,14 @@ async def media_detail(media_id: int, request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=403, detail="Age verification required for this 18+ post.")
     await main.db.increment_counter(media_id, "views")
     comments = await main.db.list_comments(media_id)
-    return {"media": _with_urls(request, item, adult_allowed), "comments": _jsonable(comments)}
+    reactions = await main.db.list_reactions(media_id, viewer_id)
+    similar = await main.db.list_similar_media(media_id, viewer_id, limit=8)
+    return {
+        "media": _with_urls(request, item, adult_allowed),
+        "comments": _jsonable(comments),
+        "reactions": _jsonable(reactions),
+        "similar": [_with_urls(request, row, adult_allowed) for row in similar],
+    }
 
 
 @router.patch("/api/media/{media_id}")
@@ -960,22 +1017,58 @@ async def bookmark_media(media_id: int, payload: BookmarkRequest, request: Reque
     return {"media": _with_urls(request, item, adult_allowed)}
 
 
+_MENTION_RE = re.compile(r"(?<!\w)@([A-Za-z0-9_.-]{3,40})")
+
+
 @router.post("/api/media/{media_id}/comments")
 async def add_comment(media_id: int, payload: CommentRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
     viewer_id = int(auth["id"])
     existing = await main.db.get_media(media_id, viewer_id)
     _ensure_media_visible_to_viewer(existing, viewer_id)
     try:
-        comment = await main.db.add_comment(media_id, viewer_id, payload.body)
+        comment = await main.db.add_comment(media_id, viewer_id, payload.body, payload.parent_comment_id)
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from None
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
+    kind = "reply" if payload.parent_comment_id else "comment"
     await main.db.create_notification(
-        int(existing["user_id"]), viewer_id, "comment", media_id=media_id, preview=payload.body,
+        int(existing["user_id"]), viewer_id, kind, media_id=media_id, preview=payload.body,
     )
+    mentioned_usernames = _MENTION_RE.findall(payload.body)[:10]
+    if mentioned_usernames:
+        resolved = await main.db.resolve_usernames(mentioned_usernames)
+        for mentioned_id in set(resolved.values()):
+            if mentioned_id in (viewer_id, int(existing["user_id"])):
+                continue
+            if await main.db.is_blocked_either_way(viewer_id, mentioned_id):
+                continue
+            await main.db.create_notification(mentioned_id, viewer_id, "mention", media_id=media_id, preview=payload.body)
     _invalidate_api_cache("media")
     return {"comment": _jsonable(comment)}
+
+
+@router.post("/api/media/{media_id}/react")
+async def react_to_media(media_id: int, payload: ReactionRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    viewer_id = int(auth["id"])
+    existing = await main.db.get_media(media_id, viewer_id)
+    _ensure_media_visible_to_viewer(existing, viewer_id)
+    try:
+        result = await main.db.react_to_media(media_id, viewer_id, payload.emoji)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    if int(existing["user_id"]) != viewer_id and result.get("my_reaction"):
+        await main.db.create_notification(int(existing["user_id"]), viewer_id, "reaction", media_id=media_id, preview=payload.emoji)
+    _invalidate_api_cache("media")
+    return {"reactions": _jsonable(result)}
+
+
+@router.get("/api/media/{media_id}/similar")
+async def similar_media(media_id: int, request: Request) -> dict[str, Any]:
+    viewer_id = _user_id(_auth_optional(request))
+    adult_allowed = await _viewer_can_open_adult(request)
+    rows = await main.db.list_similar_media(media_id, viewer_id, limit=12)
+    return {"media": [_with_urls(request, item, adult_allowed) for item in rows]}
 
 
 @router.delete("/api/comments/{comment_id}")

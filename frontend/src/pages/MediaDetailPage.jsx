@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { Bookmark, ChevronLeft, ChevronRight, Copy, Download, Heart, Link as LinkIcon, Lock, MessageCircle, Trash2 } from "lucide-react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Bookmark, ChevronLeft, ChevronRight, Copy, Download, Heart, Link as LinkIcon, Lock, MessageCircle, Reply, Trash2 } from "lucide-react";
 import { apiFetch } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
@@ -8,6 +8,8 @@ import { MediaActionPanel, MediaControls } from "../components/media.jsx";
 import { VideoPlayer } from "../components/VideoPlayer.jsx";
 import { Avatar, ChipRow, EmptyState, Notice, NotFound, Page, ResilientImage, SkeletonGrid, StatsRow, UserLine } from "../components/ui.jsx";
 import { imageQualityUrl, isGifMedia, thumbUrl, videoQualityUrl } from "../utils/media.js";
+
+const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
 
 function subcategoryNames(item) {
   if (Array.isArray(item?.subcategory_names) && item.subcategory_names.length) return item.subcategory_names;
@@ -24,6 +26,9 @@ export function MediaDetailPage({ ctx }) {
   const [media, setMedia] = useState(null);
   const [comments, setComments] = useState([]);
   const [commentBody, setCommentBody] = useState("");
+  const [replyTo, setReplyTo] = useState(null);
+  const [reactions, setReactions] = useState({ counts: {}, my_reaction: null });
+  const [similar, setSimilar] = useState([]);
   const [report, setReport] = useState({ reason: "", details: "" });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -45,6 +50,8 @@ export function MediaDetailPage({ ctx }) {
       if (controller.signal.aborted) return;
       setMedia(data.media);
       setComments(data.comments || []);
+      setReactions(data.reactions || { counts: {}, my_reaction: null });
+      setSimilar(data.similar || []);
     } catch (fetchError) {
       if (controller.signal.aborted) return;
       if (!background) {
@@ -92,13 +99,27 @@ export function MediaDetailPage({ ctx }) {
     try {
       const data = await apiFetch(`/api/media/${media.id}/comments`, {
         method: "POST",
-        body: JSON.stringify({ body: commentBody.trim() }),
+        body: JSON.stringify({ body: commentBody.trim(), parent_comment_id: replyTo?.id || null }),
       });
       setComments((rows) => [...rows, data.comment]);
       setCommentBody("");
+      setReplyTo(null);
       ctx.showToast("Comment posted.", "success");
     } catch (commentError) {
       ctx.showToast(commentError.message, "error");
+    }
+  }
+
+  async function react(emoji) {
+    if (!media) return;
+    try {
+      const data = await apiFetch(`/api/media/${media.id}/react`, {
+        method: "POST",
+        body: JSON.stringify({ emoji }),
+      });
+      setReactions(data.reactions || { counts: {}, my_reaction: null });
+    } catch (reactError) {
+      ctx.showToast(reactError.message, "error");
     }
   }
 
@@ -200,6 +221,20 @@ export function MediaDetailPage({ ctx }) {
           {media.description ? <p className="description">{media.description}</p> : null}
           <StatsRow item={media} />
           <ChipRow values={metadataChips} />
+          {ctx.user ? (
+            <div className="reaction-tray">
+              {REACTION_EMOJIS.map((emoji) => (
+                <button
+                  type="button"
+                  key={emoji}
+                  className={`reaction-pill ${reactions.my_reaction === emoji ? "active" : ""}`}
+                  onClick={() => react(emoji)}
+                >
+                  {emoji} {reactions.counts?.[emoji] ? reactions.counts[emoji] : ""}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <MediaActionPanel ctx={ctx} media={media} actions={actions} />
           {isOwner ? <MediaControls ctx={ctx} media={media} onChanged={setMedia} /> : null}
           {ctx.user ? (
@@ -216,26 +251,66 @@ export function MediaDetailPage({ ctx }) {
         <div className="section-head"><h2>Comments</h2><span>{comments.length}</span></div>
         {ctx.user && media.comments_enabled !== false ? (
           <form className="comment-form" onSubmit={addComment}>
-            <input value={commentBody} onChange={(event) => setCommentBody(event.target.value)} placeholder="Add a comment" />
+            {replyTo ? (
+              <div className="reply-banner">
+                <span>Replying to {replyTo.display_name || replyTo.username}</span>
+                <button type="button" className="icon-button" onClick={() => setReplyTo(null)}>Cancel</button>
+              </div>
+            ) : null}
+            <input value={commentBody} onChange={(event) => setCommentBody(event.target.value)} placeholder="Add a comment (@mention a username)" />
             <button type="submit"><MessageCircle size={16} />Post</button>
           </form>
         ) : null}
         <div className="comments-list">
-          {comments.length ? comments.map((comment) => {
+          {comments.length ? comments.filter((comment) => !comment.parent_comment_id).map((comment) => {
+            const replies = comments.filter((row) => Number(row.parent_comment_id) === Number(comment.id));
             const canDelete = ctx.user && (Number(ctx.user.id) === Number(comment.user_id) || Number(ctx.user.id) === Number(media.user_id));
             return (
-              <article className="comment" key={comment.id}>
-                <Avatar user={comment} compact />
-                <div>
-                  <strong>{comment.display_name || comment.username || "User"}</strong>
-                  <p>{comment.body}</p>
-                </div>
-                {canDelete ? <button className="icon-button" type="button" onClick={() => deleteComment(comment.id)} title="Delete"><Trash2 size={16} /></button> : null}
-              </article>
+              <div key={comment.id}>
+                <article className="comment">
+                  <Avatar user={comment} compact />
+                  <div>
+                    <strong>{comment.display_name || comment.username || "User"}</strong>
+                    <p>{comment.body}</p>
+                    {ctx.user ? <button type="button" className="icon-button" onClick={() => setReplyTo(comment)} title="Reply"><Reply size={14} /></button> : null}
+                  </div>
+                  {canDelete ? <button className="icon-button" type="button" onClick={() => deleteComment(comment.id)} title="Delete"><Trash2 size={16} /></button> : null}
+                </article>
+                {replies.length ? (
+                  <div className="comment-replies">
+                    {replies.map((reply) => {
+                      const canDeleteReply = ctx.user && (Number(ctx.user.id) === Number(reply.user_id) || Number(ctx.user.id) === Number(media.user_id));
+                      return (
+                        <article className="comment comment-reply" key={reply.id}>
+                          <Avatar user={reply} compact />
+                          <div>
+                            <strong>{reply.display_name || reply.username || "User"}</strong>
+                            <p>{reply.body}</p>
+                          </div>
+                          {canDeleteReply ? <button className="icon-button" type="button" onClick={() => deleteComment(reply.id)} title="Delete"><Trash2 size={16} /></button> : null}
+                        </article>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
             );
           }) : <EmptyState title="No comments yet" />}
         </div>
       </section>
+      {similar.length ? (
+        <section className="similar-media-panel">
+          <div className="section-head"><h2>More like this</h2></div>
+          <div className="similar-media-rail">
+            {similar.map((item) => (
+              <Link className="profile-media-mini" to={`/media/${item.id}`} key={item.id}>
+                <ResilientImage sources={[item.thumb_url, item.preview_url].filter(Boolean)} diagnostics={{ mediaId: item.id, mediaKind: item.media_kind, context: "similar-media" }} alt="" loading="lazy" decoding="async" />
+                <span>{item.title || "Untitled"}</span>
+              </Link>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </Page>
   );
 }

@@ -8,6 +8,7 @@ import mimetypes
 import os
 import re
 import time
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -88,20 +89,46 @@ def _ensure_media_visible_to_viewer(item: dict[str, Any] | None, viewer_id: int 
     owner = int(item.get("user_id") or 0) == int(viewer_id or 0)
     if item.get("visibility") == "private" and not owner:
         raise HTTPException(status_code=403, detail="This post is private.")
+    publish_at = item.get("publish_at")
+    if publish_at and not owner:
+        now = datetime.now(timezone.utc)
+        due = publish_at.replace(tzinfo=timezone.utc) if publish_at.tzinfo is None else publish_at
+        if due > now:
+            raise HTTPException(status_code=404, detail="Media not found.")
 
 
-def _current_user(request: Request) -> dict[str, Any]:
+def _is_actively_banned(user: dict[str, Any] | None) -> bool:
+    if not user or not user.get("banned_at"):
+        return False
+    until = user.get("banned_until")
+    if not until:
+        return True
+    try:
+        now = datetime.now(timezone.utc)
+        return (until.replace(tzinfo=timezone.utc) if until.tzinfo is None else until) > now
+    except Exception:
+        return True
+
+
+async def _current_user(request: Request) -> dict[str, Any]:
     """FastAPI dependency: the decoded session/token payload for the caller.
 
     Raises 401 via require_auth() if there's no valid session. Use as
     `auth: dict[str, Any] = Depends(_current_user)` instead of calling
-    require_auth(...) inline in every handler.
+    require_auth(...) inline in every handler. Also enforces account bans —
+    a suspended account's token is otherwise still cryptographically valid,
+    so this is the one choke point every authenticated request passes through.
     """
-    return require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+    auth = require_auth(request, main.settings.session_secret, main.settings.api_token_ttl_seconds)
+    user = await main.db.get_user(int(auth["id"]))
+    if _is_actively_banned(user):
+        reason = user.get("ban_reason") or "Your account has been suspended."
+        raise HTTPException(status_code=403, detail=reason)
+    return auth
 
 
 async def _require_site_owner(request: Request) -> dict[str, Any]:
-    auth = _current_user(request)
+    auth = await _current_user(request)
     user = await main.db.get_user(int(auth["id"]))
     if not _is_site_owner_user(user):
         raise HTTPException(status_code=403, detail="Only the verified site owner can use this action.")

@@ -279,6 +279,9 @@ export function StudioItem({ ctx, item, onChanged, onRemoved, selected = false, 
       <div>
         <h3>{item.title || "Untitled"}</h3>
         <p>{item.visibility || "public"} / {formatBytes(item.file_size)} / {formatDate(item.created_at || item.uploaded_at)}</p>
+        {item.publish_at && new Date(item.publish_at) > new Date() ? (
+          <span className="report-status-pill">Scheduled for {formatDate(item.publish_at)}</span>
+        ) : null}
         <StatsRow item={item} compact />
       </div>
       <div className="studio-actions">

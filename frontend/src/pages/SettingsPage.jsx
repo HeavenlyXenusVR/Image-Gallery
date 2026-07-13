@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Eye, KeyRound, Mail, Palette, Save, ShieldCheck, UserRound } from "lucide-react";
-import { apiFetch, clearApiCache } from "../api.js";
-import { Avatar, ChipRow, Page, RequireLogin } from "../components/ui.jsx";
+import { Ban, Bell, Check, Download, Eye, KeyRound, Mail, Palette, Save, ShieldCheck, Trash2, UserRound } from "lucide-react";
+import { apiFetch, apiFetchBlob, clearApiCache, downloadBlob } from "../api.js";
+import { Avatar, ChipRow, EmptyState, Page, RequireLogin, UserMini } from "../components/ui.jsx";
 import { profileClassName, profileStyle } from "../utils/appearance.js";
 
 function profileFromUser(user, settings) {
@@ -34,6 +34,68 @@ export function SettingsPage({ ctx }) {
   const [totpCode, setTotpCode] = useState("");
   const [totpRecoveryCodes, setTotpRecoveryCodes] = useState(null);
   const [totpDisablePassword, setTotpDisablePassword] = useState("");
+  const [blocks, setBlocks] = useState([]);
+  const [savedSearches, setSavedSearches] = useState([]);
+  const [exporting, setExporting] = useState(false);
+
+  const refreshBlocks = useCallback(async () => {
+    try {
+      const data = await apiFetch("/api/me/blocks");
+      setBlocks(data.blocks || []);
+    } catch (_error) {
+      // Non-critical background read.
+    }
+  }, []);
+
+  const refreshSavedSearches = useCallback(async () => {
+    try {
+      const data = await apiFetch("/api/saved-searches");
+      setSavedSearches(data.saved_searches || []);
+    } catch (_error) {
+      // Non-critical background read.
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshBlocks();
+    refreshSavedSearches();
+  }, [refreshBlocks, refreshSavedSearches]);
+
+  async function deleteSavedSearch(searchId) {
+    try {
+      await apiFetch(`/api/saved-searches/${searchId}`, { method: "DELETE" });
+      setSavedSearches((current) => current.filter((row) => Number(row.id) !== Number(searchId)));
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    }
+  }
+
+  async function unblock(entry) {
+    try {
+      await apiFetch(`/api/users/${entry.user.id}/block`, {
+        method: "POST",
+        body: JSON.stringify({ kind: entry.kind, active: false }),
+      });
+      clearApiCache("/api/users");
+      clearApiCache("/api/feed");
+      setBlocks((current) => current.filter((row) => !(row.user.id === entry.user.id && row.kind === entry.kind)));
+      ctx.showToast(`@${entry.user.username} ${entry.kind === "mute" ? "unmuted" : "unblocked"}.`, "success");
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    }
+  }
+
+  async function exportMyData() {
+    setExporting(true);
+    try {
+      const { blob, filename } = await apiFetchBlob("/api/me/export");
+      downloadBlob(blob, filename);
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const refreshTotpStatus = useCallback(async () => {
     try {
@@ -461,6 +523,44 @@ export function SettingsPage({ ctx }) {
                 <div className="form-actions settings-actions"><button className="primary" type="button" onClick={beginTotpEnroll}><ShieldCheck size={16} />Enable 2FA</button></div>
               </>
             )}
+          </div>
+          <div className="side-box stacked-form settings-form-card">
+            <h2><Ban size={18} /> Blocked &amp; Muted</h2>
+            {blocks.length ? (
+              <div className="check-stack">
+                {blocks.map((entry) => (
+                  <div className="friend-request" key={`${entry.kind}-${entry.user.id}`}>
+                    <UserMini user={entry.user} />
+                    <span className="report-status-pill">{entry.kind}</span>
+                    <button type="button" onClick={() => unblock(entry)}>Undo</button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState title="No blocked or muted accounts" />
+            )}
+          </div>
+          <div className="side-box stacked-form settings-form-card">
+            <h2><Bell size={18} /> Saved Searches &amp; Alerts</h2>
+            {savedSearches.length ? (
+              <div className="check-stack">
+                {savedSearches.map((row) => (
+                  <div className="friend-request" key={row.id}>
+                    <span>{row.name}</span>
+                    <button type="button" className="icon-button" onClick={() => deleteSavedSearch(row.id)} title="Delete"><Trash2 size={16} /></button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState title="No saved searches yet — save one from Discover" />
+            )}
+          </div>
+          <div className="side-box stacked-form settings-form-card">
+            <h2><Download size={18} /> Your Data</h2>
+            <p>Download a JSON export of your profile, uploads, collections, social graph, and activity.</p>
+            <div className="form-actions settings-actions">
+              <button type="button" onClick={exportMyData} disabled={exporting}><Download size={16} />{exporting ? "Preparing..." : "Download my data"}</button>
+            </div>
           </div>
         </div>
       </section>

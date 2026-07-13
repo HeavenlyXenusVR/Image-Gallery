@@ -1,5 +1,8 @@
+import { useEffect, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
-import { Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Moon, Settings, ShieldAlert, Sparkles, Sun, SunMoon, TrendingUp, Upload, UserPlus, Users } from "lucide-react";
+import { AlertTriangle, Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Moon, Settings, ShieldAlert, Sparkles, Sun, SunMoon, TrendingUp, Upload, UserPlus, Users, X as XIcon } from "lucide-react";
+import { cachedApiFetch } from "../api.js";
+import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { Avatar } from "./ui.jsx";
 import { NotificationBell } from "./NotificationBell.jsx";
 
@@ -12,8 +15,46 @@ export function Shell({ ctx, children, className = "", style }) {
   const liveOk = ctx.lookups.live?.ok ?? ctx.lookups.live?.check_map?.db ?? ctx.lookups.live?.check_map?.api;
   const healthText = liveOk ? "Live" : "Checking";
   const username = ctx.user?.username || "guest";
+  const [site, setSite] = useState(null);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+
+  useLiveRefresh(async () => {
+    try {
+      setSite(await cachedApiFetch("/api/site/announcement", { ttl: 30_000 }));
+    } catch (_error) {
+      // Non-critical — keep the last known state rather than erroring the shell.
+    }
+  }, { interval: 60_000, immediate: true });
+
+  useEffect(() => {
+    setBannerDismissed(false);
+  }, [site?.announcement_message]);
+
+  const isOwner = Boolean(ctx.user?.site_owner);
+  if (site?.maintenance_mode && !isOwner) {
+    return (
+      <div className={`app-shell ${className}`.trim()} style={style}>
+        <main className="main-stage maintenance-gate">
+          <div className="locked-state">
+            <AlertTriangle size={42} />
+            <h2>Under maintenance</h2>
+            <p>{site.maintenance_message || "Image Gallery is temporarily unavailable. Please check back soon."}</p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className={`app-shell ${className}`.trim()} style={style}>
+      {site?.announcement_active && site.announcement_message && !bannerDismissed ? (
+        <div className={`site-announcement-banner level-${site.announcement_level || "info"}`}>
+          <span>{site.announcement_message}</span>
+          <button type="button" className="icon-button" onClick={() => setBannerDismissed(true)} title="Dismiss">
+            <XIcon size={16} />
+          </button>
+        </div>
+      ) : null}
       <header className="topbar">
         <Link className="brand" to="/">
           <span className="brand-mark"><ImageIcon size={18} /></span>

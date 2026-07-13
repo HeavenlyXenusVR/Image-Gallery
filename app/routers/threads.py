@@ -13,6 +13,9 @@ router = APIRouter()
 
 @router.post("/api/threads")
 async def create_thread(payload: ThreadCreateRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    for member_id in payload.member_ids:
+        if await main.db.is_blocked_either_way(int(auth["id"]), int(member_id)):
+            raise HTTPException(status_code=403, detail="You cannot start a thread with a blocked user.")
     try:
         thread = await main.db.create_thread(int(auth["id"]), payload.member_ids, payload.name)
     except ValueError as exc:

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bell, Heart, MessageCircle, MessageSquare, UserPlus, Users } from "lucide-react";
+import { AtSign, Bell, Heart, MessageCircle, MessageSquare, Reply, Search, Smile, UserPlus, Users } from "lucide-react";
 import { apiFetch } from "../api.js";
 import { Avatar } from "./ui.jsx";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
@@ -12,6 +12,10 @@ const KIND_ICON = {
   friend_accept: Heart,
   comment: MessageSquare,
   message: MessageCircle,
+  mention: AtSign,
+  reply: Reply,
+  reaction: Smile,
+  saved_search: Search,
 };
 
 function notificationText(item) {
@@ -27,6 +31,14 @@ function notificationText(item) {
       return `${name} commented${item.media_title ? ` on "${item.media_title}"` : " on your post"}.`;
     case "message":
       return `${name} sent you a message.`;
+    case "mention":
+      return `${name} mentioned you in a comment.`;
+    case "reply":
+      return `${name} replied to your comment.`;
+    case "reaction":
+      return `${name} reacted to your post.`;
+    case "saved_search":
+      return item.preview || "A new post matches one of your saved searches.";
     default:
       return `${name} did something.`;
   }
@@ -40,6 +52,10 @@ function notificationLink(item) {
     case "friend_request":
       return "/friends";
     case "comment":
+    case "mention":
+    case "reply":
+    case "reaction":
+    case "saved_search":
       return item.media_id ? `/media/${item.media_id}` : null;
     case "message":
       return "/messages";

@@ -38,17 +38,20 @@ class AdminMixin:
                 return list(await cur.fetchall())
 
 
-    async def resolve_report(self, report_id: int, status: str) -> dict[str, Any] | None:
+    async def resolve_report(self, report_id: int, status: str, actor_id: int | None = None) -> dict[str, Any] | None:
         if status not in {"open", "reviewed", "dismissed"}:
             raise ValueError("Invalid report status.")
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute("UPDATE media_reports SET status=%s WHERE id=%s", (status, report_id))
                 await cur.execute("SELECT * FROM media_reports WHERE id=%s", (report_id,))
-                return await cur.fetchone()
+                report = await cur.fetchone()
+        if report:
+            await self.write_audit_log(actor_id, f"report_{status}", "report", report_id, f"media_id={report.get('media_id')}")
+        return report
 
 
-    async def moderator_delete_media(self, media_id: int) -> bool:
+    async def moderator_delete_media(self, media_id: int, actor_id: int | None = None) -> bool:
         """Soft-delete any media item regardless of ownership — site-owner moderation only."""
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cur:
@@ -56,7 +59,189 @@ class AdminMixin:
                     "UPDATE media_items SET deleted_at=CURRENT_TIMESTAMP, visibility='private' WHERE id=%s AND deleted_at IS NULL",
                     (media_id,),
                 )
-                return cur.rowcount > 0
+                deleted = cur.rowcount > 0
+        if deleted:
+            await self.write_audit_log(actor_id, "delete_media", "media", media_id, None)
+        return deleted
+
+
+    async def write_audit_log(self, actor_id: int | None, action: str, target_type: str, target_id: int | None, detail: str | None) -> None:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "INSERT INTO moderation_audit_log (actor_id, action, target_type, target_id, detail) VALUES (%s, %s, %s, %s, %s)",
+                    (actor_id, action[:60], target_type[:30], target_id, (detail or "")[:500] or None),
+                )
+
+
+    async def list_audit_log(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT a.*, u.username AS actor_username, COALESCE(u.display_name, u.username) AS actor_display_name
+                    FROM moderation_audit_log a
+                    LEFT JOIN users u ON u.id = a.actor_id
+                    ORDER BY a.created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (max(1, min(int(limit or 50), 200)), max(0, int(offset or 0))),
+                )
+                return list(await cur.fetchall())
+
+
+    async def ban_user(self, user_id: int, banned_by: int, reason: str | None, until: str | None) -> dict[str, Any] | None:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    UPDATE users
+                    SET banned_at=CURRENT_TIMESTAMP, banned_until=%s, ban_reason=%s, banned_by=%s
+                    WHERE id=%s
+                    """,
+                    (until, (reason or "").strip()[:300] or None, banned_by, user_id),
+                )
+                if cur.rowcount == 0:
+                    return None
+        self._invalidate_user_cache(user_id)
+        await self.write_audit_log(banned_by, "ban", "user", user_id, reason)
+        return await self.get_user(user_id, bypass_cache=True)
+
+
+    async def unban_user(self, user_id: int, lifted_by: int) -> dict[str, Any] | None:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE users SET banned_at=NULL, banned_until=NULL, ban_reason=NULL, banned_by=NULL WHERE id=%s",
+                    (user_id,),
+                )
+                if cur.rowcount == 0:
+                    return None
+        self._invalidate_user_cache(user_id)
+        await self.write_audit_log(lifted_by, "unban", "user", user_id, None)
+        return await self.get_user(user_id, bypass_cache=True)
+
+
+    async def list_flagged_media(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT m.*, u.username AS owner_username, COALESCE(u.display_name, u.username) AS owner_display_name
+                    FROM media_items m
+                    JOIN users u ON u.id = m.user_id
+                    WHERE m.moderation_status='pending_review' AND m.deleted_at IS NULL
+                    ORDER BY m.created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (max(1, min(int(limit or 50), 200)), max(0, int(offset or 0))),
+                )
+                return list(await cur.fetchall())
+
+
+    async def resolve_flagged_media(self, media_id: int, decision: str, actor_id: int | None = None) -> dict[str, Any] | None:
+        if decision not in {"clear", "adult"}:
+            raise ValueError("decision must be clear or adult.")
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    UPDATE media_items
+                    SET moderation_status=%s, is_adult=%s, moderated_at=CURRENT_TIMESTAMP
+                    WHERE id=%s AND moderation_status='pending_review'
+                    """,
+                    (decision, 1 if decision == "adult" else 0, media_id),
+                )
+                if cur.rowcount == 0:
+                    return None
+                await cur.execute("SELECT * FROM media_items WHERE id=%s", (media_id,))
+                item = await cur.fetchone()
+        await self.write_audit_log(actor_id, f"flagged_media_{decision}", "media", media_id, None)
+        return item
+
+
+    async def storage_by_user(self, limit: int = 20) -> dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute("SELECT COALESCE(SUM(file_size), 0) AS total_bytes, COUNT(*) AS total_items FROM media_items WHERE deleted_at IS NULL")
+                totals = await cur.fetchone() or {}
+                await cur.execute(
+                    """
+                    SELECT m.user_id, u.username, COALESCE(u.display_name, u.username) AS display_name,
+                           COUNT(*) AS item_count, COALESCE(SUM(m.file_size), 0) AS total_bytes
+                    FROM media_items m
+                    JOIN users u ON u.id = m.user_id
+                    WHERE m.deleted_at IS NULL
+                    GROUP BY m.user_id
+                    ORDER BY total_bytes DESC
+                    LIMIT %s
+                    """,
+                    (max(1, min(int(limit or 20), 100)),),
+                )
+                by_user = list(await cur.fetchall())
+        return {
+            "total_bytes": int(totals.get("total_bytes") or 0),
+            "total_items": int(totals.get("total_items") or 0),
+            "by_user": by_user,
+        }
+
+
+    async def get_site_settings(self) -> dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute("SELECT * FROM site_settings WHERE id=1")
+                row = await cur.fetchone()
+                return dict(row) if row else {}
+
+
+    async def touch_site_digest(self) -> None:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("UPDATE site_settings SET last_digest_at=CURRENT_TIMESTAMP WHERE id=1")
+
+
+    async def update_site_settings(self, updated_by: int, **fields: Any) -> dict[str, Any]:
+        allowed = {
+            "announcement_message", "announcement_level", "announcement_active",
+            "maintenance_mode", "maintenance_message",
+        }
+        sets = []
+        params: list[Any] = []
+        for key, value in fields.items():
+            if key not in allowed or value is None:
+                continue
+            sets.append(f"{key}=%s")
+            if key in {"announcement_active", "maintenance_mode"}:
+                params.append(1 if value else 0)
+            else:
+                params.append(str(value)[:500])
+        if not sets:
+            return await self.get_site_settings()
+        sets.append("updated_by=%s")
+        params.append(updated_by)
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(f"UPDATE site_settings SET {', '.join(sets)} WHERE id=1", tuple(params))
+        await self.write_audit_log(updated_by, "site_settings_update", "site_settings", None, ", ".join(fields.keys()))
+        return await self.get_site_settings()
+
+
+    async def digest_counts_since(self, since: Any) -> dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT
+                        (SELECT COUNT(*) FROM media_reports WHERE created_at > %s) AS new_reports,
+                        (SELECT COUNT(*) FROM users WHERE banned_at > %s) AS new_bans,
+                        (SELECT COUNT(*) FROM users WHERE created_at > %s) AS new_signups,
+                        (SELECT COUNT(*) FROM media_items WHERE moderation_status='pending_review' AND deleted_at IS NULL) AS pending_review,
+                        (SELECT COALESCE(SUM(file_size), 0) FROM media_items WHERE created_at > %s AND deleted_at IS NULL) AS new_bytes
+                    """,
+                    (since, since, since, since),
+                )
+                row = await cur.fetchone() or {}
+                return {k: int(v or 0) for k, v in row.items()}
 
 
     async def stats(self) -> dict[str, Any]:

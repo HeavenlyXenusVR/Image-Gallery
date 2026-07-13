@@ -24,8 +24,8 @@ class MediaMixin:
                           (user_id, category_id, subcategory_id, title, description, tags, media_kind, mime_type, original_filename,
                            storage_path, file_size, media_file_id, content_sha256, visibility, comments_enabled, downloads_enabled, pinned_at,
                            is_adult, adult_marked_by_user, adult_marked_by_ai,
-                           moderation_status, moderation_score, moderation_reason, moderated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE NULL END, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                           moderation_status, moderation_score, moderation_reason, moderated_at, publish_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE NULL END, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
                         """,
                         (
                             item["user_id"], item["category_id"], primary_subcategory_id, item["title"], item.get("description"), tags_json,
@@ -42,6 +42,7 @@ class MediaMixin:
                             item.get("moderation_status") or "clear",
                             float(item.get("moderation_score") or 0),
                             item.get("moderation_reason"),
+                            item.get("publish_at"),
                         ),
                     )
                     media_id = int(cur.lastrowid)
@@ -77,8 +78,12 @@ class MediaMixin:
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         viewer = viewer_id or 0
-        clauses = ["m.deleted_at IS NULL", "(m.visibility='public' OR m.user_id=%s)"]
-        params: list[Any] = [viewer]
+        clauses = [
+            "m.deleted_at IS NULL",
+            "(m.visibility='public' OR m.user_id=%s)",
+            "(m.publish_at IS NULL OR m.publish_at <= UTC_TIMESTAMP() OR m.user_id=%s)",
+        ]
+        params: list[Any] = [viewer, viewer]
         if media_kind in {"image", "video"}:
             clauses.append("m.media_kind=%s")
             params.append(media_kind)
@@ -216,12 +221,13 @@ class MediaMixin:
                     LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id = %s
                     LEFT JOIN media_comments cm ON cm.media_id = m.id
                     WHERE m.deleted_at IS NULL AND (m.visibility='public' OR m.user_id=%s)
+                      AND (m.publish_at IS NULL OR m.publish_at <= UTC_TIMESTAMP() OR m.user_id=%s)
                       AND m.created_at >= (UTC_TIMESTAMP() - INTERVAL %s DAY)
                     GROUP BY m.id
                     ORDER BY trend_score DESC, m.created_at DESC
                     LIMIT %s
                     """,
-                    (viewer, viewer, viewer, viewer, viewer, viewer, viewer, window_days, row_limit),
+                    (viewer, viewer, viewer, viewer, viewer, viewer, viewer, viewer, window_days, row_limit),
                 )
                 rows = [self._decode_media(row) for row in await cur.fetchall()]
         return await self._attach_media_subcategories(rows)
@@ -304,7 +310,7 @@ class MediaMixin:
         return await self.get_media(media_id, user_id)
 
 
-    async def add_comment(self, media_id: int, user_id: int, body: str) -> dict[str, Any]:
+    async def add_comment(self, media_id: int, user_id: int, body: str, parent_comment_id: int | None = None) -> dict[str, Any]:
         body = " ".join(str(body or "").strip().split())[:500]
         if not body:
             raise ValueError("Comment cannot be empty.")
@@ -313,11 +319,23 @@ class MediaMixin:
             raise ValueError("Media not found.")
         if not media.get("comments_enabled", True) and int(media.get("user_id")) != int(user_id):
             raise PermissionError("Comments are disabled for this post.")
+        if int(media.get("user_id")) != int(user_id) and await self.is_blocked_either_way(user_id, int(media["user_id"])):
+            raise PermissionError("You cannot comment on this post.")
+        parent_id: int | None = None
+        if parent_comment_id:
+            async with self.pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT id FROM media_comments WHERE id=%s AND media_id=%s",
+                        (int(parent_comment_id), media_id),
+                    )
+                    if await cur.fetchone():
+                        parent_id = int(parent_comment_id)
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "INSERT INTO media_comments (media_id, user_id, body) VALUES (%s, %s, %s)",
-                    (media_id, user_id, body),
+                    "INSERT INTO media_comments (media_id, user_id, body, parent_comment_id) VALUES (%s, %s, %s, %s)",
+                    (media_id, user_id, body, parent_id),
                 )
                 await cur.execute(
                     """
@@ -350,6 +368,102 @@ class MediaMixin:
                     (media_id, limit, offset),
                 )
                 return list(await cur.fetchall())
+
+
+    async def react_to_media(self, media_id: int, user_id: int, emoji: str) -> dict[str, Any]:
+        emoji = str(emoji or "").strip()[:16]
+        if not emoji:
+            raise ValueError("An emoji is required.")
+        media = await self.get_media(media_id, user_id)
+        if not media or media.get("deleted_at"):
+            raise ValueError("Media not found.")
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT emoji FROM media_reactions WHERE media_id=%s AND user_id=%s",
+                    (media_id, user_id),
+                )
+                existing = await cur.fetchone()
+                if existing and existing["emoji"] == emoji:
+                    await cur.execute("DELETE FROM media_reactions WHERE media_id=%s AND user_id=%s", (media_id, user_id))
+                else:
+                    await cur.execute(
+                        "INSERT INTO media_reactions (media_id, user_id, emoji) VALUES (%s, %s, %s) "
+                        "ON DUPLICATE KEY UPDATE emoji=VALUES(emoji), created_at=CURRENT_TIMESTAMP",
+                        (media_id, user_id, emoji),
+                    )
+        return await self.list_reactions(media_id, user_id)
+
+
+    async def list_comments_by_user(self, user_id: int, limit: int = 200) -> list[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT cm.id, cm.media_id, cm.body, cm.parent_comment_id, cm.created_at, m.title AS media_title
+                    FROM media_comments cm
+                    JOIN media_items m ON m.id = cm.media_id
+                    WHERE cm.user_id=%s
+                    ORDER BY cm.created_at DESC
+                    LIMIT %s
+                    """,
+                    (user_id, max(1, min(int(limit or 200), 1000))),
+                )
+                return list(await cur.fetchall())
+
+
+    async def list_reactions(self, media_id: int, viewer_id: int | None = None) -> dict[str, Any]:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT emoji, COUNT(*) AS n FROM media_reactions WHERE media_id=%s GROUP BY emoji ORDER BY n DESC",
+                    (media_id,),
+                )
+                counts = {row["emoji"]: int(row["n"]) for row in await cur.fetchall()}
+                my_reaction = None
+                if viewer_id:
+                    await cur.execute(
+                        "SELECT emoji FROM media_reactions WHERE media_id=%s AND user_id=%s",
+                        (media_id, viewer_id),
+                    )
+                    row = await cur.fetchone()
+                    my_reaction = row["emoji"] if row else None
+                return {"counts": counts, "my_reaction": my_reaction}
+
+
+    async def list_similar_media(self, media_id: int, viewer_id: int | None = None, limit: int = 12) -> list[dict[str, Any]]:
+        source = await self.get_media(media_id, viewer_id)
+        if not source or source.get("deleted_at"):
+            return []
+        tags = source.get("tags") or []
+        tag_conditions = []
+        params: list[Any] = []
+        for tag in tags[:8]:
+            tag_conditions.append("JSON_CONTAINS(m.tags, JSON_QUOTE(%s))")
+            params.append(str(tag))
+        tag_score_sql = " + ".join(f"({cond})" for cond in tag_conditions) if tag_conditions else "0"
+        adult_clause = "" if viewer_id else "AND m.is_adult=0"
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    f"""
+                    SELECT m.*, {MEDIA_CATEGORY_SELECT}
+                           u.username, u.display_name, u.avatar_path AS user_avatar_path, u.profile_color,
+                           ({tag_score_sql} + (m.category_id=%s)) AS relevance
+                    FROM media_items m
+                    {MEDIA_CATEGORY_JOIN}
+                    JOIN users u ON u.id = m.user_id
+                    WHERE m.id != %s AND m.deleted_at IS NULL AND m.visibility='public'
+                          AND (m.publish_at IS NULL OR m.publish_at <= UTC_TIMESTAMP())
+                          {adult_clause}
+                          AND (m.category_id=%s OR {tag_score_sql if tag_conditions else '0'} > 0)
+                    ORDER BY relevance DESC, m.created_at DESC
+                    LIMIT %s
+                    """,
+                    (*params, source["category_id"], media_id, source["category_id"], *params, max(1, min(int(limit or 12), 30))),
+                )
+                rows = [self._decode_media(row) for row in await cur.fetchall()]
+        return await self._attach_media_subcategories(rows)
 
 
     async def update_media(self, media_id: int, user_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:

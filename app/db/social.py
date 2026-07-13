@@ -309,3 +309,91 @@ class ProfileFriendsMixin:
                     users.append(row)
                 return users
 
+
+    async def set_block(self, actor_id: int, target_id: int, kind: str, active: bool) -> dict[str, Any]:
+        if kind not in {"block", "mute"}:
+            raise ValueError("kind must be block or mute.")
+        if int(actor_id) == int(target_id):
+            raise ValueError("You cannot block or mute yourself.")
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute("SELECT id FROM users WHERE id=%s", (target_id,))
+                if not await cur.fetchone():
+                    raise ValueError("User not found.")
+                if active:
+                    await cur.execute(
+                        "INSERT IGNORE INTO user_blocks (blocker_id, blocked_id, kind) VALUES (%s, %s, %s)",
+                        (actor_id, target_id, kind),
+                    )
+                else:
+                    await cur.execute(
+                        "DELETE FROM user_blocks WHERE blocker_id=%s AND blocked_id=%s AND kind=%s",
+                        (actor_id, target_id, kind),
+                    )
+                return {"blocked_id": int(target_id), "kind": kind, "active": bool(active)}
+
+
+    async def list_blocks(self, user_id: int) -> list[dict[str, Any]]:
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT ub.kind, ub.created_at, u.id, u.username, u.display_name, u.avatar_path, u.profile_color
+                    FROM user_blocks ub
+                    JOIN users u ON u.id = ub.blocked_id
+                    WHERE ub.blocker_id=%s
+                    ORDER BY ub.created_at DESC
+                    """,
+                    (user_id,),
+                )
+                rows = []
+                for row in await cur.fetchall():
+                    kind = row.pop("kind")
+                    created_at = row.pop("created_at")
+                    rows.append({"kind": kind, "created_at": created_at, "user": self._decode_user(row)})
+                return rows
+
+
+    async def is_blocked_either_way(self, user_a: int, user_b: int) -> bool:
+        if not user_a or not user_b:
+            return False
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT 1 FROM user_blocks
+                    WHERE kind='block' AND (
+                        (blocker_id=%s AND blocked_id=%s) OR (blocker_id=%s AND blocked_id=%s)
+                    )
+                    LIMIT 1
+                    """,
+                    (user_a, user_b, user_b, user_a),
+                )
+                return bool(await cur.fetchone())
+
+
+    async def resolve_usernames(self, usernames: list[str]) -> dict[str, int]:
+        cleaned = sorted({str(name or "").strip().lower() for name in usernames if str(name or "").strip()})
+        if not cleaned:
+            return {}
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                placeholders = ", ".join(["%s"] * len(cleaned))
+                await cur.execute(
+                    f"SELECT id, username FROM users WHERE LOWER(username) IN ({placeholders})",
+                    tuple(cleaned),
+                )
+                return {row["username"].lower(): int(row["id"]) for row in await cur.fetchall()}
+
+
+    async def is_muted(self, viewer_id: int | None, author_id: int) -> bool:
+        if not viewer_id or int(viewer_id) == int(author_id):
+            return False
+        async with self.pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT 1 FROM user_blocks WHERE blocker_id=%s AND blocked_id=%s AND kind='mute' LIMIT 1",
+                    (viewer_id, author_id),
+                )
+                return bool(await cur.fetchone())
+

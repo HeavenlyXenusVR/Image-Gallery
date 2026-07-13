@@ -65,6 +65,7 @@ class LikeRequest(BaseModel):
 
 class CommentRequest(BaseModel):
     body: str
+    parent_comment_id: int | None = None
 
 
 class DirectMessageRequest(BaseModel):
@@ -226,3 +227,34 @@ class VisionTrainingRequest(BaseModel):
     tags: list[str] = []
     is_adult: bool = False
     notes: str | None = None
+
+
+class BlockRequest(BaseModel):
+    kind: str = "block"
+    active: bool = True
+
+
+class ReactionRequest(BaseModel):
+    emoji: str
+
+
+class SavedSearchRequest(BaseModel):
+    name: str
+    filter_json: dict = {}
+
+
+class BanRequest(BaseModel):
+    reason: str | None = None
+    until: str | None = None
+
+
+class FlaggedMediaResolveRequest(BaseModel):
+    decision: str
+
+
+class SiteSettingsRequest(BaseModel):
+    announcement_message: str | None = None
+    announcement_level: str | None = None
+    announcement_active: bool | None = None
+    maintenance_mode: bool | None = None
+    maintenance_message: str | None = None

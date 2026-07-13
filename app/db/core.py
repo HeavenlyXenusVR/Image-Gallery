@@ -527,7 +527,7 @@ class CoreMixin:
                       id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
                       recipient_id BIGINT UNSIGNED NOT NULL,
                       actor_id BIGINT UNSIGNED NULL,
-                      kind ENUM('follow','friend_request','friend_accept','comment','message') NOT NULL,
+                      kind ENUM('follow','friend_request','friend_accept','comment','message','mention','reply','reaction','saved_search') NOT NULL,
                       media_id BIGINT UNSIGNED NULL,
                       preview VARCHAR(160) NULL,
                       read_at TIMESTAMP NULL DEFAULT NULL,
@@ -539,6 +539,90 @@ class CoreMixin:
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
                     """,
                 )
+                await ensure_table(
+                    "user_blocks",
+                    """
+                    CREATE TABLE user_blocks (
+                      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                      blocker_id BIGINT UNSIGNED NOT NULL,
+                      blocked_id BIGINT UNSIGNED NOT NULL,
+                      kind ENUM('block','mute') NOT NULL DEFAULT 'block',
+                      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      UNIQUE KEY uniq_user_blocks (blocker_id, blocked_id, kind),
+                      KEY idx_user_blocks_blocked (blocked_id, kind),
+                      CONSTRAINT fk_user_blocks_blocker FOREIGN KEY (blocker_id) REFERENCES users(id) ON DELETE CASCADE,
+                      CONSTRAINT fk_user_blocks_blocked FOREIGN KEY (blocked_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+                await ensure_table(
+                    "media_reactions",
+                    """
+                    CREATE TABLE media_reactions (
+                      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                      media_id BIGINT UNSIGNED NOT NULL,
+                      user_id BIGINT UNSIGNED NOT NULL,
+                      emoji VARCHAR(16) NOT NULL,
+                      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      UNIQUE KEY uniq_media_reactions (media_id, user_id),
+                      KEY idx_media_reactions_media (media_id),
+                      CONSTRAINT fk_media_reactions_media FOREIGN KEY (media_id) REFERENCES media_items(id) ON DELETE CASCADE,
+                      CONSTRAINT fk_media_reactions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+                await ensure_table(
+                    "saved_searches",
+                    """
+                    CREATE TABLE saved_searches (
+                      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                      user_id BIGINT UNSIGNED NOT NULL,
+                      name VARCHAR(80) NOT NULL,
+                      filter_json TEXT NOT NULL,
+                      last_notified_at TIMESTAMP NULL DEFAULT NULL,
+                      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      KEY idx_saved_searches_user (user_id, created_at),
+                      CONSTRAINT fk_saved_searches_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+                await ensure_table(
+                    "moderation_audit_log",
+                    """
+                    CREATE TABLE moderation_audit_log (
+                      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                      actor_id BIGINT UNSIGNED NULL,
+                      action VARCHAR(60) NOT NULL,
+                      target_type VARCHAR(30) NOT NULL,
+                      target_id BIGINT UNSIGNED NULL,
+                      detail VARCHAR(500) NULL,
+                      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                      KEY idx_audit_log_created (created_at),
+                      KEY idx_audit_log_target (target_type, target_id),
+                      CONSTRAINT fk_audit_log_actor FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+                await ensure_table(
+                    "site_settings",
+                    """
+                    CREATE TABLE site_settings (
+                      id TINYINT UNSIGNED NOT NULL PRIMARY KEY,
+                      announcement_message VARCHAR(500) NULL,
+                      announcement_level VARCHAR(20) NOT NULL DEFAULT 'info',
+                      announcement_active TINYINT(1) NOT NULL DEFAULT 0,
+                      maintenance_mode TINYINT(1) NOT NULL DEFAULT 0,
+                      maintenance_message VARCHAR(500) NULL,
+                      last_digest_at TIMESTAMP NULL DEFAULT NULL,
+                      updated_by BIGINT UNSIGNED NULL,
+                      updated_at TIMESTAMP NULL DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+                      CONSTRAINT fk_site_settings_updated_by FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                    """,
+                )
+                await cur.execute(
+                    "INSERT IGNORE INTO site_settings (id, announcement_level) VALUES (1, 'info')"
+                )
         await self.ensure_user_columns()
         await self.ensure_subcategory_tables()
         await self.ensure_media_columns()
@@ -547,6 +631,8 @@ class CoreMixin:
         await self.ensure_ai_training_columns()
         await self.ensure_ai_media_learning_tables()
         await self.ensure_collection_columns()
+        await self.ensure_comment_columns()
+        await self.ensure_notification_kinds()
         await self.seed_default_categories()
 
 
@@ -572,6 +658,47 @@ class CoreMixin:
                 ):
                     if name not in existing:
                         await cur.execute(f"ALTER TABLE media_collections ADD COLUMN {name} {definition}")
+
+
+    async def ensure_comment_columns(self) -> None:
+        """Idempotently add threaded-reply support (parent_comment_id) to media_comments."""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT COLUMN_NAME FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA=%s AND TABLE_NAME='media_comments'
+                    """,
+                    (self.settings.db_schema,),
+                )
+                existing = {row["COLUMN_NAME"] for row in await cur.fetchall()}
+                if "parent_comment_id" not in existing:
+                    await cur.execute("ALTER TABLE media_comments ADD COLUMN parent_comment_id BIGINT UNSIGNED NULL")
+                    await cur.execute(
+                        "ALTER TABLE media_comments ADD CONSTRAINT fk_comments_parent "
+                        "FOREIGN KEY (parent_comment_id) REFERENCES media_comments(id) ON DELETE CASCADE"
+                    )
+                    await cur.execute("CREATE INDEX idx_comments_parent ON media_comments (parent_comment_id)")
+
+
+    async def ensure_notification_kinds(self) -> None:
+        """Idempotently widen notifications.kind to include newer kinds (mention/reply/reaction/saved_search)."""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+                    WHERE TABLE_SCHEMA=%s AND TABLE_NAME='notifications' AND COLUMN_NAME='kind'
+                    """,
+                    (self.settings.db_schema,),
+                )
+                row = await cur.fetchone()
+                column_type = str((row or {}).get("COLUMN_TYPE") or "")
+                if "mention" not in column_type:
+                    await cur.execute(
+                        "ALTER TABLE notifications MODIFY COLUMN kind "
+                        "ENUM('follow','friend_request','friend_accept','comment','message','mention','reply','reaction','saved_search') NOT NULL"
+                    )
 
 
     async def ensure_user_columns(self) -> None:

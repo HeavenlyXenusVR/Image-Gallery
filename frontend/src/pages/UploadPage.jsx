@@ -34,6 +34,7 @@ export function UploadPage({ ctx }) {
     downloads_enabled: true,
     pinned: false,
     auto_ai: true,
+    publish_at: "",
   });
   const [preview, setPreview] = useState("");
   const [busy, setBusy] = useState(false);
@@ -155,6 +156,7 @@ export function UploadPage({ ctx }) {
       body.set("downloads_enabled", String(form.downloads_enabled));
       body.set("pinned", String(form.pinned));
       body.set("auto_ai", String(form.auto_ai));
+      if (form.publish_at) body.set("publish_at", new Date(form.publish_at).toISOString());
 
       // Use XHR for upload progress tracking
       const data = await new Promise((resolve, reject) => {
@@ -266,6 +268,9 @@ export function UploadPage({ ctx }) {
           <label className="field"><span>Tags</span><input value={form.tags} onChange={(event) => update("tags", event.target.value)} placeholder="comma separated" /></label>
           <div className="two-col">
             <label className="field"><span>Visibility</span><select value={form.visibility} onChange={(event) => update("visibility", event.target.value)}><option value="public">Public</option><option value="unlisted">Unlisted</option><option value="private">Private</option></select></label>
+            <label className="field"><span>Schedule for later <small>(optional)</small></span><input type="datetime-local" value={form.publish_at} onChange={(event) => update("publish_at", event.target.value)} /></label>
+          </div>
+          <div className="two-col">
             <div className="check-stack">
               <label className="check-row"><input checked={form.auto_ai} onChange={(event) => update("auto_ai", event.target.checked)} type="checkbox" />AI metadata</label>
               <label className="check-row"><input checked={form.is_adult} onChange={(event) => update("is_adult", event.target.checked)} type="checkbox" />18+</label>

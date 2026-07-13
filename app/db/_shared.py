@@ -101,6 +101,10 @@ USER_COLUMNS = (
     ("totp_enabled_at", "TIMESTAMP NULL DEFAULT NULL"),
     ("totp_recovery_codes", "JSON NULL"),
     ("updated_at", "TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+    ("banned_at", "TIMESTAMP NULL DEFAULT NULL"),
+    ("banned_until", "TIMESTAMP NULL DEFAULT NULL"),
+    ("ban_reason", "VARCHAR(300) NULL"),
+    ("banned_by", "BIGINT UNSIGNED NULL"),
 )
 MEDIA_COLUMNS = (
     ("media_file_id", "BIGINT UNSIGNED NULL"),
@@ -120,6 +124,7 @@ MEDIA_COLUMNS = (
     ("moderated_at", "TIMESTAMP NULL DEFAULT NULL"),
     ("image_width", "INT UNSIGNED NULL"),
     ("image_height", "INT UNSIGNED NULL"),
+    ("publish_at", "TIMESTAMP NULL DEFAULT NULL"),
 )
 
 AI_TRAINING_COLUMNS = (

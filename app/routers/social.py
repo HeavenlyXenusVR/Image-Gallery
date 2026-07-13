@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 import app.main as main
-from ..schemas import FollowRequest, FriendActionRequest
+from ..schemas import BlockRequest, FollowRequest, FriendActionRequest
 from ._shared import _auth_optional, _bounded_query_limit, _current_user, _jsonable, _user_id, _viewer_can_open_adult, _with_collection_urls, _with_urls, _with_user_urls
 
 router = APIRouter()
@@ -33,6 +33,8 @@ async def public_profile(username: str, request: Request) -> dict[str, Any]:
     profile = await main.db.get_public_profile(username, viewer_id)
     if not profile:
         raise HTTPException(status_code=404, detail="User not found.")
+    if viewer_id and await main.db.is_blocked_either_way(viewer_id, int(profile["id"])):
+        raise HTTPException(status_code=404, detail="User not found.")
     return {"user": _with_user_urls(request, profile)}
 
 
@@ -41,6 +43,8 @@ async def profile_page(username: str, request: Request) -> dict[str, Any]:
     viewer_id = _user_id(_auth_optional(request))
     profile = await main.db.get_public_profile(username, viewer_id)
     if not profile:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if viewer_id and await main.db.is_blocked_either_way(viewer_id, int(profile["id"])):
         raise HTTPException(status_code=404, detail="User not found.")
     adult_allowed = await _viewer_can_open_adult(request)
     is_owner = viewer_id and int(viewer_id) == int(profile["id"])
@@ -61,6 +65,8 @@ async def profile_page(username: str, request: Request) -> dict[str, Any]:
 
 @router.post("/api/users/{user_id}/follow")
 async def follow_user(user_id: int, payload: FollowRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    if payload.following and await main.db.is_blocked_either_way(int(auth["id"]), user_id):
+        raise HTTPException(status_code=403, detail="You cannot follow this user.")
     try:
         result = await main.db.set_follow(int(auth["id"]), user_id, payload.following)
     except ValueError as exc:
@@ -74,6 +80,8 @@ async def follow_user(user_id: int, payload: FollowRequest, request: Request, au
 
 @router.post("/api/users/{user_id}/friend-request")
 async def send_friend_request(user_id: int, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    if await main.db.is_blocked_either_way(int(auth["id"]), user_id):
+        raise HTTPException(status_code=403, detail="You cannot send a friend request to this user.")
     try:
         result = await main.db.send_friend_request(int(auth["id"]), user_id)
     except ValueError as exc:
@@ -130,4 +138,24 @@ async def user_friends(user_id: int, request: Request) -> dict[str, Any]:
     viewer_id = _user_id(_auth_optional(request))
     users = await main.db.list_friends(user_id, viewer_id=viewer_id)
     return {"friends": [_with_user_urls(request, user) for user in users]}
+
+
+@router.post("/api/users/{user_id}/block")
+async def block_user(user_id: int, payload: BlockRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    try:
+        result = await main.db.set_block(int(auth["id"]), user_id, payload.kind, payload.active)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return _jsonable(result)
+
+
+@router.get("/api/me/blocks")
+async def my_blocks(request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    rows = await main.db.list_blocks(int(auth["id"]))
+    blocks = []
+    for row in rows:
+        clone = dict(row)
+        clone["user"] = _with_user_urls(request, clone["user"])
+        blocks.append(_jsonable(clone))
+    return {"blocks": blocks}
 

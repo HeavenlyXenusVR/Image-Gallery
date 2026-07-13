@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Heart, LogIn, MessageCircle, UserPlus } from "lucide-react";
+import { Heart, LogIn, MessageCircle, ShieldOff, UserPlus, VolumeX } from "lucide-react";
 import { apiFetch, clearApiCache } from "../api.js";
 import { friendLabel } from "../utils/format.js";
 import { Avatar, EmptyState, PresencePill, UserMini } from "./ui.jsx";
@@ -32,12 +32,31 @@ export function ProfileActions({ ctx, user, onChanged }) {
     }
   }
 
+  async function block(kind) {
+    const label = kind === "mute" ? "mute" : "block";
+    if (!window.confirm(`Are you sure you want to ${label} @${user.username}?`)) return;
+    try {
+      await apiFetch(`/api/users/${user.id}/block`, {
+        method: "POST",
+        body: JSON.stringify({ kind, active: true }),
+      });
+      clearApiCache("/api/users");
+      clearApiCache("/api/feed");
+      ctx.showToast(`@${user.username} ${label}d.`, "success");
+      onChanged?.();
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    }
+  }
+
   if (!ctx.user) return <Link className="button-link" to="/login"><LogIn size={16} />Login</Link>;
   return (
     <div className="profile-actions">
       <button type="button" onClick={follow}><Heart size={16} />{followed ? "Unfollow" : "Follow"}</button>
       <button type="button" onClick={friend} disabled={["friends", "pending_out", "self"].includes(user.friend_status)}><UserPlus size={16} />{friendLabel(user.friend_status)}</button>
       {user.friend_status !== "self" ? <Link className="button-link" to="/messages" state={{ user }}><MessageCircle size={16} />Message</Link> : null}
+      {user.friend_status !== "self" ? <button type="button" title="Mute" onClick={() => block("mute")}><VolumeX size={16} />Mute</button> : null}
+      {user.friend_status !== "self" ? <button type="button" className="danger" title="Block" onClick={() => block("block")}><ShieldOff size={16} />Block</button> : null}
     </div>
   );
 }

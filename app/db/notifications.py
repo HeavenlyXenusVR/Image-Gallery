@@ -4,7 +4,10 @@ from typing import Any
 
 import aiomysql
 
-NOTIFICATION_KINDS = {"follow", "friend_request", "friend_accept", "comment", "message"}
+NOTIFICATION_KINDS = {
+    "follow", "friend_request", "friend_accept", "comment", "message",
+    "mention", "reply", "reaction", "saved_search",
+}
 
 
 class NotificationsMixin:

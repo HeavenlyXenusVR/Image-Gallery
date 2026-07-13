@@ -28,6 +28,8 @@ async def direct_messages(user_id: int, request: Request, limit: int = 80, auth:
 
 @router.post("/api/messages/{user_id}")
 async def send_direct_message(user_id: int, payload: DirectMessageRequest, request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    if await main.db.is_blocked_either_way(int(auth["id"]), user_id):
+        raise HTTPException(status_code=403, detail="You cannot message this user.")
     try:
         message = await main.db.send_direct_message(int(auth["id"]), user_id, payload.body)
     except ValueError as exc:

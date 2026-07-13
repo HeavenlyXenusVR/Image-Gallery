@@ -1,9 +1,10 @@
 """The signed-in user's own profile, settings, avatar, age verification, bookmarks, media, password, and account deletion."""
 
+import json
 from datetime import date, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
 
 import app.main as main
 from ..schemas import (
@@ -20,6 +21,7 @@ from ._shared import (
     _bounded_query_offset,
     _current_user,
     _invalidate_api_cache,
+    _jsonable,
     _rate_limit,
     _read_validated_upload,
     _viewer_can_open_adult,
@@ -172,4 +174,41 @@ async def totp_disable(payload: TotpDisableRequest, auth: dict[str, Any] = Depen
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     return {"enabled": False}
+
+
+@router.get("/api/me/export")
+async def export_my_data(request: Request, auth: dict[str, Any] = Depends(_current_user)) -> Response:
+    user_id = int(auth["id"])
+    user = await main.db.get_user(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Account not found.")
+    profile = {k: v for k, v in user.items() if k not in {"password_hash", "totp_secret", "totp_recovery_codes", "email_verification_token_hash"}}
+    media_items = await main.db.list_user_media(user_id, include_deleted=True)
+    collections = await main.db.list_collections(viewer_id=user_id, mine=True)
+    friends = await main.db.list_friends(user_id, viewer_id=user_id)
+    following = await main.db.list_user_follows(user_id, mode="following", viewer_id=user_id)
+    followers = await main.db.list_user_follows(user_id, mode="followers", viewer_id=user_id)
+    likes = await main.db.list_liked_media(user_id, limit=1000)
+    bookmarks = await main.db.list_bookmarks(user_id, limit=1000)
+    comments = await main.db.list_comments_by_user(user_id)
+    saved_searches = await main.db.list_saved_searches(user_id)
+    export_payload = _jsonable({
+        "exported_at": datetime.utcnow().isoformat() + "Z",
+        "profile": profile,
+        "media": media_items,
+        "collections": collections,
+        "friends": friends,
+        "following": following,
+        "followers": followers,
+        "likes": likes,
+        "bookmarks": bookmarks,
+        "comments": comments,
+        "saved_searches": saved_searches,
+    })
+    body = json.dumps(export_payload, indent=2, ensure_ascii=False)
+    return Response(
+        content=body,
+        media_type="application/json",
+        headers={"Content-Disposition": f'attachment; filename="image-gallery-export-{user_id}.json"'},
+    )
 

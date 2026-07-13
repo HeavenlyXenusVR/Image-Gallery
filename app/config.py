@@ -147,6 +147,8 @@ class Settings:
     telegram_allowed_chat_ids: set[int]
     telegram_owner_chat_id: int | None
     telegram_polling_enabled: bool
+    admin_discord_webhook_url: str
+    digest_interval_hours: int
 
     @property
     def active_ai_base_url(self) -> str:
@@ -230,4 +232,6 @@ def load_settings() -> Settings:
         telegram_allowed_chat_ids=_env_int_set("GALLERY_TELEGRAM_ALLOWED_CHAT_IDS") or _env_int_set("TELEGRAM_ALLOWED_CHAT_IDS"),
         telegram_owner_chat_id=next(iter(_env_int_set("GALLERY_TELEGRAM_OWNER_CHAT_ID") or _env_int_set("TELEGRAM_OWNER_CHAT_ID")), None),
         telegram_polling_enabled=_env_bool("GALLERY_TELEGRAM_POLLING_ENABLED", bool(_env("GALLERY_TELEGRAM_BOT_TOKEN") or _env("TELEGRAM_BOT_TOKEN"))),
+        admin_discord_webhook_url=_env("GALLERY_ADMIN_DISCORD_WEBHOOK_URL"),
+        digest_interval_hours=max(1, int(_env("GALLERY_DIGEST_INTERVAL_HOURS", "24"))),
     )

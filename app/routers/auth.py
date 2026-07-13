@@ -13,7 +13,7 @@ import app.main as main
 from ..auth import SESSION_COOKIE_NAME, issue_2fa_pending_token, issue_token, verify_2fa_pending_token
 from ..emailer import EmailDeliveryError, send_verification_email
 from ..schemas import EmailCodeRequest, EmailUpdateRequest, LoginRequest, RegisterRequest, TwoFactorVerifyRequest
-from ._shared import _current_user, _jsonable, _rate_limit
+from ._shared import _current_user, _is_actively_banned, _jsonable, _rate_limit
 
 router = APIRouter()
 
@@ -204,6 +204,9 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
     await main.db.record_auth_attempt(username, ip, bool(user))
     if not user:
         raise HTTPException(status_code=401, detail="Invalid username or password.")
+    if _is_actively_banned(user):
+        reason = user.get("ban_reason") or "Your account has been suspended."
+        raise HTTPException(status_code=403, detail=reason)
     if user.get("totp_enabled"):
         pending_token = issue_2fa_pending_token(main.settings.session_secret, int(user["id"]))
         return {"needs_2fa": True, "pending_token": pending_token}
