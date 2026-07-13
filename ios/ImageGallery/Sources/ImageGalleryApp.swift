@@ -29,6 +29,7 @@ struct RootView: View {
             }
         }
         .preferredColorScheme(colorScheme)
+        .tint(Color(hex: session.currentUser?.userSettings?.accentColor))
         .task {
             await session.bootstrap()
         }

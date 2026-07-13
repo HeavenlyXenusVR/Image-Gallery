@@ -11,6 +11,11 @@ struct SettingsView: View {
     @State private var showingTotpEnroll = false
     @State private var avatarPickerItem: PhotosPickerItem?
     @State private var isUploadingAvatar = false
+    @State private var accentColor = Color(hex: Appearance.defaultAccentHex)
+    @State private var profileLayout = "spotlight"
+    @State private var avatarShape = AvatarShape.circle
+    @State private var isSavingAppearance = false
+    @State private var loadedAppearance = false
 
     var body: some View {
         Form {
@@ -20,11 +25,32 @@ struct SettingsView: View {
                     Text("Light").tag("light")
                     Text("Dark").tag("dark")
                 }
+                ColorPicker("Accent color", selection: $accentColor, supportsOpacity: false)
+                Picker("Profile layout", selection: $profileLayout) {
+                    Text("Standard").tag("spotlight")
+                    Text("Grid First").tag("mosaic")
+                }
+                .pickerStyle(.segmented)
+                Picker("Avatar shape", selection: $avatarShape) {
+                    Text("Circle").tag(AvatarShape.circle)
+                    Text("Rounded").tag(AvatarShape.rounded)
+                    Text("Square").tag(AvatarShape.square)
+                }
+                .pickerStyle(.segmented)
+                Button {
+                    Task { await saveAppearance() }
+                } label: {
+                    if isSavingAppearance {
+                        ProgressView()
+                    } else {
+                        Text("Save appearance").frame(maxWidth: .infinity)
+                    }
+                }
             }
 
             Section("Account") {
                 HStack {
-                    avatarPreview
+                    AvatarView(urlString: session.currentUser?.avatarUrl, fallbackInitial: String(session.currentUser?.username.prefix(1) ?? "?"), shape: avatarShape, size: 44)
                     PhotosPicker(selection: $avatarPickerItem, matching: .images) {
                         if isUploadingAvatar {
                             ProgressView()
@@ -110,7 +136,13 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
-        .task { await viewModel.loadAll() }
+        .task {
+            await viewModel.loadAll()
+            loadAppearanceFromCurrentUser()
+        }
+        .onChange(of: session.currentUser?.id) { _ in
+            loadAppearanceFromCurrentUser()
+        }
         .sheet(isPresented: $showingAgeVerification) { AgeVerificationView() }
         .sheet(isPresented: $showingTotpEnroll) { TotpEnrollmentView() }
         .sheet(isPresented: $showingShareSheet) {
@@ -120,20 +152,32 @@ struct SettingsView: View {
         }
     }
 
-    @ViewBuilder
-    private var avatarPreview: some View {
-        if let urlString = session.currentUser?.avatarUrl, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
-                if case .success(let image) = phase {
-                    image.resizable().scaledToFill()
-                } else {
-                    Circle().fill(.secondary.opacity(0.2))
-                }
-            }
-            .frame(width: 44, height: 44)
-            .clipShape(Circle())
-        } else {
-            Circle().fill(.secondary.opacity(0.2)).frame(width: 44, height: 44)
+    /// Seeds the appearance controls from the account's stored settings —
+    /// only once per login, so it doesn't stomp on in-progress edits every
+    /// time `session.currentUser` gets refreshed in the background.
+    private func loadAppearanceFromCurrentUser() {
+        guard !loadedAppearance, let settings = session.currentUser?.userSettings else { return }
+        loadedAppearance = true
+        if let theme = settings.themeMode, !theme.isEmpty { themeMode = theme }
+        accentColor = Color(hex: settings.accentColor)
+        profileLayout = settings.profileLayout ?? "spotlight"
+        avatarShape = AvatarShape(settings.profileAvatarShape)
+    }
+
+    private func saveAppearance() async {
+        isSavingAppearance = true
+        defer { isSavingAppearance = false }
+        do {
+            let body = GalleryAPIClient.SettingsUpdateBody(
+                themeMode: themeMode,
+                accentColor: accentColor.toHexString(),
+                profileLayout: profileLayout,
+                profileAvatarShape: avatarShape.rawValue
+            )
+            let user = try await GalleryAPIClient.shared.updateSettings(body)
+            session.setCurrentUser(user)
+        } catch {
+            viewModel.errorMessage = error.localizedDescription
         }
     }
 

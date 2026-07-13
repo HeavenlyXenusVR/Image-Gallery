@@ -60,6 +60,23 @@ extension GalleryAPIClient {
         let response: UserResponse = try await requestJSON("/api/me/age-verification", body: AgeVerifyBody(birthdate: birthdate, confirmOver18: true))
         return response.user
     }
+
+    /// Mirrors `SettingsUpdateRequest` on the backend (`app/schemas.py`) — only
+    /// the subset of ~40 settings keys the iOS app edits. Omitted (nil) fields
+    /// are sent as JSON null, which the backend already treats as "don't
+    /// change this key" (it filters `value is not None` before applying), so
+    /// this never clobbers settings the app doesn't have UI for.
+    struct SettingsUpdateBody: Encodable {
+        var themeMode: String?
+        var accentColor: String?
+        var profileLayout: String?
+        var profileAvatarShape: String?
+    }
+
+    func updateSettings(_ body: SettingsUpdateBody) async throws -> GalleryUser {
+        let response: UserResponse = try await requestJSON("/api/me/settings", method: "PATCH", body: body)
+        return response.user
+    }
 }
 
 // MARK: - Feed / Discover

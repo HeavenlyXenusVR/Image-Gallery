@@ -14,38 +14,7 @@ struct ProfileView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 if let user = viewModel.user {
-                    header(user)
-                    ProfileActionsView(viewModel: viewModel)
-
-                    if !viewModel.media.isEmpty {
-                        Text("Posts").font(.headline)
-                        LazyVGrid(columns: columns, spacing: 8) {
-                            ForEach(viewModel.media) { item in
-                                NavigationLink(destination: MediaDetailView(mediaId: item.id)) {
-                                    MediaCard(item: item)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-
-                    if !viewModel.collections.isEmpty {
-                        Text("Collections").font(.headline)
-                        ForEach(viewModel.collections) { collection in
-                            NavigationLink(destination: CollectionDetailView(collectionId: collection.id)) {
-                                Label(collection.name, systemImage: "folder")
-                            }
-                        }
-                    }
-
-                    if !viewModel.friends.isEmpty {
-                        Text("Friends").font(.headline)
-                        ForEach(viewModel.friends) { friend in
-                            NavigationLink(destination: ProfileView(username: friend.username)) {
-                                Label(friend.displayName ?? friend.username, systemImage: "person.crop.circle")
-                            }
-                        }
-                    }
+                    profileContent(user)
                 } else if viewModel.isLoading {
                     ProgressView().padding(.top, 80)
                 } else if let errorMessage = viewModel.errorMessage {
@@ -55,6 +24,7 @@ struct ProfileView: View {
             .padding()
         }
         .navigationTitle(viewModel.user?.displayName ?? viewModel.username)
+        .tint(Color(hex: viewModel.user?.userSettings?.accentColor))
         .toolbar {
             if viewModel.user?.friendStatus == "self" {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -69,9 +39,74 @@ struct ProfileView: View {
     }
 
     @ViewBuilder
-    private func header(_ user: GalleryUser) -> some View {
+    private func profileContent(_ user: GalleryUser) -> some View {
+        if Appearance.isGridFirstLayout(user.userSettings?.profileLayout) {
+            mediaSection
+            headerSection(user)
+            collectionsSection
+            friendsSection
+        } else {
+            headerSection(user)
+            mediaSection
+            collectionsSection
+            friendsSection
+        }
+    }
+
+    @ViewBuilder
+    private func headerSection(_ user: GalleryUser) -> some View {
+        ProfileHeader(user: user)
+        ProfileActionsView(viewModel: viewModel)
+    }
+
+    @ViewBuilder
+    private var mediaSection: some View {
+        if !viewModel.media.isEmpty {
+            Text("Posts").font(.headline)
+            LazyVGrid(columns: columns, spacing: 8) {
+                ForEach(viewModel.media) { item in
+                    NavigationLink(destination: MediaDetailView(mediaId: item.id)) {
+                        MediaCard(item: item)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var collectionsSection: some View {
+        if !viewModel.collections.isEmpty {
+            Text("Collections").font(.headline)
+            ForEach(viewModel.collections) { collection in
+                NavigationLink(destination: CollectionDetailView(collectionId: collection.id)) {
+                    Label(collection.name, systemImage: "folder")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var friendsSection: some View {
+        if !viewModel.friends.isEmpty {
+            Text("Friends").font(.headline)
+            ForEach(viewModel.friends) { friend in
+                NavigationLink(destination: ProfileView(username: friend.username)) {
+                    Label(friend.displayName ?? friend.username, systemImage: "person.crop.circle")
+                }
+            }
+        }
+    }
+}
+
+/// Split out of `ProfileView.body` to keep each individual view's expression
+/// simple for the type-checker (see the CollectionsListView fix for why).
+private struct ProfileHeader: View {
+    let user: GalleryUser
+
+    var body: some View {
         HStack(spacing: 12) {
-            avatar(user)
+            AvatarView(urlString: user.avatarUrl, fallbackInitial: String(user.username.prefix(1)), shape: AvatarShape(user.userSettings?.profileAvatarShape), size: 64)
             VStack(alignment: .leading, spacing: 4) {
                 Text(user.displayName ?? user.username).font(.title3).bold()
                 Text("@\(user.username)").foregroundStyle(.secondary)
@@ -86,24 +121,6 @@ struct ProfileView: View {
             statColumn("Followers", user.followerCount)
             statColumn("Following", user.followingCount)
             statColumn("Friends", user.friendCount)
-        }
-    }
-
-    @ViewBuilder
-    private func avatar(_ user: GalleryUser) -> some View {
-        if let urlString = user.avatarUrl, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
-                if case .success(let image) = phase {
-                    image.resizable().scaledToFill()
-                } else {
-                    Circle().fill(.secondary.opacity(0.2))
-                }
-            }
-            .frame(width: 64, height: 64)
-            .clipShape(Circle())
-        } else {
-            Circle().fill(.secondary.opacity(0.2)).frame(width: 64, height: 64)
-                .overlay(Text(String(user.username.prefix(1)).uppercased()))
         }
     }
 

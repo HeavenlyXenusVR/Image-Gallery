@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import ImageGallery
 
@@ -52,5 +53,39 @@ final class ModelDecodingTests: XCTestCase {
         let summary = try makeDecoder().decode(ReactionsSummary.self, from: Data(json.utf8))
         XCTAssertEqual(summary.counts?["👍"], 2)
         XCTAssertEqual(summary.myReaction, "👍")
+    }
+
+    func testGalleryUserDecodesUserSettingsAndIgnoresUnmappedKeys() throws {
+        // The backend's user_settings object has ~40 keys (see DEFAULT_USER_SETTINGS
+        // in app/db/_shared.py); the app only models a handful, so this also proves
+        // unrecognized keys (grid_density, watermark_text, ...) don't break decoding.
+        let json = """
+        {
+          "id": 7,
+          "username": "alice",
+          "user_settings": {
+            "theme_mode": "dark",
+            "accent_color": "#ff8800",
+            "profile_layout": "mosaic",
+            "profile_avatar_shape": "rounded",
+            "grid_density": "comfortable",
+            "watermark_text": ""
+          }
+        }
+        """
+        let user = try makeDecoder().decode(GalleryUser.self, from: Data(json.utf8))
+        XCTAssertEqual(user.userSettings?.themeMode, "dark")
+        XCTAssertEqual(user.userSettings?.accentColor, "#ff8800")
+        XCTAssertEqual(user.userSettings?.profileLayout, "mosaic")
+        XCTAssertEqual(user.userSettings?.profileAvatarShape, "rounded")
+        XCTAssertTrue(Appearance.isGridFirstLayout(user.userSettings?.profileLayout))
+    }
+
+    func testColorHexRoundTrip() {
+        let color = Color(hex: "#37C9A7")
+        XCTAssertEqual(color.toHexString(), "#37C9A7")
+        // Malformed/missing values fall back to the app default rather than crashing.
+        XCTAssertEqual(Color(hex: "not-a-color").toHexString(), Appearance.defaultAccentHex.uppercased())
+        XCTAssertEqual(Color(hex: nil).toHexString(), Appearance.defaultAccentHex.uppercased())
     }
 }
