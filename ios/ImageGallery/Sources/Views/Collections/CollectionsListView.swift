@@ -8,17 +8,7 @@ struct CollectionsListView: View {
     var body: some View {
         List {
             ForEach(collections) { collection in
-                NavigationLink(destination: CollectionDetailView(collectionId: collection.id)) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(collection.name).bold()
-                        if let description = collection.description, !description.isEmpty {
-                            Text(description).font(.caption).foregroundStyle(.secondary)
-                        }
-                        if collection.isSmart == true {
-                            Text("Smart collection").font(.caption2).foregroundStyle(.accentColor)
-                        }
-                    }
-                }
+                CollectionRow(collection: collection)
             }
         }
         .navigationTitle("Collections")
@@ -28,8 +18,11 @@ struct CollectionsListView: View {
             }
         }
         .overlay {
-            if isLoading { ProgressView() }
-            else if collections.isEmpty { ContentUnavailableCompat(title: "No collections yet", systemImage: "folder") }
+            if isLoading {
+                ProgressView()
+            } else if collections.isEmpty {
+                ContentUnavailableCompat(title: "No collections yet", systemImage: "folder")
+            }
         }
         .onChange(of: showMineOnly) { _ in
             Task { await load() }
@@ -42,6 +35,32 @@ struct CollectionsListView: View {
         isLoading = true
         defer { isLoading = false }
         collections = (try? await GalleryAPIClient.shared.collections(mine: showMineOnly)) ?? []
+    }
+}
+
+/// Split out of `CollectionsListView.body` — a single `var body` combining
+/// this row's nested optionals with the list's own modifier chain was slow
+/// enough to trip Swift's type-checker timeout ("unable to type-check this
+/// expression in reasonable time").
+private struct CollectionRow: View {
+    let collection: CollectionSummary
+
+    var body: some View {
+        NavigationLink(destination: CollectionDetailView(collectionId: collection.id)) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(collection.name).bold()
+                if let description = collection.description, !description.isEmpty {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if collection.isSmart == true {
+                    Text("Smart collection")
+                        .font(.caption2)
+                        .foregroundStyle(.accentColor)
+                }
+            }
+        }
     }
 }
 
@@ -67,8 +86,11 @@ struct CollectionDetailView: View {
         }
         .navigationTitle(collection?.name ?? "Collection")
         .overlay {
-            if isLoading { ProgressView() }
-            else if media.isEmpty { ContentUnavailableCompat(title: "No media in this collection", systemImage: "folder") }
+            if isLoading {
+                ProgressView()
+            } else if media.isEmpty {
+                ContentUnavailableCompat(title: "No media in this collection", systemImage: "folder")
+            }
         }
         .task {
             isLoading = true
