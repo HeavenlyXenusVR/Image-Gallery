@@ -6,10 +6,18 @@ struct MediaCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             ZStack(alignment: .topTrailing) {
-                thumbnail
-                    .aspectRatio(1, contentMode: .fill)
-                    .clipped()
-                    .cornerRadius(10)
+                // `Color.clear.aspectRatio(1, contentMode: .fit)` establishes a
+                // hard, deterministic square size from the grid column's
+                // proposed width (Color has no intrinsic size of its own, so
+                // the modifier fully determines the result). Without this,
+                // `thumbnail` alone had no concrete frame to resolve against —
+                // AsyncImage's success-phase image reports its actual pixel
+                // dimensions, so every card ended up a different size and the
+                // whole grid overlapped itself instead of laying out in rows.
+                Color.clear
+                    .aspectRatio(1, contentMode: .fit)
+                    .overlay(thumbnail)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
 
                 if item.locked == true {
                     Image(systemName: "lock.fill")
