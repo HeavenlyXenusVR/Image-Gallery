@@ -4,22 +4,24 @@ struct NotificationsView: View {
     @StateObject private var viewModel = NotificationsViewModel()
 
     var body: some View {
-        List(viewModel.items) { item in
-            NavigationLink(destination: destination(for: item)) {
-                HStack(alignment: .top, spacing: 10) {
-                    if item.readAt == nil {
-                        Circle().fill(Color.accentColor).frame(width: 8, height: 8).padding(.top, 6)
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(viewModel.text(for: item))
-                        if let createdAt = item.createdAt {
-                            Text(createdAt).font(.caption2).foregroundStyle(.secondary)
+        List {
+            ForEach(viewModel.items) { item in
+                NavigationLink(destination: destination(for: item)) {
+                    HStack(alignment: .top, spacing: 10) {
+                        if item.readAt == nil {
+                            Circle().fill(Color.accentColor).frame(width: 8, height: 8).padding(.top, 6)
+                        }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(viewModel.text(for: item))
+                            if let createdAt = item.createdAt {
+                                Text(createdAt).font(.caption2).foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
-            }
-            .onTapGesture {
-                Task { await viewModel.markRead(item) }
+                .onTapGesture {
+                    Task { await viewModel.markRead(item) }
+                }
             }
         }
         .navigationTitle("Notifications")

@@ -1,3 +1,4 @@
+import AVFoundation
 import AVKit
 import SwiftUI
 
@@ -23,7 +24,11 @@ struct AuthenticatedVideoPlayer: View {
             if let token = GalleryAPIClient.shared.authToken {
                 headers["Authorization"] = "Bearer \(token)"
             }
-            let asset = AVURLAsset(url: url, options: [AVURLAssetHTTPHeaderFieldsKey: headers])
+            // Using the literal key string rather than the `AVURLAssetHTTPHeaderFieldsKey`
+            // symbol — it wasn't resolving in scope in CI even with AVFoundation
+            // imported, and the options dictionary is untyped ([String: Any]) so the
+            // literal (Apple's documented constant value) works identically.
+            let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
             let item = AVPlayerItem(asset: asset)
             player = AVPlayer(playerItem: item)
         }

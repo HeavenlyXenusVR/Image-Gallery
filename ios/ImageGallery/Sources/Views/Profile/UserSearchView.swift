@@ -6,11 +6,13 @@ struct UserSearchView: View {
     @State private var isLoading = false
 
     var body: some View {
-        List(results) { user in
-            NavigationLink(destination: ProfileView(username: user.username)) {
-                VStack(alignment: .leading) {
-                    Text(user.displayName ?? user.username).bold()
-                    Text("@\(user.username)").font(.caption).foregroundStyle(.secondary)
+        List {
+            ForEach(results) { user in
+                NavigationLink(destination: ProfileView(username: user.username)) {
+                    VStack(alignment: .leading) {
+                        Text(user.displayName ?? user.username).bold()
+                        Text("@\(user.username)").font(.caption).foregroundStyle(.secondary)
+                    }
                 }
             }
         }

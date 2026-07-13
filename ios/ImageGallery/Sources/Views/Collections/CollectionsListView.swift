@@ -6,15 +6,17 @@ struct CollectionsListView: View {
     @State private var showMineOnly = false
 
     var body: some View {
-        List(collections) { collection in
-            NavigationLink(destination: CollectionDetailView(collectionId: collection.id)) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(collection.name).bold()
-                    if let description = collection.description, !description.isEmpty {
-                        Text(description).font(.caption).foregroundStyle(.secondary)
-                    }
-                    if collection.isSmart == true {
-                        Text("Smart collection").font(.caption2).foregroundStyle(.accentColor)
+        List {
+            ForEach(collections) { collection in
+                NavigationLink(destination: CollectionDetailView(collectionId: collection.id)) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(collection.name).bold()
+                        if let description = collection.description, !description.isEmpty {
+                            Text(description).font(.caption).foregroundStyle(.secondary)
+                        }
+                        if collection.isSmart == true {
+                            Text("Smart collection").font(.caption2).foregroundStyle(.accentColor)
+                        }
                     }
                 }
             }
