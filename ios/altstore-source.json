@@ -12,7 +12,16 @@
       "iconURL": "https://raw.githubusercontent.com/HeavenlyXenusVR/Image-Gallery/main/favicon.ico",
       "tintColor": "37C9A7",
       "screenshotURLs": [],
-      "versions": []
+      "versions": [
+        {
+          "version": "1.0.0",
+          "date": "2026-07-13T15:06:43Z",
+          "downloadURL": "https://github.com/HeavenlyXenusVR/Image-Gallery/releases/download/ios%2Fv1.0.0/ImageGallery-1.0.0-unsigned.ipa",
+          "localizedDescription": "See release notes on GitHub.",
+          "size": 360058,
+          "minOSVersion": "16.0"
+        }
+      ]
     }
   ]
 }
