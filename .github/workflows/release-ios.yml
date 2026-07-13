@@ -1,0 +1,307 @@
+name: Release iOS IPA
+
+on:
+  push:
+    tags:
+      - 'ios/v*'
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  release:
+    name: Build & publish iOS release
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#ios/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing Image Gallery iOS version: $VERSION (tag: $TAG)"
+
+      - name: Stamp version into project.yml
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          sed -i '' "s/MARKETING_VERSION: \".*\"/MARKETING_VERSION: \"$VERSION\"/" ios/project.yml
+          grep MARKETING_VERSION ios/project.yml
+
+      - name: Select Xcode
+        run: |
+          XCODE=$(ls /Applications | grep '^Xcode' | sort -rV | head -1)
+          sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
+          echo "Selected Xcode: $XCODE"
+          xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      # Signing is optional. Set the four secrets below in repo Settings -> Secrets
+      # to produce a signed (ad-hoc) IPA; leave them unset for an unsigned IPA.
+      #
+      # Required secrets:
+      #   IOS_CERTIFICATE_BASE64       - base64 of your .p12 signing certificate
+      #   IOS_CERTIFICATE_PASSWORD     - password for the .p12
+      #   IOS_PROVISION_PROFILE_BASE64 - base64 of your .mobileprovision file
+      #   IOS_TEAM_ID                  - your 10-character Apple Developer Team ID
+      #
+      # To base64-encode a file:  base64 -i YourCert.p12 | pbcopy
+      - name: Set up code signing
+        id: signing
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+          IOS_PROVISION_PROFILE_BASE64: ${{ secrets.IOS_PROVISION_PROFILE_BASE64 }}
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+        run: |
+          if [ -z "$IOS_CERTIFICATE_BASE64" ] || [ -z "$IOS_TEAM_ID" ]; then
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "Signing secrets not configured — will build unsigned IPA"
+            exit 0
+          fi
+          echo "signed=true" >> "$GITHUB_OUTPUT"
+          echo "team_id=$IOS_TEAM_ID" >> "$GITHUB_OUTPUT"
+
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASS=$(openssl rand -hex 16)
+          echo "keychain_path=$KEYCHAIN_PATH" >> "$GITHUB_OUTPUT"
+
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          echo -n "$IOS_CERTIFICATE_BASE64" | base64 --decode --output "$CERT_PATH"
+          security import "$CERT_PATH" \
+            -P "$IOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple: -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
+
+          CERT_IDENTITY=$(security find-identity -p codesigning -v "$KEYCHAIN_PATH" \
+            | grep -oE '"[^"]+"' | head -1 | tr -d '"')
+          echo "cert_identity=$CERT_IDENTITY" >> "$GITHUB_OUTPUT"
+          echo "Signing identity: $CERT_IDENTITY"
+
+          if [ -n "$IOS_PROVISION_PROFILE_BASE64" ]; then
+            PP_PATH="$RUNNER_TEMP/profile.mobileprovision"
+            echo -n "$IOS_PROVISION_PROFILE_BASE64" | base64 --decode --output "$PP_PATH"
+            PP_UUID=$(security cms -D -i "$PP_PATH" \
+              | plutil -extract UUID raw -)
+            mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+            cp "$PP_PATH" \
+              "$HOME/Library/MobileDevice/Provisioning Profiles/$PP_UUID.mobileprovision"
+            echo "pp_uuid=$PP_UUID" >> "$GITHUB_OUTPUT"
+            echo "Provisioning profile UUID: $PP_UUID"
+          fi
+
+      - name: Archive
+        working-directory: ios
+        run: |
+          mkdir -p build
+          SIGNED="${{ steps.signing.outputs.signed }}"
+          if [ "$SIGNED" = "true" ]; then
+            TEAM_ID="${{ steps.signing.outputs.team_id }}"
+            CERT_IDENTITY="${{ steps.signing.outputs.cert_identity }}"
+            PP_UUID="${{ steps.signing.outputs.pp_uuid }}"
+            if [ -n "$PP_UUID" ]; then
+              SIGN_ARGS="DEVELOPMENT_TEAM=$TEAM_ID CODE_SIGN_IDENTITY=$CERT_IDENTITY PROVISIONING_PROFILE=$PP_UUID CODE_SIGN_STYLE=Manual"
+            else
+              SIGN_ARGS="DEVELOPMENT_TEAM=$TEAM_ID CODE_SIGN_IDENTITY=$CERT_IDENTITY CODE_SIGN_STYLE=Automatic"
+            fi
+            xcodebuild archive \
+              -project ImageGallery.xcodeproj \
+              -scheme ImageGallery \
+              -configuration Release \
+              -destination "generic/platform=iOS" \
+              -archivePath build/ImageGallery.xcarchive \
+              SKIP_INSTALL=NO \
+              $SIGN_ARGS 2>&1 | tee /tmp/xcodebuild.log | tail -20
+          else
+            xcodebuild archive \
+              -project ImageGallery.xcodeproj \
+              -scheme ImageGallery \
+              -configuration Release \
+              -destination "generic/platform=iOS" \
+              -archivePath build/ImageGallery.xcarchive \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              CODE_SIGNING_ALLOWED=NO \
+              SKIP_INSTALL=NO 2>&1 | tee /tmp/xcodebuild.log | tail -20
+          fi
+          if grep -q "error:" /tmp/xcodebuild.log; then
+            echo "--- Compiler errors ---"
+            grep "error:" /tmp/xcodebuild.log | head -30
+          fi
+          APP=$(find build/ImageGallery.xcarchive -name "*.app" | head -1)
+          if [ -z "$APP" ]; then
+            echo "::error::Archive did not produce a .app bundle"
+            exit 1
+          fi
+          echo "APP_PATH=$APP" >> "$GITHUB_ENV"
+
+      # actool is only needed for unsigned builds: the full Xcode pipeline
+      # compiles asset catalogs automatically when signing is enabled.
+      - name: Compile asset catalogs (actool)
+        if: steps.signing.outputs.signed != 'true'
+        working-directory: ios
+        run: |
+          APP="$APP_PATH"
+          XCASSETS="ImageGallery/Resources/Assets.xcassets"
+          echo "Compiling $XCASSETS into $APP"
+          xcrun actool \
+            --output-format human-readable-text \
+            --notices \
+            --warnings \
+            --platform iphoneos \
+            --minimum-deployment-target 16.0 \
+            --target-device iphone \
+            --target-device ipad \
+            --app-icon AppIcon \
+            --output-partial-info-plist /tmp/assetcatalog_output.plist \
+            --compress-pngs \
+            --compile "$APP" \
+            "$XCASSETS"
+          echo "Assets.car: $(du -sh "$APP/Assets.car" 2>/dev/null || echo MISSING)"
+
+      - name: Package IPA
+        id: ipa
+        working-directory: ios
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SIGNED="${{ steps.signing.outputs.signed }}"
+          if [ "$SIGNED" = "true" ]; then
+            IPA_NAME="ImageGallery-${VERSION}.ipa"
+            TEAM_ID="${{ steps.signing.outputs.team_id }}"
+            cat > /tmp/ExportOptions.plist << 'PLIST_EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>ad-hoc</string>
+              <key>compileBitcode</key>
+              <false/>
+              <key>stripSwiftSymbols</key>
+              <true/>
+          </dict>
+          </plist>
+          PLIST_EOF
+            # Inject team ID — can't use shell expansion inside 'PLIST_EOF' heredoc
+            /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" /tmp/ExportOptions.plist
+            xcodebuild -exportArchive \
+              -archivePath build/ImageGallery.xcarchive \
+              -exportOptionsPlist /tmp/ExportOptions.plist \
+              -exportPath build/export
+            cp "build/export/ImageGallery.ipa" "build/$IPA_NAME"
+            echo "IPA created (signed): $(du -sh build/$IPA_NAME)"
+          else
+            IPA_NAME="ImageGallery-${VERSION}-unsigned.ipa"
+            PAYLOAD_DIR="build/Payload/Payload"
+            mkdir -p "$PAYLOAD_DIR"
+            cp -R "$APP_PATH" "$PAYLOAD_DIR/"
+            cd build/Payload
+            zip -r "../$IPA_NAME" Payload/ -x "*.DS_Store"
+            echo "IPA created (unsigned): $(du -sh ../$IPA_NAME)"
+          fi
+          echo "ipa_name=$IPA_NAME" >> "$GITHUB_OUTPUT"
+          echo "ipa_path=ios/build/$IPA_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Update altstore-source.json
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          IPA_NAME="${{ steps.ipa.outputs.ipa_name }}"
+          VERSION_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          DOWNLOAD_URL="https://github.com/HeavenlyXenusVR/Image-Gallery/releases/download/ios%2Fv${VERSION}/${IPA_NAME}"
+          IPA_SIZE=$(stat -f%z "ios/build/$IPA_NAME")
+
+          python3 - <<EOF
+          import json, sys
+
+          with open("ios/altstore-source.json", "r") as f:
+              source = json.load(f)
+
+          app = source["apps"][0]
+
+          new_version = {
+              "version": "$VERSION",
+              "date": "$VERSION_DATE",
+              "downloadURL": "$DOWNLOAD_URL",
+              "localizedDescription": "See release notes on GitHub.",
+              "size": $IPA_SIZE,
+              "minOSVersion": "16.0"
+          }
+
+          existing = [v for v in app.get("versions", []) if v.get("version") != "$VERSION"]
+          app["versions"] = [new_version] + existing
+
+          with open("ios/altstore-source.json", "w") as f:
+              json.dump(source, f, indent=2)
+              f.write("\n")
+
+          print("Updated altstore-source.json to version $VERSION")
+          EOF
+
+      # Publish the release FIRST so the IPA is always delivered even if the
+      # altstore-source.json housekeeping commit below loses a push race.
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          IPA_NAME="${{ steps.ipa.outputs.ipa_name }}"
+          SIGNED="${{ steps.signing.outputs.signed }}"
+          if [ "$SIGNED" = "true" ]; then
+            INSTALL_NOTE="Download the signed IPA and install it directly with [Sideloadly](https://sideloadly.io/) or [AltStore](https://altstore.io/), or install over the air via the AltStore source."
+          else
+            INSTALL_NOTE="Download the IPA and install with [Sideloadly](https://sideloadly.io/) or [AltStore](https://altstore.io/)."
+          fi
+          gh release create "$TAG" \
+            --title "Image Gallery iOS v${VERSION}" \
+            --notes "$(printf '## Image Gallery iOS v%s\n\n**Installation:** %s\n\n**AltStore users:** Add the source URL from Settings to get automatic updates.' "$VERSION" "$INSTALL_NOTE")" \
+            "ios/build/$IPA_NAME"
+
+      # Best-effort: never fail the build over this housekeeping commit.
+      - name: Commit updated altstore-source.json
+        continue-on-error: true
+        run: |
+          git config user.email "actions@github.com"
+          git config user.name "GitHub Actions"
+          # The "Stamp version into project.yml" step left project.yml modified in
+          # the working tree; discard it so the rebase fallback isn't blocked by
+          # "cannot rebase: you have unstaged changes".
+          git checkout -- ios/project.yml || true
+          git add ios/altstore-source.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "chore(ios): update altstore-source.json to v${{ steps.version.outputs.version }} [skip ci]"
+          for i in 1 2 3; do
+            git push origin HEAD:main && break
+            git fetch origin main
+            git rebase origin/main || git rebase --abort
+          done
+
+      - name: Cleanup signing credentials
+        if: always() && steps.signing.outputs.signed == 'true'
+        run: |
+          security delete-keychain "${{ steps.signing.outputs.keychain_path }}" || true

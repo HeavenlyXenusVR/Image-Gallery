@@ -1,0 +1,74 @@
+name: ImageGallery
+
+options:
+  bundleIdPrefix: com.imagegallery
+  deploymentTarget:
+    iOS: "16.0"
+
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_BITCODE: "NO"
+    DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+  configs:
+    Debug:
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      OTHER_SWIFT_FLAGS: "-D DEBUG"
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+      VALIDATE_PRODUCT: "YES"
+
+targets:
+  ImageGallery:
+    type: application
+    platform: iOS
+    sources:
+      - path: ImageGallery/Sources
+    resources:
+      - path: ImageGallery/Resources/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.imagegallery.ios
+        INFOPLIST_FILE: ImageGallery/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_INCLUDE_ALL_APPS_IN_ASSET_CATALOG_COMPILATION: "YES"
+        CODE_SIGN_ENTITLEMENTS: ImageGallery/Resources/ImageGallery.entitlements
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+    scheme:
+      buildAction:
+        targets:
+          - ImageGallery
+      runAction:
+        config: Debug
+      testAction:
+        config: Debug
+      profileAction:
+        config: Release
+      archiveAction:
+        config: Release
+      analyzeAction:
+        config: Debug
+      testTargets:
+        - ImageGalleryTests
+
+  ImageGalleryTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ImageGalleryTests
+    dependencies:
+      - target: ImageGallery
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.imagegallery.ios.tests
+        INFOPLIST_FILE: ""

@@ -1,0 +1,120 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/build-ios.yml'
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: 'Build configuration'
+        required: false
+        default: 'Release'
+        type: choice
+        options: [ Release, Debug ]
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: Build & export IPA
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          XCODE=$(ls /Applications | grep '^Xcode' | sort -rV | head -1)
+          sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
+
+      - name: Print Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build configuration
+        id: config
+        run: |
+          CONFIG="${{ github.event.inputs.configuration || 'Release' }}"
+          echo "configuration=$CONFIG" >> "$GITHUB_OUTPUT"
+
+      - name: Archive (unsigned)
+        working-directory: ios
+        run: |
+          mkdir -p build
+          xcodebuild archive \
+            -project ImageGallery.xcodeproj \
+            -scheme ImageGallery \
+            -configuration ${{ steps.config.outputs.configuration }} \
+            -destination "generic/platform=iOS" \
+            -archivePath build/ImageGallery.xcarchive \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            SKIP_INSTALL=NO 2>&1 | tee /tmp/xcodebuild.log | tail -20
+          if grep -q "error:" /tmp/xcodebuild.log; then
+            echo "--- Compiler errors ---"
+            grep "error:" /tmp/xcodebuild.log | head -30
+          fi
+          APP=$(find build/ImageGallery.xcarchive -name "*.app" | head -1)
+          if [ -z "$APP" ]; then
+            echo "::error::Archive did not produce a .app bundle"
+            exit 1
+          fi
+          echo "APP_PATH=$APP" >> "$GITHUB_ENV"
+
+      - name: Compile asset catalogs (actool)
+        working-directory: ios
+        run: |
+          APP="$APP_PATH"
+          xcrun actool \
+            --output-format human-readable-text \
+            --notices \
+            --warnings \
+            --platform iphoneos \
+            --minimum-deployment-target 16.0 \
+            --target-device iphone \
+            --target-device ipad \
+            --app-icon AppIcon \
+            --output-partial-info-plist /tmp/assetcatalog_output.plist \
+            --compress-pngs \
+            --compile "$APP" \
+            "ImageGallery/Resources/Assets.xcassets"
+          echo "Assets.car: $(du -sh "$APP/Assets.car" 2>/dev/null || echo MISSING)"
+
+      - name: Package IPA (unsigned)
+        working-directory: ios
+        run: |
+          MARKETING_VERSION=$(grep 'MARKETING_VERSION' project.yml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          IPA_NAME="ImageGallery-v${MARKETING_VERSION}-unsigned.ipa"
+          PAYLOAD_DIR="build/Payload/Payload"
+          mkdir -p "$PAYLOAD_DIR"
+          cp -R "$APP_PATH" "$PAYLOAD_DIR/"
+          cd build/Payload
+          zip -r "../$IPA_NAME" Payload/ -x "*.DS_Store"
+          echo "IPA created: $(du -sh ../$IPA_NAME)"
+          echo "IPA_NAME=$IPA_NAME" >> "$GITHUB_ENV"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImageGallery-unsigned-ipa
+          path: ios/build/${{ env.IPA_NAME }}
+          retention-days: 14
+
+      - name: Upload archive (for re-signing)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImageGallery-xcarchive
+          path: ios/build/ImageGallery.xcarchive
+          retention-days: 7

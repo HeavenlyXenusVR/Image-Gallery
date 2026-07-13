@@ -1,0 +1,139 @@
+import Foundation
+
+/// Mirrors the JSON shape produced by `app/routers/_shared.py:_with_urls` on
+/// the backend. Decoded with `.convertFromSnakeCase`, so `media_kind` ->
+/// `mediaKind` etc. Optional almost everywhere on purpose: the backend's
+/// response shape varies slightly by endpoint (e.g. locked/adult media strips
+/// several fields), and a strict non-optional model would throw on any of
+/// those variants.
+struct MediaItem: Codable, Identifiable, Hashable {
+    var id: Int
+    var title: String?
+    var description: String?
+    var tags: [String]?
+    var mediaKind: String?
+    var url: String?
+    var thumbUrl: String?
+    var previewUrl: String?
+    var downloadUrl: String?
+    var isAdult: Bool?
+    var locked: Bool?
+    var requiresAdultBlur: Bool?
+    var viewerCanOpenAdult: Bool?
+    var likedByMe: Bool?
+    var bookmarkedByMe: Bool?
+    var likeCount: Int?
+    var commentCount: Int?
+    var views: Int?
+    var downloads: Int?
+    var fileSize: Int?
+    var userId: Int?
+    var username: String?
+    var displayName: String?
+    var userAvatarUrl: String?
+    var visibility: String?
+    var commentsEnabled: Bool?
+    var downloadsEnabled: Bool?
+    var pinnedAt: String?
+    var publishAt: String?
+    var moderationStatus: String?
+    var moderationReason: String?
+    var categoryId: Int?
+    var categoryName: String?
+    var subcategoryNames: [String]?
+    var createdAt: String?
+    var deletedAt: String?
+
+    var isVideo: Bool { mediaKind == "video" }
+
+    static func == (lhs: MediaItem, rhs: MediaItem) -> Bool { lhs.id == rhs.id }
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+/// `{counts: {emoji: count}, my_reaction: emoji?}` from `/api/media/{id}` and `/react`.
+struct ReactionsSummary: Codable {
+    var counts: [String: Int]?
+    var myReaction: String?
+}
+
+struct Comment: Codable, Identifiable {
+    var id: Int
+    var mediaId: Int?
+    var userId: Int?
+    var body: String
+    var parentCommentId: Int?
+    var username: String?
+    var displayName: String?
+    var userAvatarPath: String?
+    var createdAt: String?
+}
+
+struct CategorySummary: Codable, Identifiable, Hashable {
+    var id: Int
+    var name: String
+    var slug: String?
+    var mediaKind: String?
+    var subcategories: [SubcategorySummary]?
+}
+
+struct SubcategorySummary: Codable, Identifiable, Hashable {
+    var id: Int
+    var name: String
+    var slug: String?
+}
+
+struct CollectionSummary: Codable, Identifiable {
+    var id: Int
+    var name: String
+    var description: String?
+    var isPublic: Bool?
+    var isSmart: Bool?
+    var coverUrl: String?
+    var userId: Int?
+    var username: String?
+    var displayName: String?
+    var createdAt: String?
+}
+
+struct SavedSearch: Codable, Identifiable {
+    var id: Int
+    var name: String
+    var filterJson: [String: JSONValue]?
+    var lastNotifiedAt: String?
+    var createdAt: String?
+}
+
+struct SiteAnnouncement: Codable {
+    var announcementMessage: String?
+    var announcementLevel: String?
+    var announcementActive: Bool?
+    var maintenanceMode: Bool?
+    var maintenanceMessage: String?
+}
+
+/// Loose JSON value for fields whose shape isn't worth fully modeling
+/// (e.g. a saved search's stored filter_json, whose keys vary by filter type).
+enum JSONValue: Codable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(String.self) { self = .string(value); return }
+        if let value = try? container.decode(Double.self) { self = .number(value); return }
+        if let value = try? container.decode(Bool.self) { self = .bool(value); return }
+        self = .null
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .bool(let value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
+}
