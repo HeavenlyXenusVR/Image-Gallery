@@ -89,6 +89,11 @@ struct MediaDetailView: View {
                     Rectangle().fill(.secondary.opacity(0.15)).frame(height: 240)
                 }
             }
+            // scaledToFit alone is safe from the grid-overlap class of bug
+            // (single image, not competing with siblings for layout), but an
+            // extreme portrait aspect ratio could still stretch to fill most
+            // of the screen — cap it so the rest of the page stays reachable.
+            .frame(maxHeight: 480)
             .cornerRadius(12)
         }
     }

@@ -30,17 +30,39 @@ final class UploadViewModel: ObservableObject {
 
     private let api = GalleryAPIClient.shared
 
+    /// A conservative client-side sanity cap, well under the backend's own
+    /// (server-configurable, default 500MB) limit. The upload path currently
+    /// holds the picked file in memory twice — once as `pickedData`, again
+    /// while the multipart body is assembled — so an oversized pick is
+    /// rejected here up front rather than risking an out-of-memory crash
+    /// partway through building the request.
+    static let maxClientUploadBytes = 300 * 1024 * 1024
+
     func loadCategories() async {
         categories = (try? await api.categories()) ?? []
     }
 
     func handlePickerSelection() async {
         guard let pickerItem else { return }
+        errorMessage = nil
+        pickedData = nil
         isVideo = pickerItem.supportedContentTypes.contains { $0.conforms(to: .movie) }
-        if let data = try? await pickerItem.loadTransferable(type: Data.self) {
+        do {
+            let data = try await pickerItem.loadTransferable(type: Data.self)
+            guard let data else {
+                errorMessage = "Could not read that file. Try picking it again."
+                return
+            }
+            if data.count > Self.maxClientUploadBytes {
+                let limitMB = Self.maxClientUploadBytes / (1024 * 1024)
+                errorMessage = "That file is too large to upload from the app (over \(limitMB)MB). Try a shorter clip or a smaller export, or upload it from the web app instead."
+                return
+            }
             pickedData = data
             pickedMimeType = isVideo ? "video/mp4" : "image/jpeg"
             pickedFileName = isVideo ? "upload.mp4" : "upload.jpg"
+        } catch {
+            errorMessage = "Could not read that file: \(error.localizedDescription)"
         }
     }
 

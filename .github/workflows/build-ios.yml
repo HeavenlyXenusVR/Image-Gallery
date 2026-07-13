@@ -48,6 +48,26 @@ jobs:
           CONFIG="${{ github.event.inputs.configuration || 'Release' }}"
           echo "configuration=$CONFIG" >> "$GITHUB_OUTPUT"
 
+      # Catches Swift compile errors in ImageGalleryTests — the archive step
+      # below only builds the app target, so a broken test file would
+      # otherwise go unnoticed by CI until someone opens Xcode locally.
+      # build-for-testing (not `test`) against a generic simulator destination
+      # compiles both targets without needing to boot an actual simulator.
+      - name: Build for testing (compile check)
+        working-directory: ios
+        run: |
+          xcodebuild build-for-testing \
+            -project ImageGallery.xcodeproj \
+            -scheme ImageGallery \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            2>&1 | tee /tmp/xcodebuild-tests.log | tail -20
+          if grep -q "error:" /tmp/xcodebuild-tests.log; then
+            echo "--- Compiler errors (tests) ---"
+            grep "error:" /tmp/xcodebuild-tests.log | head -30
+            exit 1
+          fi
+
       - name: Archive (unsigned)
         working-directory: ios
         run: |
