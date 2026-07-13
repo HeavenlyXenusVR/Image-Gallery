@@ -46,6 +46,16 @@ struct FeedView: View {
                     Image(systemName: "folder")
                 }
             }
+            ToolbarItem(placement: .topBarLeading) {
+                NavigationLink(destination: TrendingView()) {
+                    Image(systemName: "flame")
+                }
+            }
+            ToolbarItem(placement: .topBarLeading) {
+                NavigationLink(destination: CategoryBrowserView()) {
+                    Image(systemName: "square.grid.3x3")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showingFilters = true

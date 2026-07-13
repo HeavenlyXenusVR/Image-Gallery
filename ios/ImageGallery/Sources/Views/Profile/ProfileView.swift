@@ -32,6 +32,17 @@ struct ProfileView: View {
                         Image(systemName: "gearshape")
                     }
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink(destination: FriendRequestsView()) {
+                        Image(systemName: "person.badge.clock")
+                    }
+                }
+            } else if let user = viewModel.user {
+                ToolbarItem(placement: .topBarTrailing) {
+                    ShareLink(item: profileShareURL(username: user.username)) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
             }
         }
         .task { await viewModel.load() }
@@ -97,6 +108,15 @@ struct ProfileView: View {
             }
         }
     }
+
+    /// Matches the web app's route (`frontend/src/App.jsx`: `/users/:username`,
+    /// served under the GitHub Pages basename) so a shared link opens the
+    /// same profile there for anyone without the app installed.
+    private func profileShareURL(username: String) -> URL {
+        let encoded = username.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? username
+        return URL(string: "https://heavenlyxenusvr.github.io/Image-Gallery/users/\(encoded)")
+            ?? URL(string: "https://heavenlyxenusvr.github.io/Image-Gallery/")!
+    }
 }
 
 /// Split out of `ProfileView.body` to keep each individual view's expression
@@ -118,10 +138,15 @@ private struct ProfileHeader: View {
 
         HStack(spacing: 20) {
             statColumn("Posts", user.mediaCount)
-            statColumn("Followers", user.followerCount)
-            statColumn("Following", user.followingCount)
+            NavigationLink(destination: UserListView(userId: user.id, kind: .followers)) {
+                statColumn("Followers", user.followerCount)
+            }
+            NavigationLink(destination: UserListView(userId: user.id, kind: .following)) {
+                statColumn("Following", user.followingCount)
+            }
             statColumn("Friends", user.friendCount)
         }
+        .buttonStyle(.plain)
     }
 
     private func statColumn(_ label: String, _ value: Int?) -> some View {

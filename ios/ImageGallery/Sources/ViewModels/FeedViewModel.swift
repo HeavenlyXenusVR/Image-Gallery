@@ -11,6 +11,7 @@ final class FeedViewModel: ObservableObject {
     @Published var mediaKind: String? // nil, "image", "video"
     @Published var sort = "new"
     @Published var categoryId: Int?
+    @Published var subcategoryId: Int?
 
     private let api = GalleryAPIClient.shared
     private var offset = 0
@@ -24,7 +25,7 @@ final class FeedViewModel: ObservableObject {
         errorMessage = nil
         defer { isLoading = false }
         do {
-            items = try await api.listMedia(mediaKind: mediaKind, categoryId: categoryId, query: query, sort: sort, limit: pageSize, offset: 0)
+            items = try await api.listMedia(mediaKind: mediaKind, categoryId: categoryId, subcategoryId: subcategoryId, query: query, sort: sort, limit: pageSize, offset: 0)
             offset = items.count
             reachedEnd = items.count < pageSize
         } catch {
@@ -38,7 +39,7 @@ final class FeedViewModel: ObservableObject {
         isLoadingMore = true
         defer { isLoadingMore = false }
         do {
-            let next = try await api.listMedia(mediaKind: mediaKind, categoryId: categoryId, query: query, sort: sort, limit: pageSize, offset: offset)
+            let next = try await api.listMedia(mediaKind: mediaKind, categoryId: categoryId, subcategoryId: subcategoryId, query: query, sort: sort, limit: pageSize, offset: offset)
             items.append(contentsOf: next)
             offset += next.count
             reachedEnd = next.count < pageSize

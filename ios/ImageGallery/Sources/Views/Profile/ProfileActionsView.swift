@@ -21,6 +21,11 @@ struct ProfileActionsView: View {
                 .buttonStyle(.bordered)
                 .disabled(["friends", "pending_out"].contains(user.friendStatus ?? ""))
 
+                NavigationLink(destination: DirectMessageThreadView(userId: user.id, displayName: user.displayName ?? user.username)) {
+                    Image(systemName: "message")
+                }
+                .buttonStyle(.bordered)
+
                 Menu {
                     Button("Mute") { Task { await viewModel.setBlock(kind: "mute", active: true) } }
                     Button("Block", role: .destructive) { Task { await viewModel.setBlock(kind: "block", active: true) } }

@@ -3,8 +3,10 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var biometricLock: BiometricLockService
     @StateObject private var viewModel = SettingsViewModel()
     @AppStorage("theme_mode") private var themeMode = "system"
+    @State private var biometricLockEnabled = false
     @State private var exportURL: URL?
     @State private var showingShareSheet = false
     @State private var showingAgeVerification = false
@@ -68,6 +70,10 @@ struct SettingsView: View {
                     Label("Age verified", systemImage: "checkmark.seal.fill")
                 }
                 NavigationLink("Backend") { BackendSettingsView() }
+                Toggle("Require \(biometricLock.biometryLabel) to open", isOn: $biometricLockEnabled)
+                    .onChange(of: biometricLockEnabled) { newValue in
+                        biometricLock.isEnabled = newValue
+                    }
                 Button("Log Out", role: .destructive) {
                     Task { await session.logout() }
                 }
@@ -139,6 +145,7 @@ struct SettingsView: View {
         .task {
             await viewModel.loadAll()
             loadAppearanceFromCurrentUser()
+            biometricLockEnabled = biometricLock.isEnabled
         }
         .onChange(of: session.currentUser?.id) { _ in
             loadAppearanceFromCurrentUser()

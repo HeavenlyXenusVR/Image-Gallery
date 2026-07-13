@@ -84,6 +84,12 @@
     <string>Image Gallery saves media you download to your photo library.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>Image Gallery reads your photo library so you can choose a photo or video to upload.</string>
+    <!-- Required to call LAContext.evaluatePolicy for the optional Face ID
+         app lock (Settings → "Require Face ID to open the app") — omitting
+         this crashes the app on first use on a Face ID device, even though
+         Touch ID/passcode need no such key. -->
+    <key>NSFaceIDUsageDescription</key>
+    <string>Image Gallery can use Face ID to lock the app when it's in the background.</string>
 
     <!-- App Transport Security: production traffic runs over HTTPS through the
          Cloudflare tunnel and needs no exception. This exception only allows
@@ -119,6 +125,28 @@
     <!-- Launch screen (storyboard-free) -->
     <key>UILaunchScreen</key>
     <dict/>
+
+    <!-- Home screen quick actions (long-press the app icon). Handled by
+         AppDelegate/QuickActionRouter (see Services/QuickActionRouter.swift). -->
+    <key>UIApplicationShortcutItems</key>
+    <array>
+        <dict>
+            <key>UIApplicationShortcutItemType</key>
+            <string>com.imagegallery.ios.upload</string>
+            <key>UIApplicationShortcutItemTitle</key>
+            <string>Upload</string>
+            <key>UIApplicationShortcutItemIconType</key>
+            <string>UIApplicationShortcutIconTypeAdd</string>
+        </dict>
+        <dict>
+            <key>UIApplicationShortcutItemType</key>
+            <string>com.imagegallery.ios.messages</string>
+            <key>UIApplicationShortcutItemTitle</key>
+            <string>Messages</string>
+            <key>UIApplicationShortcutItemIconType</key>
+            <string>UIApplicationShortcutIconTypeMessage</string>
+        </dict>
+    </array>
 
 </dict>
 </plist>

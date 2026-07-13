@@ -97,9 +97,11 @@ final class UploadViewModel: ObservableObject {
 
         do {
             uploadedMedia = try await api.uploadMedia(data: pickedData, fileName: pickedFileName, mimeType: pickedMimeType, fields: fields)
+            Haptics.success()
             return true
         } catch {
             errorMessage = error.localizedDescription
+            Haptics.error()
             return false
         }
     }

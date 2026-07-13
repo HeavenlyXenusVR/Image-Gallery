@@ -37,6 +37,7 @@ final class MediaDetailViewModel: ObservableObject {
         guard let media else { return }
         do {
             self.media = try await api.setLiked(mediaId: media.id, liked: !(media.likedByMe ?? false))
+            Haptics.light()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -46,6 +47,7 @@ final class MediaDetailViewModel: ObservableObject {
         guard let media else { return }
         do {
             self.media = try await api.setBookmarked(mediaId: media.id, bookmarked: !(media.bookmarkedByMe ?? false))
+            Haptics.light()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -55,6 +57,7 @@ final class MediaDetailViewModel: ObservableObject {
         guard let media else { return }
         do {
             reactions = try await api.react(mediaId: media.id, emoji: emoji)
+            Haptics.light()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -66,6 +69,7 @@ final class MediaDetailViewModel: ObservableObject {
             let comment = try await api.addComment(mediaId: media.id, body: body, parentCommentId: replyTarget?.id)
             comments.append(comment)
             replyTarget = nil
+            Haptics.light()
         } catch {
             errorMessage = error.localizedDescription
         }

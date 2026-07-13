@@ -6,8 +6,50 @@ final class StudioViewModel: ObservableObject {
     @Published var items: [MediaItem] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
+    @Published var isSelecting = false
+    @Published var selectedIds: Set<Int> = []
+    @Published var isBulkWorking = false
 
     private let api = GalleryAPIClient.shared
+
+    func toggleSelectionMode() {
+        isSelecting.toggle()
+        if !isSelecting { selectedIds.removeAll() }
+    }
+
+    func toggleSelected(_ item: MediaItem) {
+        if selectedIds.contains(item.id) {
+            selectedIds.remove(item.id)
+        } else {
+            selectedIds.insert(item.id)
+        }
+    }
+
+    func bulkSetVisibility(_ visibility: String) async {
+        guard !selectedIds.isEmpty else { return }
+        isBulkWorking = true
+        defer { isBulkWorking = false }
+        do {
+            _ = try await api.bulkUpdateVisibility(ids: Array(selectedIds), visibility: visibility)
+            await load()
+            selectedIds.removeAll()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func bulkDelete() async {
+        guard !selectedIds.isEmpty else { return }
+        isBulkWorking = true
+        defer { isBulkWorking = false }
+        do {
+            _ = try await api.bulkDeleteMedia(ids: Array(selectedIds))
+            await load()
+            selectedIds.removeAll()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
 
     func load() async {
         isLoading = true

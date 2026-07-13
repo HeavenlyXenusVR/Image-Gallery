@@ -18,6 +18,7 @@ final class NotificationsViewModel: ObservableObject {
             let response = try await api.notifications()
             items = response.notifications
             unreadCount = response.unreadCount ?? 0
+            BadgeService.setBadge(unreadCount)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -30,6 +31,7 @@ final class NotificationsViewModel: ObservableObject {
             items[index].readAt = ISO8601DateFormatter().string(from: Date())
         }
         unreadCount = max(0, unreadCount - 1)
+        BadgeService.setBadge(unreadCount)
     }
 
     func markAllRead() async {

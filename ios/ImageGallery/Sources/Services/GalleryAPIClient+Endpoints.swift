@@ -82,10 +82,11 @@ extension GalleryAPIClient {
 // MARK: - Feed / Discover
 
 extension GalleryAPIClient {
-    func listMedia(mediaKind: String? = nil, categoryId: Int? = nil, query: String? = nil, sort: String = "new", adult: String? = nil, limit: Int = 60, offset: Int = 0) async throws -> [MediaItem] {
+    func listMedia(mediaKind: String? = nil, categoryId: Int? = nil, subcategoryId: Int? = nil, query: String? = nil, sort: String = "new", adult: String? = nil, limit: Int = 60, offset: Int = 0) async throws -> [MediaItem] {
         var params: [String: String] = ["sort": sort, "limit": String(limit), "offset": String(offset)]
         if let mediaKind { params["media_kind"] = mediaKind }
         if let categoryId { params["category_id"] = String(categoryId) }
+        if let subcategoryId { params["subcategory_id"] = String(subcategoryId) }
         if let query, !query.isEmpty { params["q"] = query }
         if let adult { params["adult"] = adult }
         let response: MediaListResponse = try await requestJSON("/api/media", query: params, requiresAuth: false)
@@ -94,6 +95,11 @@ extension GalleryAPIClient {
 
     func mediaDetail(id: Int) async throws -> MediaDetailResponse {
         try await requestJSON("/api/media/\(id)", requiresAuth: false)
+    }
+
+    func trendingMedia(days: Int = 7, limit: Int = 30) async throws -> [MediaItem] {
+        let response: MediaListResponse = try await requestJSON("/api/media/trending", query: ["days": String(days), "limit": String(limit)], requiresAuth: false)
+        return response.media
     }
 
     func categories() async throws -> [CategorySummary] {
@@ -201,6 +207,22 @@ extension GalleryAPIClient {
         let response: MediaResponse = try await requestJSON("/api/media/\(id)/restore", body: EmptyBody())
         return response.media
     }
+
+    struct BulkResult: Decodable { var id: Int; var ok: Bool; var error: String? }
+    struct BulkPatchBody: Encodable { var ids: [Int]; var patch: [String: JSONValue] }
+    struct BulkDeleteBody: Encodable { var ids: [Int] }
+
+    func bulkUpdateVisibility(ids: [Int], visibility: String) async throws -> [BulkResult] {
+        struct Response: Decodable { var results: [BulkResult] }
+        let response: Response = try await requestJSON("/api/media/bulk", body: BulkPatchBody(ids: ids, patch: ["visibility": .string(visibility)]))
+        return response.results
+    }
+
+    func bulkDeleteMedia(ids: [Int]) async throws -> [BulkResult] {
+        struct Response: Decodable { var results: [BulkResult] }
+        let response: Response = try await requestJSON("/api/media/bulk-delete", body: BulkDeleteBody(ids: ids))
+        return response.results
+    }
 }
 
 // MARK: - Profiles / social
@@ -221,6 +243,16 @@ extension GalleryAPIClient {
 
     func searchUsers(query: String) async throws -> [GalleryUser] {
         let response: UsersResponse = try await requestJSON("/api/users/search", query: ["q": query, "limit": "30"], requiresAuth: false)
+        return response.users
+    }
+
+    func followers(userId: Int) async throws -> [GalleryUser] {
+        let response: UsersResponse = try await requestJSON("/api/users/\(userId)/followers", requiresAuth: false)
+        return response.users
+    }
+
+    func following(userId: Int) async throws -> [GalleryUser] {
+        let response: UsersResponse = try await requestJSON("/api/users/\(userId)/following", requiresAuth: false)
         return response.users
     }
 
@@ -303,9 +335,46 @@ extension GalleryAPIClient {
         return response.savedSearches
     }
 
+    struct SavedSearchCreateBody: Encodable { var name: String; var filterJson: DiscoverFilterPayload }
+
+    func createSavedSearch(name: String, filter: DiscoverFilterPayload) async throws -> SavedSearch {
+        let response: SavedSearchResponse = try await requestJSON("/api/saved-searches", body: SavedSearchCreateBody(name: name, filterJson: filter))
+        return response.savedSearch
+    }
+
     func deleteSavedSearch(id: Int) async throws {
         try await requestVoid("/api/saved-searches/\(id)", method: "DELETE")
     }
+
+    struct CollectionCreateBody: Encodable {
+        var name: String
+        var description: String?
+        var isPublic: Bool
+        var isSmart: Bool
+        var filterJson: DiscoverFilterPayload
+    }
+
+    func createCollection(name: String, description: String?, isPublic: Bool, isSmart: Bool, filter: DiscoverFilterPayload) async throws -> CollectionSummary {
+        struct Response: Decodable { var collection: CollectionSummary }
+        let response: Response = try await requestJSON("/api/collections", body: CollectionCreateBody(name: name, description: description, isPublic: isPublic, isSmart: isSmart, filterJson: filter))
+        return response.collection
+    }
+}
+
+/// Mirrors `SMART_COLLECTION_FILTER_KEYS` in `app/db/feed_collections.py` —
+/// the one filter shape shared by smart collections and saved searches.
+struct DiscoverFilterPayload: Encodable {
+    var mediaKind: String?
+    var categoryId: Int?
+    var subcategoryId: Int?
+    var q: String?
+    var uploader: String?
+    var minSize: Int?
+    var maxSize: Int?
+    var dateFrom: String?
+    var dateTo: String?
+    var adult: String?
+    var sort: String?
 }
 
 // MARK: - 2FA & data export

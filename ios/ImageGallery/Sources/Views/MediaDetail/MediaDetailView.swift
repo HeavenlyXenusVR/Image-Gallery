@@ -81,19 +81,13 @@ struct MediaDetailView: View {
                 .frame(height: 260)
                 .cornerRadius(12)
         } else if let urlString = media.url, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFit()
-                default:
-                    Rectangle().fill(.secondary.opacity(0.15)).frame(height: 240)
-                }
-            }
+            ZoomableAsyncImage(url: url)
             // scaledToFit alone is safe from the grid-overlap class of bug
             // (single image, not competing with siblings for layout), but an
             // extreme portrait aspect ratio could still stretch to fill most
             // of the screen — cap it so the rest of the page stays reachable.
             .frame(maxHeight: 480)
+            .clipped()
             .cornerRadius(12)
         }
     }

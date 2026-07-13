@@ -63,6 +63,7 @@ final class SessionStore: ObservableObject {
     func logout() async {
         await api.logout()
         currentUser = nil
+        BadgeService.setBadge(0)
     }
 
     /// Called when the app returns to the foreground — picks up account

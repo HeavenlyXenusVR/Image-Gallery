@@ -4,6 +4,7 @@ struct CollectionsListView: View {
     @State private var collections: [CollectionSummary] = []
     @State private var isLoading = true
     @State private var showMineOnly = false
+    @State private var showingNewCollection = false
 
     var body: some View {
         List {
@@ -13,8 +14,20 @@ struct CollectionsListView: View {
         }
         .navigationTitle("Collections")
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .topBarLeading) {
                 Toggle("Mine", isOn: $showMineOnly).toggleStyle(.button)
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingNewCollection = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+            }
+        }
+        .sheet(isPresented: $showingNewCollection) {
+            NewCollectionView { _ in
+                Task { await load() }
             }
         }
         .overlay {

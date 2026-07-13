@@ -36,6 +36,7 @@ final class ProfileViewModel: ObservableObject {
         guard let user else { return }
         do {
             try await api.setFollowing(userId: user.id, following: following)
+            Haptics.light()
             await load()
         } catch {
             errorMessage = error.localizedDescription
@@ -46,6 +47,7 @@ final class ProfileViewModel: ObservableObject {
         guard let user else { return }
         do {
             try await api.sendFriendRequest(userId: user.id)
+            Haptics.light()
             await load()
         } catch {
             errorMessage = error.localizedDescription
@@ -56,6 +58,7 @@ final class ProfileViewModel: ObservableObject {
         guard let user else { return }
         do {
             try await api.setBlock(userId: user.id, kind: kind, active: active)
+            Haptics.warning()
         } catch {
             errorMessage = error.localizedDescription
         }
