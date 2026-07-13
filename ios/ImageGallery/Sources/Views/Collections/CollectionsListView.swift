@@ -57,7 +57,7 @@ private struct CollectionRow: View {
                 if collection.isSmart == true {
                     Text("Smart collection")
                         .font(.caption2)
-                        .foregroundStyle(.accentColor)
+                        .foregroundStyle(Color.accentColor)
                 }
             }
         }
