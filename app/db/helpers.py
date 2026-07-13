@@ -79,6 +79,15 @@ class HelpersMixin:
         row["is_adult"] = bool(row.get("is_adult"))
         row["adult_marked_by_user"] = bool(row.get("adult_marked_by_user"))
         row["adult_marked_by_ai"] = bool(row.get("adult_marked_by_ai"))
+        # comments_enabled/downloads_enabled come back from MySQL as raw
+        # TINYINT(1) ints (0/1), not JSON booleans — harmless for the JS web
+        # client (truthy/falsy) but a hard decode failure for strict clients
+        # like the iOS app's Swift Codable models, which require an actual
+        # `true`/`false` literal for a Bool field.
+        if "comments_enabled" in row:
+            row["comments_enabled"] = bool(row.get("comments_enabled", True))
+        if "downloads_enabled" in row:
+            row["downloads_enabled"] = bool(row.get("downloads_enabled", True))
         for key in ("subcategory_id", "like_count", "comment_count", "views", "downloads", "file_size"):
             if isinstance(row.get(key), Decimal):
                 row[key] = int(row[key])
