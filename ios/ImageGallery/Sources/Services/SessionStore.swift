@@ -21,6 +21,12 @@ final class SessionStore: ObservableObject {
             do {
                 currentUser = try await api.me()
             } catch {
+                // Surface *why* — this is the only place a banned/suspended
+                // account's session gets invalidated, and silently dropping
+                // back to the login screen with no explanation would be
+                // confusing (the backend's 403 detail already has the
+                // human-readable ban reason/expiry).
+                lastError = error.localizedDescription
                 api.authToken = nil
                 currentUser = nil
             }
@@ -59,9 +65,24 @@ final class SessionStore: ObservableObject {
         currentUser = nil
     }
 
+    /// Called when the app returns to the foreground — picks up account
+    /// changes made elsewhere (web settings, or a ban/unban) while backgrounded.
+    /// Unlike `bootstrap()`, a failure here doesn't force a logout on its own:
+    /// a transient network hiccup shouldn't kick a signed-in user out, but a
+    /// ban's 403 still needs to end the session and explain why.
     func refreshCurrentUser() async {
         guard api.isAuthenticated else { return }
-        currentUser = try? await api.me()
+        do {
+            currentUser = try await api.me()
+        } catch let error as GalleryAPIError {
+            if case .http(let status, let message) = error, status == 401 || status == 403 {
+                lastError = message
+                api.authToken = nil
+                currentUser = nil
+            }
+        } catch {
+            // Network/decoding hiccup — keep the existing session as-is.
+        }
     }
 
     func setCurrentUser(_ user: GalleryUser) {

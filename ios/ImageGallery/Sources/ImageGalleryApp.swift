@@ -17,6 +17,7 @@ struct ImageGalleryApp: App {
 struct RootView: View {
     @EnvironmentObject private var session: SessionStore
     @AppStorage("theme_mode") private var themeMode = "system"
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -32,6 +33,11 @@ struct RootView: View {
         .tint(Color(hex: session.currentUser?.userSettings?.accentColor))
         .task {
             await session.bootstrap()
+        }
+        .onChange(of: scenePhase) { newPhase in
+            if newPhase == .active {
+                Task { await session.refreshCurrentUser() }
+            }
         }
     }
 

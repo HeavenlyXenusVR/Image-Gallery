@@ -182,10 +182,14 @@ struct SettingsView: View {
     }
 
     private func uploadAvatar() async {
-        guard let avatarPickerItem, let data = try? await avatarPickerItem.loadTransferable(type: Data.self) else { return }
+        guard let avatarPickerItem else { return }
         isUploadingAvatar = true
         defer { isUploadingAvatar = false }
         do {
+            guard let data = try await avatarPickerItem.loadTransferable(type: Data.self) else {
+                viewModel.errorMessage = "Could not read that image. Try picking it again."
+                return
+            }
             let user = try await GalleryAPIClient.shared.uploadAvatar(data: data, fileName: "avatar.jpg", mimeType: "image/jpeg")
             session.setCurrentUser(user)
         } catch {
