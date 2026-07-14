@@ -5,9 +5,13 @@ struct CollectionsListView: View {
     @State private var isLoading = true
     @State private var showMineOnly = false
     @State private var showingNewCollection = false
+    @State private var errorMessage: String?
 
     var body: some View {
         List {
+            if let errorMessage {
+                Text(errorMessage).foregroundStyle(.red)
+            }
             ForEach(collections) { collection in
                 CollectionRow(collection: collection)
             }
@@ -34,7 +38,7 @@ struct CollectionsListView: View {
         .overlay {
             if isLoading {
                 ProgressView()
-            } else if collections.isEmpty {
+            } else if collections.isEmpty && errorMessage == nil {
                 ContentUnavailableCompat(title: "No collections yet", systemImage: "folder")
             }
         }
@@ -48,7 +52,12 @@ struct CollectionsListView: View {
     private func load() async {
         isLoading = true
         defer { isLoading = false }
-        collections = (try? await GalleryAPIClient.shared.collections(mine: showMineOnly)) ?? []
+        do {
+            collections = try await GalleryAPIClient.shared.collections(mine: showMineOnly)
+            errorMessage = nil
+        } catch {
+            errorMessage = "Couldn't load collections: \(error.localizedDescription)"
+        }
     }
 }
 
@@ -83,11 +92,15 @@ struct CollectionDetailView: View {
     @State private var collection: CollectionSummary?
     @State private var media: [MediaItem] = []
     @State private var isLoading = true
+    @State private var errorMessage: String?
 
     private let columns = [GridItem(.adaptive(minimum: 100), spacing: 8)]
 
     var body: some View {
         ScrollView {
+            if let errorMessage {
+                Text(errorMessage).foregroundStyle(.red).padding()
+            }
             LazyVGrid(columns: columns, spacing: 8) {
                 ForEach(media) { item in
                     NavigationLink(destination: MediaDetailView(mediaId: item.id)) {
@@ -102,17 +115,24 @@ struct CollectionDetailView: View {
         .overlay {
             if isLoading {
                 ProgressView()
-            } else if media.isEmpty {
+            } else if media.isEmpty && errorMessage == nil {
                 ContentUnavailableCompat(title: "No media in this collection", systemImage: "folder")
             }
         }
-        .task {
-            isLoading = true
-            defer { isLoading = false }
-            if let response = try? await GalleryAPIClient.shared.collectionDetail(id: collectionId) {
-                collection = response.collection
-                media = response.media ?? []
-            }
+        .refreshable { await load() }
+        .task { await load() }
+    }
+
+    private func load() async {
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let response = try await GalleryAPIClient.shared.collectionDetail(id: collectionId)
+            collection = response.collection
+            media = response.media ?? []
+            errorMessage = nil
+        } catch {
+            errorMessage = "Couldn't load this collection: \(error.localizedDescription)"
         }
     }
 }

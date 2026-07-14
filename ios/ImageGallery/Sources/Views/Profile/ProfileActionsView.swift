@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ProfileActionsView: View {
     @ObservedObject var viewModel: ProfileViewModel
+    @State private var showingBlockConfirm = false
 
     var body: some View {
         if let user = viewModel.user, user.friendStatus != "self" {
@@ -29,11 +30,23 @@ struct ProfileActionsView: View {
 
                 Menu {
                     Button("Mute") { Task { await viewModel.setBlock(kind: "mute", active: true) } }
-                    Button("Block", role: .destructive) { Task { await viewModel.setBlock(kind: "block", active: true) } }
+                    Button("Block", role: .destructive) { showingBlockConfirm = true }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
                 .accessibilityLabel("More options")
+                .confirmationDialog(
+                    "Block \(user.displayName ?? user.username)?",
+                    isPresented: $showingBlockConfirm,
+                    titleVisibility: .visible
+                ) {
+                    Button("Block", role: .destructive) {
+                        Task { await viewModel.setBlock(kind: "block", active: true) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("They won't be able to follow you or see your profile.")
+                }
             }
         }
     }

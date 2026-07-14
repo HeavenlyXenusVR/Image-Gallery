@@ -59,6 +59,7 @@ final class ProfileViewModel: ObservableObject {
         do {
             try await api.setBlock(userId: user.id, kind: kind, active: active)
             Haptics.warning()
+            await load()
         } catch {
             errorMessage = error.localizedDescription
         }

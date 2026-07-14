@@ -50,16 +50,31 @@ final class DirectMessageThreadViewModel: ObservableObject {
         }
     }
 
-    func send(_ body: String) async {
+    /// Background freshness poll — unlike `load()`, a failure here is not
+    /// surfaced (a single dropped poll shouldn't paint a persistent error
+    /// banner over an otherwise-working thread), and the result is merged
+    /// rather than assigned outright so a poll that was in flight before a
+    /// local `send()` completed can't clobber the just-sent message.
+    func refreshSilently() async {
+        guard let fetched = try? await api.directMessages(userId: userId) else { return }
+        var byId = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
+        for message in fetched { byId[message.id] = message }
+        messages = byId.values.sorted { $0.id < $1.id }
+    }
+
+    @discardableResult
+    func send(_ body: String) async -> Bool {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
         isSending = true
         defer { isSending = false }
         do {
             let message = try await api.sendDirectMessage(userId: userId, body: trimmed)
             messages.append(message)
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 }
@@ -89,16 +104,27 @@ final class GroupThreadViewModel: ObservableObject {
         }
     }
 
-    func send(_ body: String) async {
+    /// See `DirectMessageThreadViewModel.refreshSilently` — same rationale.
+    func refreshSilently() async {
+        guard let fetched = try? await api.groupThreadMessages(threadId: threadId) else { return }
+        var byId = Dictionary(uniqueKeysWithValues: messages.map { ($0.id, $0) })
+        for message in fetched { byId[message.id] = message }
+        messages = byId.values.sorted { $0.id < $1.id }
+    }
+
+    @discardableResult
+    func send(_ body: String) async -> Bool {
         let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
         isSending = true
         defer { isSending = false }
         do {
             let message = try await api.sendGroupThreadMessage(threadId: threadId, body: trimmed)
             messages.append(message)
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 }

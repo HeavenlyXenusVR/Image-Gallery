@@ -18,6 +18,8 @@ struct SettingsView: View {
     @State private var avatarShape = AvatarShape.circle
     @State private var isSavingAppearance = false
     @State private var loadedAppearance = false
+    @State private var showingLogoutConfirm = false
+    @State private var searchPendingDelete: SavedSearch?
 
     var body: some View {
         Form {
@@ -75,7 +77,7 @@ struct SettingsView: View {
                         biometricLock.isEnabled = newValue
                     }
                 Button("Log Out", role: .destructive) {
-                    Task { await session.logout() }
+                    showingLogoutConfirm = true
                 }
             }
 
@@ -96,7 +98,7 @@ struct SettingsView: View {
                         Text(search.name)
                         Spacer()
                         Button(role: .destructive) {
-                            Task { await viewModel.deleteSavedSearch(search) }
+                            searchPendingDelete = search
                         } label: {
                             Image(systemName: "trash")
                         }
@@ -157,6 +159,28 @@ struct SettingsView: View {
             if let exportURL {
                 ShareSheet(activityItems: [exportURL])
             }
+        }
+        .confirmationDialog("Log out?", isPresented: $showingLogoutConfirm, titleVisibility: .visible) {
+            Button("Log Out", role: .destructive) {
+                Task { await session.logout() }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "Delete \"\(searchPendingDelete?.name ?? "")\"?",
+            isPresented: Binding(
+                get: { searchPendingDelete != nil },
+                set: { active in if !active { searchPendingDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let search = searchPendingDelete {
+                    Task { await viewModel.deleteSavedSearch(search) }
+                }
+                searchPendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { searchPendingDelete = nil }
         }
     }
 

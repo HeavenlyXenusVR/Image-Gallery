@@ -44,7 +44,11 @@ struct GroupThreadView: View {
             MessageComposer(text: $draft, isSending: viewModel.isSending) {
                 let body = draft
                 draft = ""
-                Task { await viewModel.send(body) }
+                Task {
+                    if !(await viewModel.send(body)) {
+                        draft = body
+                    }
+                }
             }
         }
         .navigationTitle(title)
@@ -58,7 +62,7 @@ struct GroupThreadView: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
                 if Task.isCancelled { break }
-                await viewModel.load()
+                await viewModel.refreshSilently()
             }
         }
         .overlay {
