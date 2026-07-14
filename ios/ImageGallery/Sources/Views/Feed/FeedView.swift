@@ -40,21 +40,25 @@ struct FeedView: View {
                 NavigationLink(destination: UserSearchView()) {
                     Image(systemName: "person.crop.circle.badge.plus")
                 }
+                .accessibilityLabel("Find people")
             }
             ToolbarItem(placement: .topBarLeading) {
                 NavigationLink(destination: CollectionsListView()) {
                     Image(systemName: "folder")
                 }
+                .accessibilityLabel("Collections")
             }
             ToolbarItem(placement: .topBarLeading) {
                 NavigationLink(destination: TrendingView()) {
                     Image(systemName: "flame")
                 }
+                .accessibilityLabel("Trending")
             }
             ToolbarItem(placement: .topBarLeading) {
                 NavigationLink(destination: CategoryBrowserView()) {
                     Image(systemName: "square.grid.3x3")
                 }
+                .accessibilityLabel("Categories")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -62,6 +66,7 @@ struct FeedView: View {
                 } label: {
                     Image(systemName: "line.3.horizontal.decrease.circle")
                 }
+                .accessibilityLabel("Filters")
             }
         }
         .sheet(isPresented: $showingFilters) {

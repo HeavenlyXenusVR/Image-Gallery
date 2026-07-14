@@ -100,6 +100,7 @@ struct SettingsView: View {
                         } label: {
                             Image(systemName: "trash")
                         }
+                        .accessibilityLabel("Delete saved search \(search.name)")
                     }
                 }
             }

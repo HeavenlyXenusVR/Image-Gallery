@@ -23,6 +23,7 @@ struct CollectionsListView: View {
                 } label: {
                     Image(systemName: "plus")
                 }
+                .accessibilityLabel("New collection")
             }
         }
         .sheet(isPresented: $showingNewCollection) {

@@ -23,6 +23,7 @@ struct NewGroupThreadView: View {
                                 } label: {
                                     Image(systemName: "xmark.circle.fill")
                                 }
+                                .accessibilityLabel("Remove \(user.displayName ?? user.username)")
                             }
                         }
                     }

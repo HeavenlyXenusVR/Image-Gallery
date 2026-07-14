@@ -29,6 +29,7 @@ struct MessagesView: View {
                 } label: {
                     Image(systemName: "person.3.fill")
                 }
+                .accessibilityLabel("New group chat")
             }
         }
         .sheet(isPresented: $showingNewGroup) {

@@ -31,17 +31,20 @@ struct ProfileView: View {
                     NavigationLink(destination: SettingsView()) {
                         Image(systemName: "gearshape")
                     }
+                    .accessibilityLabel("Settings")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink(destination: FriendRequestsView()) {
                         Image(systemName: "person.badge.clock")
                     }
+                    .accessibilityLabel("Friend requests")
                 }
             } else if let user = viewModel.user {
                 ToolbarItem(placement: .topBarTrailing) {
                     ShareLink(item: profileShareURL(username: user.username)) {
                         Image(systemName: "square.and.arrow.up")
                     }
+                    .accessibilityLabel("Share profile")
                 }
             }
         }

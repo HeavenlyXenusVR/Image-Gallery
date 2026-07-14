@@ -54,6 +54,7 @@ struct MessageComposer: View {
                 }
             }
             .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty || isSending)
+            .accessibilityLabel("Send message")
         }
         .padding()
     }

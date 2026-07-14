@@ -25,6 +25,7 @@ struct ProfileActionsView: View {
                     Image(systemName: "message")
                 }
                 .buttonStyle(.bordered)
+                .accessibilityLabel("Message \(user.displayName ?? user.username)")
 
                 Menu {
                     Button("Mute") { Task { await viewModel.setBlock(kind: "mute", active: true) } }
@@ -32,6 +33,7 @@ struct ProfileActionsView: View {
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
+                .accessibilityLabel("More options")
             }
         }
     }

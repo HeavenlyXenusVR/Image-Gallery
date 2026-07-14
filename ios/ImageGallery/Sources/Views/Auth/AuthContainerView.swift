@@ -27,6 +27,7 @@ struct AuthContainerView: View {
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                         }
+                        .accessibilityLabel("Dismiss")
                     }
                     .padding(10)
                     .background(.red.opacity(0.15))
