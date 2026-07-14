@@ -51,12 +51,6 @@ struct LoginView: View {
                     showingRegister = true
                 }
             }
-
-            Section {
-                NavigationLink("Backend settings") {
-                    BackendSettingsView()
-                }
-            }
         }
     }
 

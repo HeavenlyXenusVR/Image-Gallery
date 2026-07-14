@@ -53,7 +53,8 @@ extension GalleryAPIClient {
     }
 
     func me() async throws -> GalleryUser {
-        try await requestJSON("/api/me")
+        let response: UserResponse = try await requestJSON("/api/me")
+        return response.user
     }
 
     func verifyAge(birthdate: String) async throws -> GalleryUser {

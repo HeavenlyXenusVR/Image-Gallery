@@ -10,6 +10,8 @@ final class MediaDetailViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var replyTarget: Comment?
+    @Published var isTogglingLike = false
+    @Published var isTogglingBookmark = false
 
     let mediaId: Int
     private let api = GalleryAPIClient.shared
@@ -34,7 +36,9 @@ final class MediaDetailViewModel: ObservableObject {
     }
 
     func toggleLike() async {
-        guard let media else { return }
+        guard let media, !isTogglingLike else { return }
+        isTogglingLike = true
+        defer { isTogglingLike = false }
         do {
             self.media = try await api.setLiked(mediaId: media.id, liked: !(media.likedByMe ?? false))
             Haptics.light()
@@ -44,7 +48,9 @@ final class MediaDetailViewModel: ObservableObject {
     }
 
     func toggleBookmark() async {
-        guard let media else { return }
+        guard let media, !isTogglingBookmark else { return }
+        isTogglingBookmark = true
+        defer { isTogglingBookmark = false }
         do {
             self.media = try await api.setBookmarked(mediaId: media.id, bookmarked: !(media.bookmarkedByMe ?? false))
             Haptics.light()
@@ -84,12 +90,15 @@ final class MediaDetailViewModel: ObservableObject {
         }
     }
 
-    func report(reason: String, details: String?) async {
-        guard let media else { return }
+    @discardableResult
+    func report(reason: String, details: String?) async -> Bool {
+        guard let media else { return false }
         do {
             try await api.reportMedia(mediaId: media.id, reason: reason, details: details)
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 

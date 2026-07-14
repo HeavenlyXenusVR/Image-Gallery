@@ -5,6 +5,7 @@ struct MediaDetailView: View {
     @EnvironmentObject private var session: SessionStore
     @State private var showingReport = false
     @State private var showingAgeVerification = false
+    @State private var showingFullScreen = false
 
     init(mediaId: Int) {
         _viewModel = StateObject(wrappedValue: MediaDetailViewModel(mediaId: mediaId))
@@ -66,6 +67,11 @@ struct MediaDetailView: View {
         .task { await viewModel.load() }
         .sheet(isPresented: $showingReport) { ReportSheet(viewModel: viewModel) }
         .sheet(isPresented: $showingAgeVerification) { AgeVerificationView() }
+        .fullScreenCover(isPresented: $showingFullScreen) {
+            if let media = viewModel.media {
+                FullScreenMediaView(media: media)
+            }
+        }
     }
 
     @ViewBuilder
@@ -80,19 +86,39 @@ struct MediaDetailView: View {
             .background(.secondary.opacity(0.1))
             .cornerRadius(12)
         } else if media.isVideo, let urlString = media.url, let url = URL(string: urlString) {
-            AuthenticatedVideoPlayer(url: url)
-                .frame(height: 260)
-                .cornerRadius(12)
+            ZStack(alignment: .topTrailing) {
+                AuthenticatedVideoPlayer(url: url)
+                    .frame(height: 260)
+                    .cornerRadius(12)
+                expandButton
+            }
         } else if let urlString = media.url, let url = URL(string: urlString) {
-            ZoomableAsyncImage(url: url)
-            // scaledToFit alone is safe from the grid-overlap class of bug
-            // (single image, not competing with siblings for layout), but an
-            // extreme portrait aspect ratio could still stretch to fill most
-            // of the screen — cap it so the rest of the page stays reachable.
-            .frame(maxHeight: 480)
-            .clipped()
-            .cornerRadius(12)
+            ZStack(alignment: .topTrailing) {
+                ZoomableAsyncImage(url: url)
+                // scaledToFit alone is safe from the grid-overlap class of bug
+                // (single image, not competing with siblings for layout), but an
+                // extreme portrait aspect ratio could still stretch to fill most
+                // of the screen — cap it so the rest of the page stays reachable.
+                .frame(maxHeight: 480)
+                .clipped()
+                .cornerRadius(12)
+                expandButton
+            }
         }
+    }
+
+    private var expandButton: some View {
+        Button {
+            showingFullScreen = true
+        } label: {
+            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                .padding(8)
+                .background(.black.opacity(0.5))
+                .foregroundStyle(.white)
+                .clipShape(Circle())
+        }
+        .padding(8)
+        .accessibilityLabel("View fullscreen")
     }
 
     @ViewBuilder
@@ -103,12 +129,14 @@ struct MediaDetailView: View {
             } label: {
                 Label(media.likedByMe == true ? "Liked" : "Like", systemImage: media.likedByMe == true ? "heart.fill" : "heart")
             }
+            .disabled(viewModel.isTogglingLike)
 
             Button {
                 Task { await viewModel.toggleBookmark() }
             } label: {
                 Label(media.bookmarkedByMe == true ? "Saved" : "Save", systemImage: media.bookmarkedByMe == true ? "bookmark.fill" : "bookmark")
             }
+            .disabled(viewModel.isTogglingBookmark)
 
             if let downloadUrl = media.downloadUrl, let url = URL(string: downloadUrl) {
                 ShareLink(item: url) {

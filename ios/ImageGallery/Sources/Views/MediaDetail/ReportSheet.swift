@@ -18,6 +18,11 @@ struct ReportSheet: View {
                     TextField("Details (optional)", text: $details, axis: .vertical)
                         .lineLimit(3...6)
                 }
+                if let errorMessage = viewModel.errorMessage {
+                    Section {
+                        Text(errorMessage).foregroundStyle(.red)
+                    }
+                }
             }
             .navigationTitle("Report")
             .toolbar {
@@ -28,9 +33,9 @@ struct ReportSheet: View {
                     Button("Send") {
                         isSubmitting = true
                         Task {
-                            await viewModel.report(reason: reason, details: details.isEmpty ? nil : details)
+                            let success = await viewModel.report(reason: reason, details: details.isEmpty ? nil : details)
                             isSubmitting = false
-                            dismiss()
+                            if success { dismiss() }
                         }
                     }
                     .disabled(reason.trimmingCharacters(in: .whitespaces).isEmpty || isSubmitting)
