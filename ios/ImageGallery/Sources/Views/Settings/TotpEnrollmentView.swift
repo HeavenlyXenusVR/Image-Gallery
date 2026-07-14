@@ -36,9 +36,20 @@ struct TotpEnrollmentView: View {
                             .disabled(code.isEmpty || isLoading)
                     }
                 } else {
+                    if let errorMessage {
+                        Section { Text(errorMessage).foregroundStyle(.red) }
+                    }
                     Section {
-                        Button("Start enrollment") { Task { await enroll() } }
-                            .disabled(isLoading)
+                        Button {
+                            Task { await enroll() }
+                        } label: {
+                            if isLoading {
+                                ProgressView()
+                            } else {
+                                Text(errorMessage == nil ? "Start enrollment" : "Try again")
+                            }
+                        }
+                        .disabled(isLoading)
                     }
                 }
             }

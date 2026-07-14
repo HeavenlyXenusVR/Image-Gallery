@@ -66,7 +66,7 @@ struct MediaDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await viewModel.load() }
         .sheet(isPresented: $showingReport) { ReportSheet(viewModel: viewModel) }
-        .sheet(isPresented: $showingAgeVerification) { AgeVerificationView() }
+        .sheet(isPresented: $showingAgeVerification, onDismiss: { Task { await viewModel.load() } }) { AgeVerificationView() }
         .fullScreenCover(isPresented: $showingFullScreen) {
             if let media = viewModel.media {
                 FullScreenMediaView(media: media)

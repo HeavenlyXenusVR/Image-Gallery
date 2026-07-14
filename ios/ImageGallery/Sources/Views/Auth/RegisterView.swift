@@ -11,17 +11,36 @@ struct RegisterView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
 
+    // Mirrors the backend's actual rules (app/db/_shared.py's USERNAME_RE,
+    // app/db/account.py's password length check) so an invalid submission
+    // fails instantly instead of after a round trip.
+    private var trimmedUsername: String { username.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var isUsernameValid: Bool {
+        let count = trimmedUsername.count
+        guard count >= 3 && count <= 40 else { return false }
+        return trimmedUsername.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." || $0 == "-" }
+    }
+    private var isPasswordValid: Bool { password.count >= 8 }
+
     var body: some View {
         Form {
             Section {
                 TextField("Username", text: $username)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                if !trimmedUsername.isEmpty && !isUsernameValid {
+                    Text("3-40 characters: letters, numbers, \".\", \"_\", \"-\" only.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
                 TextField("Display name (optional)", text: $displayName)
                 TextField("Email (optional)", text: $email)
                     .textInputAutocapitalization(.never)
                     .keyboardType(.emailAddress)
                 SecureField("Password", text: $password)
+                if !password.isEmpty && !isPasswordValid {
+                    Text("At least 8 characters.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
             }
 
             if let errorMessage {
@@ -40,7 +59,7 @@ struct RegisterView: View {
                         Text("Create Account").frame(maxWidth: .infinity)
                     }
                 }
-                .disabled(username.isEmpty || password.isEmpty || isLoading)
+                .disabled(!isUsernameValid || !isPasswordValid || isLoading)
 
                 Button("Already have an account? Log in") {
                     showingRegister = false
@@ -55,7 +74,7 @@ struct RegisterView: View {
         defer { isLoading = false }
         do {
             _ = try await session.register(
-                username: username,
+                username: trimmedUsername,
                 password: password,
                 email: email.isEmpty ? nil : email,
                 displayName: displayName.isEmpty ? nil : displayName

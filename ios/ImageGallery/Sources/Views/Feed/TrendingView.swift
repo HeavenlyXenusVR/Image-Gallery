@@ -51,12 +51,19 @@ struct TrendingView: View {
     }
 
     private func load() async {
+        let requestedDays = days
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
         do {
-            items = try await GalleryAPIClient.shared.trendingMedia(days: days)
+            let fetched = try await GalleryAPIClient.shared.trendingMedia(days: requestedDays)
+            // Discard a response for a window the user has since changed away
+            // from — rapid segment taps could otherwise let an older request
+            // land after a newer one and show the wrong window's results.
+            guard requestedDays == days else { return }
+            items = fetched
         } catch {
+            guard requestedDays == days else { return }
             errorMessage = error.localizedDescription
         }
     }

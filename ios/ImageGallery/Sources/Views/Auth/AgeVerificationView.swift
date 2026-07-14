@@ -7,7 +7,12 @@ struct AgeVerificationView: View {
     @EnvironmentObject private var session: SessionStore
     @Environment(\.dismiss) private var dismiss
 
-    @State private var birthdate = Date(timeIntervalSince1970: 0)
+    /// Nobody can pick a birthdate more recent than this — the DatePicker's
+    /// own range enforces the 18+ requirement instead of relying solely on
+    /// the backend to reject an underage date after a round trip.
+    private static let latestEligibleBirthdate = Calendar.current.date(byAdding: .year, value: -18, to: Date()) ?? Date()
+
+    @State private var birthdate = AgeVerificationView.latestEligibleBirthdate
     @State private var confirmOver18 = false
     @State private var isLoading = false
     @State private var errorMessage: String?
@@ -16,7 +21,12 @@ struct AgeVerificationView: View {
         NavigationStack {
             Form {
                 Section {
-                    DatePicker("Birthdate", selection: $birthdate, displayedComponents: .date)
+                    DatePicker(
+                        "Birthdate",
+                        selection: $birthdate,
+                        in: ...Self.latestEligibleBirthdate,
+                        displayedComponents: .date
+                    )
                     Toggle("I am 18 years of age or older", isOn: $confirmOver18)
                 }
 
@@ -36,7 +46,7 @@ struct AgeVerificationView: View {
                             Text("Verify Age").frame(maxWidth: .infinity)
                         }
                     }
-                    .disabled(!confirmOver18 || isLoading)
+                    .disabled(!confirmOver18 || isLoading || birthdate > Self.latestEligibleBirthdate)
                 }
             }
             .navigationTitle("Age Verification")
