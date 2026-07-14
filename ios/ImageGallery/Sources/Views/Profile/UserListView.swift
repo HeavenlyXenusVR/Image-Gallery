@@ -20,36 +20,49 @@ struct UserListView: View {
 
     @State private var users: [GalleryUser] = []
     @State private var isLoading = true
+    @State private var errorMessage: String?
 
     var body: some View {
         List {
+            if let errorMessage {
+                Text(errorMessage).foregroundStyle(.red)
+            }
             ForEach(users) { user in
                 NavigationLink(destination: ProfileView(username: user.username)) {
-                    VStack(alignment: .leading) {
-                        Text(user.displayName ?? user.username).bold()
-                        Text("@\(user.username)").font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        AvatarView(urlString: user.avatarUrl, fallbackInitial: String((user.displayName ?? user.username).prefix(1)), size: 40)
+                        VStack(alignment: .leading) {
+                            Text(user.displayName ?? user.username).bold()
+                            Text("@\(user.username)").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
             }
-            if users.isEmpty && !isLoading {
+            if users.isEmpty && !isLoading && errorMessage == nil {
                 Text(kind == .followers ? "No followers yet" : "Not following anyone yet").foregroundStyle(.secondary)
             }
         }
         .navigationTitle(kind.title)
         .overlay {
-            if isLoading { ProgressView() }
+            if isLoading && users.isEmpty { ProgressView() }
         }
+        .refreshable { await load() }
         .task { await load() }
     }
 
     private func load() async {
         isLoading = true
         defer { isLoading = false }
-        switch kind {
-        case .followers:
-            users = (try? await GalleryAPIClient.shared.followers(userId: userId)) ?? []
-        case .following:
-            users = (try? await GalleryAPIClient.shared.following(userId: userId)) ?? []
+        do {
+            switch kind {
+            case .followers:
+                users = try await GalleryAPIClient.shared.followers(userId: userId)
+            case .following:
+                users = try await GalleryAPIClient.shared.following(userId: userId)
+            }
+            errorMessage = nil
+        } catch {
+            errorMessage = "Couldn't load \(kind.title.lowercased()): \(error.localizedDescription)"
         }
     }
 }

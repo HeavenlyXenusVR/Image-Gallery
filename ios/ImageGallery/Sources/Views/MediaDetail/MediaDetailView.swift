@@ -35,6 +35,9 @@ struct MediaDetailView: View {
                         statLabel(systemImage: "eye", value: media.views)
                         statLabel(systemImage: "arrow.down.circle", value: media.downloads)
                         statLabel(systemImage: "bubble.left", value: media.commentCount)
+                        if let fileSize = media.fileSize {
+                            Label(ByteCountFormatter.string(fromByteCount: Int64(fileSize), countStyle: .file), systemImage: "doc")
+                        }
                     }
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -120,6 +123,7 @@ struct MediaDetailView: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
+            .accessibilityLabel("More options")
         }
         .buttonStyle(.plain)
     }

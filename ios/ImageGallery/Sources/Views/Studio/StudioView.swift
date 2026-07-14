@@ -2,6 +2,7 @@ import SwiftUI
 
 struct StudioView: View {
     @StateObject private var viewModel = StudioViewModel()
+    @State private var showingBulkDeleteConfirm = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,6 +36,18 @@ struct StudioView: View {
         }
         .refreshable { await viewModel.load() }
         .task { await viewModel.load() }
+        .confirmationDialog(
+            "Delete \(viewModel.selectedIds.count) item\(viewModel.selectedIds.count == 1 ? "" : "s")?",
+            isPresented: $showingBulkDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                Task { await viewModel.bulkDelete() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You can restore deleted items later from this screen.")
+        }
     }
 
     private var bulkActionBar: some View {
@@ -48,11 +61,14 @@ struct StudioView: View {
             } label: {
                 Label("Visibility", systemImage: "eye")
             }
+            .accessibilityLabel("Set visibility for selected items")
             Button(role: .destructive) {
-                Task { await viewModel.bulkDelete() }
+                Haptics.warning()
+                showingBulkDeleteConfirm = true
             } label: {
                 Label("Delete", systemImage: "trash")
             }
+            .accessibilityLabel("Delete selected items")
         }
         .padding(.horizontal)
         .padding(.vertical, 8)

@@ -33,8 +33,10 @@ final class StudioViewModel: ObservableObject {
             _ = try await api.bulkUpdateVisibility(ids: Array(selectedIds), visibility: visibility)
             await load()
             selectedIds.removeAll()
+            Haptics.success()
         } catch {
             errorMessage = error.localizedDescription
+            Haptics.error()
         }
     }
 
@@ -46,8 +48,10 @@ final class StudioViewModel: ObservableObject {
             _ = try await api.bulkDeleteMedia(ids: Array(selectedIds))
             await load()
             selectedIds.removeAll()
+            Haptics.success()
         } catch {
             errorMessage = error.localizedDescription
+            Haptics.error()
         }
     }
 
@@ -84,8 +88,10 @@ final class StudioViewModel: ObservableObject {
         do {
             try await api.deleteMedia(id: item.id)
             await load()
+            Haptics.success()
         } catch {
             errorMessage = error.localizedDescription
+            Haptics.error()
         }
     }
 
@@ -93,8 +99,10 @@ final class StudioViewModel: ObservableObject {
         do {
             let restored = try await api.restoreMedia(id: item.id)
             replace(restored)
+            Haptics.success()
         } catch {
             errorMessage = error.localizedDescription
+            Haptics.error()
         }
     }
 
