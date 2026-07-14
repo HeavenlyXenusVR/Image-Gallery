@@ -36,7 +36,7 @@ struct MediaCard: View {
                 }
             }
 
-            Text(item.title?.isEmpty == false ? item.title! : "Untitled")
+            Text(item.title?.nilIfEmpty ?? "Untitled")
                 .font(.caption)
                 .lineLimit(1)
         }

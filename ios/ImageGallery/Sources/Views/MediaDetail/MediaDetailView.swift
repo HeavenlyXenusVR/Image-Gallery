@@ -17,7 +17,7 @@ struct MediaDetailView: View {
                 if let media = viewModel.media {
                     mediaViewer(media)
 
-                    Text(media.title?.isEmpty == false ? media.title! : "Untitled")
+                    Text(media.title?.nilIfEmpty ?? "Untitled")
                         .font(.title2).bold()
 
                     if let username = media.username {

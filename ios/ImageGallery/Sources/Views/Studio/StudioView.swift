@@ -124,7 +124,7 @@ struct StudioItemRow: View {
         HStack {
             thumbnail
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title?.isEmpty == false ? item.title! : "Untitled").bold()
+                Text(item.title?.nilIfEmpty ?? "Untitled").bold()
                 Text(item.visibility ?? "public").font(.caption).foregroundStyle(.secondary)
                 if let publishAt = item.publishAt {
                     Text("Scheduled for \(publishAt)").font(.caption2).foregroundStyle(.orange)
