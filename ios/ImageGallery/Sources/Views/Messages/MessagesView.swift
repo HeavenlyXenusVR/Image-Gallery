@@ -105,13 +105,18 @@ private struct DirectThreadRow: View {
                 }
             }
             Spacer()
-            if let unread = thread.unreadCount, unread > 0 {
-                Text("\(unread)")
-                    .font(.caption2).bold()
-                    .padding(6)
-                    .background(Color.accentColor)
-                    .foregroundStyle(.white)
-                    .clipShape(Circle())
+            VStack(alignment: .trailing, spacing: 4) {
+                if thread.lastMessageAt != nil {
+                    Text(DateFormatting.relative(thread.lastMessageAt)).font(.caption2).foregroundStyle(.secondary)
+                }
+                if let unread = thread.unreadCount, unread > 0 {
+                    Text("\(unread)")
+                        .font(.caption2).bold()
+                        .padding(6)
+                        .background(Color.accentColor)
+                        .foregroundStyle(.white)
+                        .clipShape(Circle())
+                }
             }
         }
     }
@@ -131,6 +136,10 @@ private struct GroupThreadRow: View {
                 if let lastMessage = thread.lastMessage {
                     Text(lastMessage).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
+            }
+            Spacer()
+            if thread.lastMessageAt != nil {
+                Text(DateFormatting.relative(thread.lastMessageAt)).font(.caption2).foregroundStyle(.secondary)
             }
         }
     }

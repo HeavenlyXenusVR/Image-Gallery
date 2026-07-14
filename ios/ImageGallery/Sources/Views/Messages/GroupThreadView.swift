@@ -3,6 +3,7 @@ import SwiftUI
 struct GroupThreadView: View {
     @StateObject private var viewModel: GroupThreadViewModel
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var unreadCounts: UnreadCountsService
     @State private var draft = ""
     let title: String
 
@@ -20,7 +21,8 @@ struct GroupThreadView: View {
                             MessageBubble(
                                 body_: message.body,
                                 senderLabel: message.displayName ?? message.username,
-                                isMine: message.senderId == session.currentUser?.id
+                                isMine: message.senderId == session.currentUser?.id,
+                                createdAt: message.createdAt
                             )
                             .id(message.id)
                         }
@@ -47,7 +49,18 @@ struct GroupThreadView: View {
         }
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
-        .task { await viewModel.load() }
+        .task {
+            await viewModel.load()
+            await unreadCounts.refresh()
+        }
+        // See DirectMessageThreadView — same "no push infra yet" freshness poll.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                if Task.isCancelled { break }
+                await viewModel.load()
+            }
+        }
         .overlay {
             if viewModel.isLoading && viewModel.messages.isEmpty {
                 ProgressView()

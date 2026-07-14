@@ -2,6 +2,7 @@ import SwiftUI
 
 struct NotificationsView: View {
     @StateObject private var viewModel = NotificationsViewModel()
+    @EnvironmentObject private var unreadCounts: UnreadCountsService
 
     var body: some View {
         List {
@@ -13,14 +14,17 @@ struct NotificationsView: View {
                         }
                         VStack(alignment: .leading, spacing: 2) {
                             Text(viewModel.text(for: item))
-                            if let createdAt = item.createdAt {
-                                Text(createdAt).font(.caption2).foregroundStyle(.secondary)
+                            if item.createdAt != nil {
+                                Text(DateFormatting.relative(item.createdAt)).font(.caption2).foregroundStyle(.secondary)
                             }
                         }
                     }
                 }
                 .onTapGesture {
-                    Task { await viewModel.markRead(item) }
+                    Task {
+                        await viewModel.markRead(item)
+                        await unreadCounts.refresh()
+                    }
                 }
             }
         }
@@ -28,7 +32,12 @@ struct NotificationsView: View {
         .toolbar {
             if viewModel.unreadCount > 0 {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Mark all read") { Task { await viewModel.markAllRead() } }
+                    Button("Mark all read") {
+                        Task {
+                            await viewModel.markAllRead()
+                            await unreadCounts.refresh()
+                        }
+                    }
                 }
             }
         }
@@ -40,7 +49,10 @@ struct NotificationsView: View {
             }
         }
         .refreshable { await viewModel.load() }
-        .task { await viewModel.load() }
+        .task {
+            await viewModel.load()
+            await unreadCounts.refresh()
+        }
     }
 
     @ViewBuilder

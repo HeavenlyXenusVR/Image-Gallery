@@ -4,23 +4,33 @@ struct MessageBubble: View {
     let body_: String
     let senderLabel: String?
     let isMine: Bool
+    var createdAt: String? = nil
 
     var body: some View {
-        HStack {
-            if isMine { Spacer(minLength: 40) }
-            VStack(alignment: .leading, spacing: 2) {
-                if let senderLabel, !isMine {
-                    Text(senderLabel).font(.caption2).foregroundStyle(.secondary)
+        VStack(alignment: isMine ? .trailing : .leading, spacing: 2) {
+            HStack {
+                if isMine { Spacer(minLength: 40) }
+                VStack(alignment: .leading, spacing: 2) {
+                    if let senderLabel, !isMine {
+                        Text(senderLabel).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Text(body_)
                 }
-                Text(body_)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(isMine ? Color.accentColor.opacity(0.85) : Color.secondary.opacity(0.15))
+                .foregroundStyle(isMine ? .white : .primary)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                if !isMine { Spacer(minLength: 40) }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(isMine ? Color.accentColor.opacity(0.85) : Color.secondary.opacity(0.15))
-            .foregroundStyle(isMine ? .white : .primary)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            if !isMine { Spacer(minLength: 40) }
+            if let createdAt, !createdAt.isEmpty {
+                Text(DateFormatting.chatTimestamp(createdAt))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, isMine ? 0 : 4)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: isMine ? .trailing : .leading)
     }
 }
 

@@ -8,6 +8,7 @@ import SwiftUI
 struct RootTabView: View {
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var quickActionRouter: QuickActionRouter
+    @EnvironmentObject private var unreadCounts: UnreadCountsService
     @State private var selection = 0
 
     var body: some View {
@@ -22,6 +23,7 @@ struct RootTabView: View {
                 MessagesView()
             }
             .tabItem { Label("Messages", systemImage: "message") }
+            .badge(unreadCounts.messages)
             .tag(1)
 
             NavigationStack {
@@ -40,6 +42,7 @@ struct RootTabView: View {
                 NotificationsView()
             }
             .tabItem { Label("Alerts", systemImage: "bell") }
+            .badge(unreadCounts.notifications)
             .tag(4)
 
             NavigationStack {

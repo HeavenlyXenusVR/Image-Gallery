@@ -3,6 +3,7 @@ import SwiftUI
 struct DirectMessageThreadView: View {
     @StateObject private var viewModel: DirectMessageThreadViewModel
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var unreadCounts: UnreadCountsService
     @State private var draft = ""
     let displayName: String
 
@@ -17,8 +18,13 @@ struct DirectMessageThreadView: View {
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(viewModel.messages) { message in
-                            MessageBubble(body_: message.body, senderLabel: nil, isMine: message.senderId == session.currentUser?.id)
-                                .id(message.id)
+                            MessageBubble(
+                                body_: message.body,
+                                senderLabel: nil,
+                                isMine: message.senderId == session.currentUser?.id,
+                                createdAt: message.createdAt
+                            )
+                            .id(message.id)
                         }
                     }
                     .padding()
@@ -43,7 +49,21 @@ struct DirectMessageThreadView: View {
         }
         .navigationTitle(displayName)
         .navigationBarTitleDisplayMode(.inline)
-        .task { await viewModel.load() }
+        .task {
+            await viewModel.load()
+            await unreadCounts.refresh()
+        }
+        // Lightweight "is this still fresh" poll while the conversation is
+        // open — this app has no push infrastructure, so incoming messages
+        // otherwise wouldn't appear until leaving and reopening the thread.
+        // SwiftUI cancels `.task` automatically when the view disappears.
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                if Task.isCancelled { break }
+                await viewModel.load()
+            }
+        }
         .overlay {
             if viewModel.isLoading && viewModel.messages.isEmpty {
                 ProgressView()

@@ -6,6 +6,7 @@ struct ImageGalleryApp: App {
     @StateObject private var session = SessionStore()
     @StateObject private var biometricLock = BiometricLockService()
     @StateObject private var quickActionRouter = QuickActionRouter.shared
+    @StateObject private var unreadCounts = UnreadCountsService()
 
     var body: some Scene {
         WindowGroup {
@@ -13,6 +14,7 @@ struct ImageGalleryApp: App {
                 .environmentObject(session)
                 .environmentObject(biometricLock)
                 .environmentObject(quickActionRouter)
+                .environmentObject(unreadCounts)
         }
     }
 }
@@ -22,6 +24,7 @@ struct ImageGalleryApp: App {
 struct RootView: View {
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var biometricLock: BiometricLockService
+    @EnvironmentObject private var unreadCounts: UnreadCountsService
     @AppStorage("theme_mode") private var themeMode = "system"
     @Environment(\.scenePhase) private var scenePhase
 
@@ -43,14 +46,17 @@ struct RootView: View {
             BadgeService.requestAuthorization()
             await session.bootstrap()
             await biometricLock.attemptUnlock()
-            await refreshBadge()
+            updatePolling()
+        }
+        .onChange(of: session.currentUser?.id) { _ in
+            updatePolling()
         }
         .onChange(of: scenePhase) { newPhase in
             if newPhase == .active {
                 Task {
                     await session.refreshCurrentUser()
                     await biometricLock.attemptUnlock()
-                    await refreshBadge()
+                    await unreadCounts.refresh()
                 }
             } else if newPhase == .background {
                 biometricLock.lock()
@@ -66,13 +72,12 @@ struct RootView: View {
         }
     }
 
-    private func refreshBadge() async {
-        guard session.currentUser != nil else {
-            BadgeService.setBadge(0)
-            return
-        }
-        if let count = try? await GalleryAPIClient.shared.unreadNotificationCount() {
-            BadgeService.setBadge(count)
+    private func updatePolling() {
+        if session.currentUser != nil {
+            unreadCounts.startPolling()
+        } else {
+            unreadCounts.stopPolling()
+            unreadCounts.reset()
         }
     }
 }
