@@ -51,7 +51,12 @@ struct CommentsSection: View {
     @ViewBuilder
     private func commentRow(_ comment: Comment) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(comment.displayName ?? comment.username ?? "User").font(.subheadline).bold()
+            HStack(spacing: 6) {
+                Text(comment.displayName ?? comment.username ?? "User").font(.subheadline).bold()
+                if comment.createdAt != nil {
+                    Text(DateFormatting.relative(comment.createdAt)).font(.caption2).foregroundStyle(.secondary)
+                }
+            }
             Text(comment.body)
             HStack(spacing: 12) {
                 if session.currentUser != nil, comment.parentCommentId == nil {

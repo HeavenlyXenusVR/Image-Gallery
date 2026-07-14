@@ -6,6 +6,9 @@ struct NotificationsView: View {
 
     var body: some View {
         List {
+            if let errorMessage = viewModel.errorMessage {
+                Text(errorMessage).foregroundStyle(.red)
+            }
             ForEach(viewModel.items) { item in
                 NavigationLink(destination: destination(for: item)) {
                     HStack(alignment: .top, spacing: 10) {

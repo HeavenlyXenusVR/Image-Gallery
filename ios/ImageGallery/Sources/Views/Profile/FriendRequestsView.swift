@@ -50,9 +50,12 @@ struct FriendRequestsView: View {
         HStack {
             if let user = request.user {
                 NavigationLink(destination: ProfileView(username: user.username)) {
-                    VStack(alignment: .leading) {
-                        Text(user.displayName ?? user.username).bold()
-                        Text("@\(user.username)").font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        AvatarView(urlString: user.avatarUrl, fallbackInitial: String((user.displayName ?? user.username).prefix(1)), size: 40)
+                        VStack(alignment: .leading) {
+                            Text(user.displayName ?? user.username).bold()
+                            Text("@\(user.username)").font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                 }
             }

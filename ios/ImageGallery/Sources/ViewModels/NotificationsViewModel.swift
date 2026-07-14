@@ -26,7 +26,12 @@ final class NotificationsViewModel: ObservableObject {
 
     func markRead(_ item: NotificationItem) async {
         guard item.readAt == nil else { return }
-        try? await api.markNotificationRead(id: item.id)
+        do {
+            try await api.markNotificationRead(id: item.id)
+        } catch {
+            errorMessage = "Couldn't mark as read: \(error.localizedDescription)"
+            return
+        }
         if let index = items.firstIndex(where: { $0.id == item.id }) {
             items[index].readAt = ISO8601DateFormatter().string(from: Date())
         }
@@ -35,7 +40,12 @@ final class NotificationsViewModel: ObservableObject {
     }
 
     func markAllRead() async {
-        try? await api.markAllNotificationsRead()
+        do {
+            try await api.markAllNotificationsRead()
+        } catch {
+            errorMessage = "Couldn't mark all as read: \(error.localizedDescription)"
+            return
+        }
         await load()
     }
 
