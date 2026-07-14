@@ -26,7 +26,7 @@ struct TwoFactorView: View {
                     .keyboardType(.numberPad)
                 Text(remainingSeconds > 0 ? "Expires in \(countdownText)" : "This sign-in attempt has expired — cancel and log in again.")
                     .font(.footnote)
-                    .foregroundStyle(remainingSeconds > 0 ? .secondary : .red)
+                    .foregroundStyle(remainingSeconds > 0 ? Color.secondary : Color.red)
             }
 
             if let errorMessage {
