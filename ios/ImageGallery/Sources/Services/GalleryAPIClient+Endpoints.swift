@@ -164,7 +164,7 @@ extension GalleryAPIClient {
         var publishAt: String?
     }
 
-    func uploadMedia(data: Data, fileName: String, mimeType: String, fields: UploadFields) async throws -> MediaItem {
+    private func uploadForm(_ fields: UploadFields) -> [String: String] {
         var form: [String: String] = [
             "title": fields.title,
             "description": fields.description,
@@ -178,8 +178,22 @@ extension GalleryAPIClient {
         ]
         if let categoryId = fields.categoryId { form["category_id"] = String(categoryId) }
         if let publishAt = fields.publishAt, !publishAt.isEmpty { form["publish_at"] = publishAt }
-        let file = MultipartFile(fieldName: "file", fileName: fileName, mimeType: mimeType, data: data)
-        let response: MediaResponse = try await upload("/api/media", fields: form, file: file)
+        return form
+    }
+
+    func uploadMedia(data: Data, fileName: String, mimeType: String, fields: UploadFields) async throws -> MediaItem {
+        let file = MultipartFile(fieldName: "file", fileName: fileName, mimeType: mimeType, source: .data(data))
+        let response: MediaResponse = try await upload("/api/media", fields: uploadForm(fields), file: file)
+        return response.media
+    }
+
+    /// Large-file variant — `fileURL` is streamed straight from disk into the
+    /// multipart request body instead of being loaded into memory (see
+    /// `GalleryAPIClient.upload`'s `.fileURL` case), so picking a multi-GB
+    /// video for upload doesn't risk the app being killed for memory use.
+    func uploadMedia(fileURL: URL, fileName: String, mimeType: String, fields: UploadFields) async throws -> MediaItem {
+        let file = MultipartFile(fieldName: "file", fileName: fileName, mimeType: mimeType, source: .fileURL(fileURL))
+        let response: MediaResponse = try await upload("/api/media", fields: uploadForm(fields), file: file)
         return response.media
     }
 
@@ -288,7 +302,7 @@ extension GalleryAPIClient {
     }
 
     func uploadAvatar(data: Data, fileName: String, mimeType: String) async throws -> GalleryUser {
-        let file = MultipartFile(fieldName: "file", fileName: fileName, mimeType: mimeType, data: data)
+        let file = MultipartFile(fieldName: "file", fileName: fileName, mimeType: mimeType, source: .data(data))
         let response: UserResponse = try await upload("/api/me/avatar", fields: [:], file: file)
         return response.user
     }

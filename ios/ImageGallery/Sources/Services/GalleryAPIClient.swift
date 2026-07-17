@@ -129,11 +129,38 @@ final class GalleryAPIClient {
 
     // MARK: Multipart uploads (media upload, analyze, avatar)
 
+    enum MultipartFileSource {
+        case data(Data)
+        /// A file already on disk (e.g. a picked video copied there without
+        /// ever loading it into memory) — streamed straight into the request
+        /// body file instead of being read into a `Data` all at once, so a
+        /// multi-GB upload doesn't hold the whole thing in RAM.
+        case fileURL(URL)
+    }
+
     struct MultipartFile {
         var fieldName: String
         var fileName: String
         var mimeType: String
-        var data: Data
+        var source: MultipartFileSource
+    }
+
+    private func multipartFieldsData(_ fields: [String: String], boundary: String) -> Data {
+        var data = Data()
+        for (key, value) in fields {
+            data.append("--\(boundary)\r\n".data(using: .utf8)!)
+            data.append("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n".data(using: .utf8)!)
+            data.append("\(value)\r\n".data(using: .utf8)!)
+        }
+        return data
+    }
+
+    private func multipartFileHeaderData(_ file: MultipartFile, boundary: String) -> Data {
+        var data = Data()
+        data.append("--\(boundary)\r\n".data(using: .utf8)!)
+        data.append("Content-Disposition: form-data; name=\"\(file.fieldName)\"; filename=\"\(file.fileName)\"\r\n".data(using: .utf8)!)
+        data.append("Content-Type: \(file.mimeType)\r\n\r\n".data(using: .utf8)!)
+        return data
     }
 
     @discardableResult
@@ -142,22 +169,47 @@ final class GalleryAPIClient {
         let boundary = "ImageGallery-\(UUID().uuidString)"
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
 
-        var body = Data()
-        for (key, value) in fields {
-            body.append("--\(boundary)\r\n".data(using: .utf8)!)
-            body.append("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n".data(using: .utf8)!)
-            body.append("\(value)\r\n".data(using: .utf8)!)
-        }
-        body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"\(file.fieldName)\"; filename=\"\(file.fileName)\"\r\n".data(using: .utf8)!)
-        body.append("Content-Type: \(file.mimeType)\r\n\r\n".data(using: .utf8)!)
-        body.append(file.data)
-        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        let data: Data
+        let response: URLResponse
 
-        // `httpBody` is intentionally left unset here — `session.upload(for:from:)`
-        // takes the body as its own `from:` argument, so setting both would just
-        // duplicate the payload in memory for no benefit.
-        let (data, response) = try await session.upload(for: request, from: body)
+        switch file.source {
+        case .data(let fileData):
+            var body = multipartFieldsData(fields, boundary: boundary)
+            body.append(multipartFileHeaderData(file, boundary: boundary))
+            body.append(fileData)
+            body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+            // `httpBody` is intentionally left unset here — `session.upload(for:from:)`
+            // takes the body as its own `from:` argument, so setting both would
+            // just duplicate the payload in memory for no benefit.
+            (data, response) = try await session.upload(for: request, from: body)
+
+        case .fileURL(let fileURL):
+            // Compose the multipart envelope in a temp file on disk — reading
+            // the picked file in small chunks instead of loading it whole —
+            // so a multi-GB upload is never fully buffered in RAM either here
+            // or by URLSession while it streams the request body over the
+            // network.
+            let bodyURL = FileManager.default.temporaryDirectory.appendingPathComponent("upload-body-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: bodyURL) }
+            do {
+                FileManager.default.createFile(atPath: bodyURL.path, contents: nil)
+                let writer = try FileHandle(forWritingTo: bodyURL)
+                var head = multipartFieldsData(fields, boundary: boundary)
+                head.append(multipartFileHeaderData(file, boundary: boundary))
+                try writer.write(contentsOf: head)
+                let reader = try FileHandle(forReadingFrom: fileURL)
+                while let chunk = try reader.read(upToCount: 4 * 1024 * 1024), !chunk.isEmpty {
+                    try writer.write(contentsOf: chunk)
+                }
+                try reader.close()
+                try writer.write(contentsOf: "\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+                try writer.close()
+            } catch {
+                throw GalleryAPIError.http(status: 0, message: "Could not prepare the upload: \(error.localizedDescription)")
+            }
+            (data, response) = try await session.upload(for: request, fromFile: bodyURL)
+        }
+
         try validate(response, data: data)
         do {
             return try decoder.decode(T.self, from: data)

@@ -25,7 +25,7 @@ struct UploadView: View {
         Form {
             Section {
                 PhotosPicker(selection: $viewModel.pickerItem, matching: .any(of: [.images, .videos])) {
-                    if viewModel.pickedData != nil {
+                    if viewModel.pickedData != nil || viewModel.pickedFileURL != nil {
                         Label("Change file", systemImage: "photo.on.rectangle")
                     } else {
                         Label("Choose photo or video", systemImage: "plus.square.on.square")
@@ -40,7 +40,7 @@ struct UploadView: View {
                         .resizable()
                         .scaledToFit()
                         .frame(maxHeight: 200)
-                } else if viewModel.pickedData != nil, viewModel.isVideo {
+                } else if viewModel.pickedFileURL != nil, viewModel.isVideo {
                     Label("Video selected", systemImage: "video.fill")
                 }
             }
@@ -108,7 +108,7 @@ struct UploadView: View {
                         Text("Upload").frame(maxWidth: .infinity)
                     }
                 }
-                .disabled(viewModel.pickedData == nil || viewModel.title.isEmpty || viewModel.isUploading)
+                .disabled((viewModel.pickedData == nil && viewModel.pickedFileURL == nil) || viewModel.title.isEmpty || viewModel.isUploading)
             }
         }
         .navigationTitle("Upload")
