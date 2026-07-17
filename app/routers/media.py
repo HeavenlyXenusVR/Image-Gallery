@@ -13,7 +13,15 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 import app.main as main
-from ..ai_metadata import analyze_media_bytes, is_low_signal_filename, _heuristic_analysis, _image_fingerprint
+from ..ai_metadata import (
+    VISUAL_DHASH_MAX_DISTANCE,
+    VISUAL_PHASH_MAX_DISTANCE,
+    analyze_media_bytes,
+    is_low_signal_filename,
+    _heuristic_analysis,
+    _hex_hamming_distance,
+    _image_fingerprint,
+)
 from ..database import MAX_MEDIA_SUBCATEGORIES, normalize_subcategory_names
 from ..discord_webhook import send_discord_webhook
 from ..schemas import (
@@ -39,6 +47,7 @@ from ._shared import (
     _rate_limit,
     _read_validated_upload,
     _safe_extension,
+    _thumb_url,
     _user_id,
     _auth_optional,
     _viewer_can_open_adult,
@@ -302,6 +311,60 @@ def _media_training_corrected(item: dict[str, Any] | VisionTrainingRequest | Non
         "tags": payload.get("tags") or [],
         "is_adult": bool(payload.get("is_adult")),
     }
+
+
+def _image_fingerprint_for_upload(uploaded: dict[str, Any]) -> dict[str, Any] | None:
+    """Perceptual hashes for an in-memory image upload, or None for videos and
+    large files streamed straight to disk (fingerprinting needs the bytes)."""
+    if uploaded.get("media_kind") != "image" or uploaded.get("content") is None:
+        return None
+    return _image_fingerprint(
+        uploaded["content"], uploaded["original_filename"], uploaded["mime_type"], uploaded["media_kind"]
+    )
+
+
+async def _find_possible_duplicates(
+    request: Request, user_id: int, fingerprint: dict[str, Any] | None, *, limit: int = 3
+) -> list[dict[str, Any]]:
+    """Warns about likely re-uploads of the uploader's own prior images — an advisory
+    check only, so it never blocks the upload itself. Scoped to the uploader's own
+    media rather than the whole gallery to keep the comparison pool small and the
+    result meaningful (catching accidental re-uploads, not flagging every repost)."""
+    if not fingerprint:
+        return []
+    current_phash = str(fingerprint.get("image_phash") or "")
+    current_dhash = str(fingerprint.get("image_dhash") or "")
+    if not current_phash and not current_dhash:
+        return []
+    try:
+        candidates = await main.db.list_visual_hash_candidates(user_id)
+    except Exception:
+        main.logger.warning("Could not look up visual duplicate candidates for user %s", user_id, exc_info=True)
+        return []
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for candidate in candidates:
+        pdist = _hex_hamming_distance(current_phash, candidate.get("image_phash"))
+        ddist = _hex_hamming_distance(current_dhash, candidate.get("image_dhash"))
+        if pdist is not None and pdist > VISUAL_PHASH_MAX_DISTANCE:
+            pdist = None
+        if ddist is not None and ddist > VISUAL_DHASH_MAX_DISTANCE:
+            ddist = None
+        if pdist is None and ddist is None:
+            continue
+        best = min(d for d in (pdist, ddist) if d is not None)
+        scored.append((best, candidate))
+    scored.sort(key=lambda pair: pair[0])
+    results = []
+    for distance, candidate in scored[:limit]:
+        results.append(
+            {
+                "id": int(candidate["id"]),
+                "title": candidate.get("title"),
+                "thumb_url": _thumb_url(request, int(candidate["id"])),
+                "distance": distance,
+            }
+        )
+    return results
 
 
 async def _background_autofill_payload(item: dict[str, Any], analysis: Any) -> dict[str, Any] | None:
@@ -825,6 +888,8 @@ async def upload_media(
     await _rate_limit(f"upload:{auth['id']}", limit=main.settings.upload_rate_limit_per_hour, window_seconds=3600)
     uploaded = await _read_validated_upload(file, main.settings.max_upload_bytes)
     try:
+        fingerprint = _image_fingerprint_for_upload(uploaded)
+        possible_duplicates = await _find_possible_duplicates(request, int(auth["id"]), fingerprint)
         training_examples = await _ai_training_examples_for(int(auth["id"]))
         analysis = await _analyze_uploaded_media(
             uploaded,
@@ -894,6 +959,8 @@ async def upload_media(
                 "downloads_enabled": downloads_enabled,
                 "pinned": pinned,
                 "publish_at": publish_at_value,
+                "image_phash": (fingerprint or {}).get("image_phash"),
+                "image_dhash": (fingerprint or {}).get("image_dhash"),
                 **moderation,
             }
         )
@@ -913,7 +980,7 @@ async def upload_media(
     _notify_discord_upload(request, auth, enriched)
     if visibility == "public" and not publish_at_value:
         asyncio.create_task(_notify_matching_saved_searches(int(auth["id"]), item))
-    return {"media": enriched}
+    return {"media": enriched, "possible_duplicates": possible_duplicates}
 
 
 async def _notify_matching_saved_searches(uploader_id: int, item: dict[str, Any]) -> None:
@@ -956,11 +1023,14 @@ async def analyze_media_upload(
             ai_enabled=main.settings.ai_enabled,
             training_examples=training_examples,
         )
+        fingerprint = _image_fingerprint_for_upload(uploaded)
+        possible_duplicates = await _find_possible_duplicates(request, int(auth["id"]), fingerprint)
         return {
             "analysis": analysis.to_dict(),
             "media_kind": uploaded["media_kind"],
             "mime_type": uploaded["mime_type"],
             "original_filename": uploaded["original_filename"],
+            "possible_duplicates": possible_duplicates,
         }
     finally:
         if uploaded.get("path"):

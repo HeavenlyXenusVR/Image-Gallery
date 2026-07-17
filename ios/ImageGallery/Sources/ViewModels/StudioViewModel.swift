@@ -40,6 +40,22 @@ final class StudioViewModel: ObservableObject {
         }
     }
 
+    func bulkAddTag(_ tag: String) async {
+        let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !selectedIds.isEmpty, !trimmed.isEmpty else { return }
+        isBulkWorking = true
+        defer { isBulkWorking = false }
+        do {
+            _ = try await api.bulkAddTag(ids: Array(selectedIds), tag: trimmed)
+            await load()
+            selectedIds.removeAll()
+            Haptics.success()
+        } catch {
+            errorMessage = error.localizedDescription
+            Haptics.error()
+        }
+    }
+
     func bulkDelete() async {
         guard !selectedIds.isEmpty else { return }
         isBulkWorking = true

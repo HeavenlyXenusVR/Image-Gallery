@@ -35,3 +35,7 @@ def test_messages_threads_registered_before_user_id_param() -> None:
 
 def test_media_trending_registered_before_media_id_param() -> None:
     assert _route_index("/api/media/trending", "GET") < _route_index("/api/media/{media_id}", "GET")
+
+
+def test_collections_suggestions_registered_before_collection_id_param() -> None:
+    assert _route_index("/api/collections/suggestions", "GET") < _route_index("/api/collections/{collection_id}", "GET")

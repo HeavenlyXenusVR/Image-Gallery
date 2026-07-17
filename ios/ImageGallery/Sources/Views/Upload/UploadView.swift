@@ -94,6 +94,18 @@ struct UploadView: View {
                 }
             }
 
+            if !viewModel.possibleDuplicates.isEmpty {
+                Section("Similar to posts you already have") {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(viewModel.possibleDuplicates) { match in
+                                duplicateThumbnail(match)
+                            }
+                        }
+                    }
+                }
+            }
+
             Section {
                 Button {
                     Task {
@@ -115,6 +127,32 @@ struct UploadView: View {
         .task { await viewModel.loadCategories() }
         .alert("Upload complete", isPresented: $showingSuccess) {
             Button("OK") { viewModel.reset() }
+        } message: {
+            if !viewModel.possibleDuplicates.isEmpty {
+                Text("Heads up — this looked similar to \(viewModel.possibleDuplicates.count) post\(viewModel.possibleDuplicates.count == 1 ? "" : "s") already in your library.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func duplicateThumbnail(_ match: DuplicateMatch) -> some View {
+        VStack(spacing: 2) {
+            if let urlString = match.thumbUrl, let url = URL(string: urlString) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFill()
+                    default:
+                        Rectangle().fill(.secondary.opacity(0.15))
+                    }
+                }
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            Text(match.title?.nilIfEmpty ?? "Untitled")
+                .font(.caption2)
+                .lineLimit(1)
+                .frame(width: 56)
         }
     }
 }

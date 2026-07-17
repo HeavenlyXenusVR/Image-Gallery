@@ -24,8 +24,8 @@ class MediaMixin:
                           (user_id, category_id, subcategory_id, title, description, tags, media_kind, mime_type, original_filename,
                            storage_path, file_size, media_file_id, content_sha256, visibility, comments_enabled, downloads_enabled, pinned_at,
                            is_adult, adult_marked_by_user, adult_marked_by_ai,
-                           moderation_status, moderation_score, moderation_reason, moderated_at, publish_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE NULL END, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
+                           moderation_status, moderation_score, moderation_reason, moderated_at, publish_at, image_phash, image_dhash)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE NULL END, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s, %s)
                         """,
                         (
                             item["user_id"], item["category_id"], primary_subcategory_id, item["title"], item.get("description"), tags_json,
@@ -43,6 +43,8 @@ class MediaMixin:
                             float(item.get("moderation_score") or 0),
                             item.get("moderation_reason"),
                             item.get("publish_at"),
+                            item.get("image_phash"),
+                            item.get("image_dhash"),
                         ),
                     )
                     media_id = int(cur.lastrowid)
@@ -52,6 +54,26 @@ class MediaMixin:
                     await conn.rollback()
                     raise
                 return await self.get_media(media_id, item["user_id"])
+
+    async def list_visual_hash_candidates(self, user_id: int, *, limit: int = 1500) -> list[dict[str, Any]]:
+        """Recent own media with a perceptual hash on file, newest first — the candidate
+        pool a caller compares a freshly-uploaded image's hash against to warn about
+        likely re-uploads. Hamming distance can't be expressed as SQL, so the actual
+        similarity comparison happens in Python on top of this bounded result set."""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    """
+                    SELECT id, title, image_phash, image_dhash
+                    FROM media_items
+                    WHERE user_id=%s AND deleted_at IS NULL AND media_kind='image'
+                      AND (image_phash IS NOT NULL OR image_dhash IS NOT NULL)
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (user_id, int(limit)),
+                )
+                return list(await cur.fetchall())
 
     @staticmethod
     def _escape_like(value: str) -> str:
@@ -255,6 +277,37 @@ class MediaMixin:
             for tag, count in sorted(counts.items(), key=lambda item: (-item[1], item[0].lower()))[:limit]
         ]
 
+
+    async def user_tag_counts(self, user_id: int, *, min_count: int = 4, limit: int = 8) -> list[dict[str, Any]]:
+        """Tags that repeat often enough across a user's own uploads to be worth a
+        dedicated smart collection — powers the collection-suggestion banner."""
+        async with self.pool.acquire() as conn:
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute(
+                    "SELECT id, tags FROM media_items WHERE user_id=%s AND deleted_at IS NULL AND tags IS NOT NULL ORDER BY created_at DESC LIMIT 1000",
+                    (user_id,),
+                )
+                rows = await cur.fetchall()
+        counts: dict[str, int] = {}
+        sample_media_id: dict[str, int] = {}
+        for row in rows:
+            tags = row.get("tags")
+            if isinstance(tags, str):
+                try:
+                    tags = json.loads(tags)
+                except json.JSONDecodeError:
+                    tags = []
+            for tag in tags or []:
+                normalized = str(tag).strip().lower()[:32]
+                if not normalized:
+                    continue
+                counts[normalized] = counts.get(normalized, 0) + 1
+                sample_media_id.setdefault(normalized, int(row["id"]))
+        return [
+            {"tag": tag, "count": count, "sample_media_id": sample_media_id[tag]}
+            for tag, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+            if count >= min_count
+        ][:limit]
 
     async def get_media(self, media_id: int, viewer_id: int | None = None) -> dict[str, Any] | None:
         async with self.pool.acquire() as conn:

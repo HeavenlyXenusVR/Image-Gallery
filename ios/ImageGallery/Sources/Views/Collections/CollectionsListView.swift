@@ -6,11 +6,47 @@ struct CollectionsListView: View {
     @State private var showMineOnly = false
     @State private var showingNewCollection = false
     @State private var errorMessage: String?
+    @State private var suggestions: [CollectionSuggestion] = []
+    @State private var creatingSuggestionTag: String?
 
     var body: some View {
         List {
             if let errorMessage {
                 Text(errorMessage).foregroundStyle(.red)
+            }
+            if showMineOnly && !suggestions.isEmpty {
+                Section("Suggested collections") {
+                    ForEach(suggestions) { suggestion in
+                        Button {
+                            Task { await createSuggestedCollection(suggestion) }
+                        } label: {
+                            HStack {
+                                if let urlString = suggestion.thumbUrl, let url = URL(string: urlString) {
+                                    AsyncImage(url: url) { phase in
+                                        if case .success(let image) = phase {
+                                            image.resizable().scaledToFill()
+                                        } else {
+                                            Color.secondary.opacity(0.2)
+                                        }
+                                    }
+                                    .frame(width: 36, height: 36)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                }
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(suggestion.tag.capitalized)
+                                    Text("\(suggestion.count) posts").font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if creatingSuggestionTag == suggestion.tag {
+                                    ProgressView()
+                                } else {
+                                    Image(systemName: "plus.circle")
+                                }
+                            }
+                        }
+                        .disabled(creatingSuggestionTag != nil)
+                    }
+                }
             }
             ForEach(collections) { collection in
                 CollectionRow(collection: collection)
@@ -57,6 +93,26 @@ struct CollectionsListView: View {
             errorMessage = nil
         } catch {
             errorMessage = "Couldn't load collections: \(error.localizedDescription)"
+        }
+        if showMineOnly {
+            suggestions = (try? await GalleryAPIClient.shared.collectionSuggestions()) ?? []
+        } else {
+            suggestions = []
+        }
+    }
+
+    private func createSuggestedCollection(_ suggestion: CollectionSuggestion) async {
+        creatingSuggestionTag = suggestion.tag
+        defer { creatingSuggestionTag = nil }
+        do {
+            let filter = DiscoverFilterPayload(mediaKind: nil, categoryId: nil, subcategoryId: nil, q: suggestion.tag, uploader: nil, minSize: nil, maxSize: nil, dateFrom: nil, dateTo: nil, adult: nil, sort: nil)
+            _ = try await GalleryAPIClient.shared.createCollection(name: suggestion.tag.capitalized, description: nil, isPublic: true, isSmart: true, filter: filter)
+            suggestions.removeAll { $0.tag == suggestion.tag }
+            await load()
+            Haptics.success()
+        } catch {
+            errorMessage = "Couldn't create collection: \(error.localizedDescription)"
+            Haptics.error()
         }
     }
 }

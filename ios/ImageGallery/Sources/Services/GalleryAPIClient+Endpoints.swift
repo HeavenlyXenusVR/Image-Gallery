@@ -3,6 +3,8 @@ import Foundation
 // Response envelopes matching the backend's actual JSON wrapper shapes.
 struct MediaListResponse: Decodable { var media: [MediaItem] }
 struct MediaResponse: Decodable { var media: MediaItem }
+struct DuplicateMatch: Decodable, Identifiable { var id: Int; var title: String?; var thumbUrl: String?; var distance: Int? }
+struct MediaUploadResponse: Decodable { var media: MediaItem; var possibleDuplicates: [DuplicateMatch]? }
 struct MediaDetailResponse: Decodable {
     var media: MediaItem
     var comments: [Comment]?
@@ -19,6 +21,7 @@ struct BlocksResponse: Decodable { var blocks: [BlockEntry] }
 struct NotificationsResponse: Decodable { var notifications: [NotificationItem]; var unreadCount: Int? }
 struct UnreadCountResponse: Decodable { var unreadCount: Int }
 struct CollectionsResponse: Decodable { var collections: [CollectionSummary] }
+struct CollectionSuggestion: Decodable, Identifiable { var tag: String; var count: Int; var thumbUrl: String?; var id: String { tag } }
 struct CollectionDetailResponse: Decodable { var collection: CollectionSummary; var media: [MediaItem]? }
 struct SavedSearchesResponse: Decodable { var savedSearches: [SavedSearch] }
 struct SavedSearchResponse: Decodable { var savedSearch: SavedSearch }
@@ -181,20 +184,18 @@ extension GalleryAPIClient {
         return form
     }
 
-    func uploadMedia(data: Data, fileName: String, mimeType: String, fields: UploadFields) async throws -> MediaItem {
+    func uploadMedia(data: Data, fileName: String, mimeType: String, fields: UploadFields) async throws -> MediaUploadResponse {
         let file = MultipartFile(fieldName: "file", fileName: fileName, mimeType: mimeType, source: .data(data))
-        let response: MediaResponse = try await upload("/api/media", fields: uploadForm(fields), file: file)
-        return response.media
+        return try await upload("/api/media", fields: uploadForm(fields), file: file)
     }
 
     /// Large-file variant — `fileURL` is streamed straight from disk into the
     /// multipart request body instead of being loaded into memory (see
     /// `GalleryAPIClient.upload`'s `.fileURL` case), so picking a multi-GB
     /// video for upload doesn't risk the app being killed for memory use.
-    func uploadMedia(fileURL: URL, fileName: String, mimeType: String, fields: UploadFields) async throws -> MediaItem {
+    func uploadMedia(fileURL: URL, fileName: String, mimeType: String, fields: UploadFields) async throws -> MediaUploadResponse {
         let file = MultipartFile(fieldName: "file", fileName: fileName, mimeType: mimeType, source: .fileURL(fileURL))
-        let response: MediaResponse = try await upload("/api/media", fields: uploadForm(fields), file: file)
-        return response.media
+        return try await upload("/api/media", fields: uploadForm(fields), file: file)
     }
 
     func myMedia(includeDeleted: Bool = true) async throws -> [MediaItem] {
@@ -230,6 +231,12 @@ extension GalleryAPIClient {
     func bulkUpdateVisibility(ids: [Int], visibility: String) async throws -> [BulkResult] {
         struct Response: Decodable { var results: [BulkResult] }
         let response: Response = try await requestJSON("/api/media/bulk", body: BulkPatchBody(ids: ids, patch: ["visibility": .string(visibility)]))
+        return response.results
+    }
+
+    func bulkAddTag(ids: [Int], tag: String) async throws -> [BulkResult] {
+        struct Response: Decodable { var results: [BulkResult] }
+        let response: Response = try await requestJSON("/api/media/bulk", body: BulkPatchBody(ids: ids, patch: ["add_tag": .string(tag)]))
         return response.results
     }
 
@@ -339,6 +346,12 @@ extension GalleryAPIClient {
     func collections(mine: Bool = false) async throws -> [CollectionSummary] {
         let response: CollectionsResponse = try await requestJSON("/api/collections", query: ["mine": String(mine)])
         return response.collections
+    }
+
+    func collectionSuggestions() async throws -> [CollectionSuggestion] {
+        struct Response: Decodable { var suggestions: [CollectionSuggestion] }
+        let response: Response = try await requestJSON("/api/collections/suggestions")
+        return response.suggestions
     }
 
     func collectionDetail(id: Int) async throws -> CollectionDetailResponse {

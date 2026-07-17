@@ -125,6 +125,8 @@ MEDIA_COLUMNS = (
     ("image_width", "INT UNSIGNED NULL"),
     ("image_height", "INT UNSIGNED NULL"),
     ("publish_at", "TIMESTAMP NULL DEFAULT NULL"),
+    ("image_phash", "CHAR(16) NULL"),
+    ("image_dhash", "CHAR(16) NULL"),
 )
 
 AI_TRAINING_COLUMNS = (

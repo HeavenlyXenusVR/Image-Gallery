@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Upload, WandSparkles } from "lucide-react";
 import { apiFetch, clearApiCache, readToken, resolveApiUrl } from "../api.js";
 import { MAX_UPLOAD_BYTES } from "../config.js";
@@ -42,6 +42,7 @@ export function UploadPage({ ctx }) {
   const [uploadProgress, setUploadProgress] = useState(0); // 0–100
   const [dragActive, setDragActive] = useState(false);
   const [analysis, setAnalysis] = useState(null);
+  const [duplicates, setDuplicates] = useState([]);
   const dropZoneRef = useRef(null);
 
   useEffect(() => {
@@ -52,6 +53,10 @@ export function UploadPage({ ctx }) {
     const url = URL.createObjectURL(form.file);
     setPreview(url);
     return () => URL.revokeObjectURL(url);
+  }, [form.file]);
+
+  useEffect(() => {
+    setDuplicates([]);
   }, [form.file]);
 
   if (!ctx.user) return <RequireLogin />;
@@ -110,6 +115,7 @@ export function UploadPage({ ctx }) {
       // default 12s apiFetch timeout — use a longer timeout so real analyses don't abort.
       const data = await apiFetch("/api/media/analyze", { method: "POST", body, timeoutMs: 90_000 });
       setAnalysis(data.analysis);
+      setDuplicates(data.possible_duplicates || []);
       setForm((current) => ({
         ...current,
         title: current.title || data.analysis?.title || "",
@@ -133,6 +139,12 @@ export function UploadPage({ ctx }) {
     event.preventDefault();
     if (!form.file) return ctx.showToast("Choose a file first.", "error");
     if (form.file.size > MAX_UPLOAD_BYTES) return ctx.showToast("Upload is over the configured size limit.", "error");
+    if (duplicates.length) {
+      const proceed = window.confirm(
+        `This looks similar to ${duplicates.length} post${duplicates.length === 1 ? "" : "s"} already in your library. Upload anyway?`,
+      );
+      if (!proceed) return;
+    }
     setBusy(true);
     setUploadProgress(0);
     try {
@@ -197,7 +209,14 @@ export function UploadPage({ ctx }) {
 
       clearApiCache();
       ctx.refreshLookups();
-      ctx.showToast("Upload saved.", "success");
+      if (!duplicates.length && data.possible_duplicates?.length) {
+        ctx.showToast(
+          `Uploaded — heads up, ${data.possible_duplicates.length} similar post${data.possible_duplicates.length === 1 ? "" : "s"} already exist in your library.`,
+          "info",
+        );
+      } else {
+        ctx.showToast("Upload saved.", "success");
+      }
       navigate(`/media/${data.media.id}`);
     } catch (error) {
       ctx.showToast(error.message, "error");
@@ -242,6 +261,20 @@ export function UploadPage({ ctx }) {
           ) : null}
           {analysis ? <ChipRow values={analysisChips} /> : null}
           {analysis?.reason ? <p className="muted small">{analysis.reason}</p> : null}
+          {duplicates.length ? (
+            <div className="upload-duplicate-warning" role="alert">
+              <p className="muted small">
+                Looks similar to {duplicates.length} post{duplicates.length === 1 ? "" : "s"} already in your library:
+              </p>
+              <div className="upload-duplicate-thumbs">
+                {duplicates.map((dup) => (
+                  <Link key={dup.id} to={`/media/${dup.id}`} target="_blank" title={dup.title || `Post #${dup.id}`}>
+                    <img src={dup.thumb_url} alt={dup.title || `Post #${dup.id}`} />
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </section>
         <section className="stacked-form">
           <label className="field"><span>Title</span><input value={form.title} onChange={(event) => update("title", event.target.value)} required maxLength={160} /></label>

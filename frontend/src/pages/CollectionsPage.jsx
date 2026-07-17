@@ -16,6 +16,8 @@ export function CollectionsPage({ ctx }) {
   const [addingId, setAddingId] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [suggestions, setSuggestions] = useState([]);
+  const [creatingSuggestion, setCreatingSuggestion] = useState("");
 
   const didAutoOpen = useRef(false);
 
@@ -62,6 +64,39 @@ export function CollectionsPage({ ctx }) {
     setPicker((current) => ({ ...current, results: [] }));
     loadCollections();
   }, [mine, loadCollections]);
+
+  useEffect(() => {
+    if (!mine || !ctx.user) {
+      setSuggestions([]);
+      return;
+    }
+    apiFetch("/api/collections/suggestions")
+      .then((data) => setSuggestions(data.suggestions || []))
+      .catch(() => setSuggestions([]));
+  }, [mine, ctx.user]);
+
+  async function createSuggestedCollection(suggestion) {
+    setCreatingSuggestion(suggestion.tag);
+    try {
+      const data = await apiFetch("/api/collections", {
+        method: "POST",
+        body: JSON.stringify({
+          name: suggestion.tag.replace(/\b\w/g, (letter) => letter.toUpperCase()),
+          is_public: true,
+          is_smart: true,
+          filter_json: { q: suggestion.tag },
+        }),
+      });
+      clearApiCache();
+      setCollections((rows) => [data.collection, ...rows]);
+      setSuggestions((rows) => rows.filter((row) => row.tag !== suggestion.tag));
+      await openCollection(data.collection.id, { fresh: true });
+    } catch (createError) {
+      ctx.showToast(createError.message, "error");
+    } finally {
+      setCreatingSuggestion("");
+    }
+  }
 
   async function createCollection(event) {
     event.preventDefault();
@@ -143,6 +178,27 @@ export function CollectionsPage({ ctx }) {
       {error ? <Notice kind="error">{error}</Notice> : null}
       <section className="split-view">
         <aside className="list-panel">
+          {ctx.user && mine && suggestions.length ? (
+            <div className="collection-suggestions">
+              <h3><Sparkles size={14} />Suggested collections</h3>
+              {suggestions.map((suggestion) => (
+                <button
+                  key={suggestion.tag}
+                  type="button"
+                  className="collection-suggestion-row"
+                  onClick={() => createSuggestedCollection(suggestion)}
+                  disabled={creatingSuggestion === suggestion.tag}
+                >
+                  <img src={suggestion.thumb_url} alt="" />
+                  <span>
+                    <strong>{suggestion.tag}</strong>
+                    <small>{suggestion.count} posts</small>
+                  </span>
+                  <PlusCircle size={16} />
+                </button>
+              ))}
+            </div>
+          ) : null}
           {ctx.user && mine ? (
             <form className="stacked-form create-box" onSubmit={createCollection}>
               <input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="Collection name" maxLength={100} required />

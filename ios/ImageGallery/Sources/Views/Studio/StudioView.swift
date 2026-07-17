@@ -3,6 +3,8 @@ import SwiftUI
 struct StudioView: View {
     @StateObject private var viewModel = StudioViewModel()
     @State private var showingBulkDeleteConfirm = false
+    @State private var showingBulkTagPrompt = false
+    @State private var bulkTagInput = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -48,6 +50,14 @@ struct StudioView: View {
         } message: {
             Text("You can restore deleted items later from this screen.")
         }
+        .alert("Add tag to \(viewModel.selectedIds.count) item\(viewModel.selectedIds.count == 1 ? "" : "s")", isPresented: $showingBulkTagPrompt) {
+            TextField("Tag", text: $bulkTagInput)
+            Button("Add") {
+                Task { await viewModel.bulkAddTag(bulkTagInput) }
+                bulkTagInput = ""
+            }
+            Button("Cancel", role: .cancel) { bulkTagInput = "" }
+        }
     }
 
     private var bulkActionBar: some View {
@@ -62,6 +72,12 @@ struct StudioView: View {
                 Label("Visibility", systemImage: "eye")
             }
             .accessibilityLabel("Set visibility for selected items")
+            Button {
+                showingBulkTagPrompt = true
+            } label: {
+                Label("Add tag", systemImage: "tag")
+            }
+            .accessibilityLabel("Add a tag to selected items")
             Button(role: .destructive) {
                 Haptics.warning()
                 showingBulkDeleteConfirm = true

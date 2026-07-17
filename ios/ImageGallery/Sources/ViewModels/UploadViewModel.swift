@@ -53,6 +53,7 @@ final class UploadViewModel: ObservableObject {
     @Published var isUploading = false
     @Published var errorMessage: String?
     @Published var uploadedMedia: MediaItem?
+    @Published var possibleDuplicates: [DuplicateMatch] = []
 
     private let api = GalleryAPIClient.shared
 
@@ -143,11 +144,16 @@ final class UploadViewModel: ObservableObject {
         )
 
         do {
+            let response: MediaUploadResponse
             if let pickedFileURL {
-                uploadedMedia = try await api.uploadMedia(fileURL: pickedFileURL, fileName: pickedFileName, mimeType: pickedMimeType, fields: fields)
+                response = try await api.uploadMedia(fileURL: pickedFileURL, fileName: pickedFileName, mimeType: pickedMimeType, fields: fields)
             } else if let pickedData {
-                uploadedMedia = try await api.uploadMedia(data: pickedData, fileName: pickedFileName, mimeType: pickedMimeType, fields: fields)
+                response = try await api.uploadMedia(data: pickedData, fileName: pickedFileName, mimeType: pickedMimeType, fields: fields)
+            } else {
+                return false
             }
+            uploadedMedia = response.media
+            possibleDuplicates = response.possibleDuplicates ?? []
             Haptics.success()
             return true
         } catch {
@@ -177,5 +183,6 @@ final class UploadViewModel: ObservableObject {
         isAdult = false
         scheduleEnabled = false
         uploadedMedia = nil
+        possibleDuplicates = []
     }
 }

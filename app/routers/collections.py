@@ -6,9 +6,33 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 import app.main as main
 from ..schemas import CollectionItemRequest, CollectionRequest
-from ._shared import _auth_optional, _current_user, _user_id, _viewer_can_open_adult, _with_collection_urls, _with_urls
+from ._shared import _auth_optional, _current_user, _thumb_url, _user_id, _viewer_can_open_adult, _with_collection_urls, _with_urls
 
 router = APIRouter()
+
+
+@router.get("/api/collections/suggestions")
+async def collection_suggestions(request: Request, auth: dict[str, Any] = Depends(_current_user)) -> dict[str, Any]:
+    """Smart-collection ideas seeded from tags that repeat often across the caller's
+    own uploads — skips any tag an existing smart collection already covers."""
+    user_id = int(auth["id"])
+    existing = await main.db.list_collections(viewer_id=user_id, mine=True)
+    covered = {
+        str(collection.get("filter", {}).get("q", "")).strip().lower()
+        for collection in existing
+        if collection.get("is_smart")
+    }
+    candidates = await main.db.user_tag_counts(user_id)
+    suggestions = [
+        {
+            "tag": candidate["tag"],
+            "count": candidate["count"],
+            "thumb_url": _thumb_url(request, candidate["sample_media_id"]),
+        }
+        for candidate in candidates
+        if candidate["tag"] not in covered
+    ]
+    return {"suggestions": suggestions}
 
 
 @router.get("/api/collections")
