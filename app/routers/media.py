@@ -6,13 +6,14 @@ import json
 import logging
 import os
 import re
+import shutil
 from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 
 import app.main as main
-from ..ai_metadata import analyze_media_bytes, is_low_signal_filename, _image_fingerprint
+from ..ai_metadata import analyze_media_bytes, is_low_signal_filename, _heuristic_analysis, _image_fingerprint
 from ..database import MAX_MEDIA_SUBCATEGORIES, normalize_subcategory_names
 from ..discord_webhook import send_discord_webhook
 from ..schemas import (
@@ -112,6 +113,54 @@ async def _analyze_media_safely(**kwargs: Any):
         fallback_kwargs = dict(kwargs)
         fallback_kwargs["ai_enabled"] = False
         return await asyncio.to_thread(analyze_media_bytes, **fallback_kwargs)
+
+
+async def _analyze_uploaded_media(
+    uploaded: dict[str, Any],
+    *,
+    title: str,
+    description: str,
+    tags: str,
+    ai_enabled: bool,
+    training_examples: list[dict[str, Any]],
+):
+    if uploaded.get("content") is None:
+        # Large uploads stream straight to disk (see
+        # _read_validated_upload_streamed) and are never read back fully into
+        # memory — full AI analysis isn't practical for a multi-GB video
+        # anyway, so fall back to the same filename/hint-based heuristics the
+        # AI path itself falls back to when it can't reach a vision model.
+        return _heuristic_analysis(
+            filename=uploaded["original_filename"],
+            mime_type=uploaded["mime_type"],
+            media_kind=uploaded["media_kind"],
+            title_hint=title,
+            description_hint=description,
+            tags_hint=_parse_tags(tags),
+            size=None,
+        )
+    return await _analyze_media_safely(
+        content=uploaded["content"],
+        filename=uploaded["original_filename"],
+        mime_type=uploaded["mime_type"],
+        media_kind=uploaded["media_kind"],
+        title_hint=title,
+        description_hint=description,
+        tags_hint=_parse_tags(tags),
+        ai_enabled=ai_enabled,
+        ai_api_key=main.settings.ai_api_key,
+        ai_base_url=main.settings.active_ai_base_url,
+        ai_model=main.settings.active_ai_model,
+        ai_timeout_seconds=main.settings.ai_timeout_seconds,
+        training_examples=training_examples,
+    )
+
+
+def _cleanup_upload_temp_file(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 async def _ai_training_examples_for(user_id: int) -> list[dict[str, Any]]:
@@ -551,6 +600,27 @@ def _write_filesystem_media(storage_path: str, content: bytes) -> None:
         raise
 
 
+def _move_filesystem_media(storage_path: str, source_path: str) -> None:
+    """Same destination validation as `_write_filesystem_media`, but for a
+    large upload already streamed to a temp file on disk — moves it into
+    place instead of writing bytes, so the content is never re-read into
+    memory as part of storing it."""
+    target = (main.settings.uploads_dir / storage_path).resolve()
+    uploads_root = main.settings.uploads_dir.resolve()
+    try:
+        target.relative_to(uploads_root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid media storage path.") from None
+    if target == uploads_root:
+        raise HTTPException(status_code=400, detail="Invalid media storage path.")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        # Duplicate content (same sha256-derived path) already stored — the
+        # temp file is redundant; the caller's finally block removes it.
+        return
+    shutil.move(source_path, str(target))
+
+
 async def _store_uploaded_media(user_id: int, uploaded: dict[str, Any], stored_filename: str) -> dict[str, Any]:
     if main.settings.storage_backend == "database":
         packet_limit = await main.db.get_max_allowed_packet()
@@ -567,7 +637,8 @@ async def _store_uploaded_media(user_id: int, uploaded: dict[str, Any], stored_f
         try:
             media_file = await main.db.save_media_file(
                 user_id=user_id,
-                content=uploaded["content"],
+                content=uploaded.get("content"),
+                content_path=uploaded.get("path"),
                 sha256=uploaded["sha256"],
                 mime_type=uploaded["mime_type"],
                 original_filename=stored_filename,
@@ -587,7 +658,10 @@ async def _store_uploaded_media(user_id: int, uploaded: dict[str, Any], stored_f
         return {"storage_path": f"db://media/{media_file['id']}", "media_file_id": int(media_file["id"])}
 
     storage_path = _filesystem_media_storage_path(uploaded["sha256"], stored_filename, uploaded["mime_type"])
-    await asyncio.to_thread(_write_filesystem_media, storage_path, uploaded["content"])
+    if uploaded.get("path"):
+        await asyncio.to_thread(_move_filesystem_media, storage_path, uploaded["path"])
+    else:
+        await asyncio.to_thread(_write_filesystem_media, storage_path, uploaded["content"])
     return {"storage_path": storage_path, "media_file_id": None}
 
 
@@ -750,85 +824,87 @@ async def upload_media(
         raise HTTPException(status_code=400, detail="Visibility must be public, unlisted, or private.")
     await _rate_limit(f"upload:{auth['id']}", limit=main.settings.upload_rate_limit_per_hour, window_seconds=3600)
     uploaded = await _read_validated_upload(file, main.settings.max_upload_bytes)
-    training_examples = await _ai_training_examples_for(int(auth["id"]))
-    analysis = await _analyze_media_safely(
-        content=uploaded["content"],
-        filename=uploaded["original_filename"],
-        mime_type=uploaded["mime_type"],
-        media_kind=uploaded["media_kind"],
-        title_hint=title,
-        description_hint=description,
-        tags_hint=_parse_tags(tags),
-        ai_enabled=auto_ai and main.settings.ai_enabled,
-        ai_api_key=main.settings.ai_api_key,
-        ai_base_url=main.settings.active_ai_base_url,
-        ai_model=main.settings.active_ai_model,
-        ai_timeout_seconds=main.settings.ai_timeout_seconds,
-        training_examples=training_examples,
-    )
-    title = " ".join((title or analysis.title).strip().split())[:160]
-    if not title:
-        raise HTTPException(status_code=400, detail="Title is required.")
-    description_value = description.strip()[:2000] or None
-    parsed_tags = _merge_upload_tags(_parse_tags(tags), analysis.tags)
-    chosen_category_name = " ".join(category_name.strip().split())[:80] or analysis.category_name or ""
-    analysis_subcategory_names = normalize_subcategory_names(
-        getattr(analysis, "subcategory_names", None) or [analysis.subcategory_name],
-        limit=MAX_MEDIA_SUBCATEGORIES,
-    )
-    chosen_subcategory_names = submitted_subcategory_names or analysis_subcategory_names
-    if not category_id_int:
-        if not chosen_category_name:
-            raise HTTPException(status_code=400, detail="Category is required.")
-        inferred_kind = category_kind if category_kind in {"image", "video", "mixed"} else ("video" if uploaded["media_kind"] == "video" else "image")
-        category = await main.db.create_category(chosen_category_name, inferred_kind, int(auth["id"]))
-        category_id_int = int(category["id"])
-    chosen_subcategory_ids = await main.db.resolve_subcategory_ids(
-        category_id=category_id_int,
-        subcategory_ids=selected_subcategory_ids,
-        subcategory_names=chosen_subcategory_names,
-        user_id=int(auth["id"]),
-    )
-    subcategory_id_int = chosen_subcategory_ids[0] if chosen_subcategory_ids else None
-    stored_filename = uploaded["original_filename"]
-    if analysis.suggested_filename and (auto_ai or is_low_signal_filename(stored_filename)):
-        if is_low_signal_filename(stored_filename) or not title.strip():
-            stored_filename = analysis.suggested_filename[:255]
-    moderation = _moderate_upload(
-        title=title,
-        description=description_value,
-        tags=parsed_tags,
-        filename=stored_filename,
-        mime_type=uploaded["mime_type"],
-        user_marked_adult=bool(is_adult or analysis.is_adult),
-        human_confirmed=bool(is_adult),
-    )
-    media_kind = uploaded["media_kind"]
-    storage_info = await _store_uploaded_media(int(auth["id"]), uploaded, stored_filename)
-    item = await main.db.add_media(
-        {
-            "user_id": int(auth["id"]),
-            "category_id": category_id_int,
-            "subcategory_id": subcategory_id_int,
-            "subcategory_ids": chosen_subcategory_ids,
-            "title": title,
-            "description": description_value,
-            "tags": parsed_tags,
-            "media_kind": media_kind,
-            "mime_type": uploaded["mime_type"],
-            "original_filename": stored_filename,
-            "storage_path": storage_info["storage_path"],
-            "media_file_id": storage_info["media_file_id"],
-            "content_sha256": uploaded["sha256"],
-            "file_size": uploaded["file_size"],
-            "visibility": visibility,
-            "comments_enabled": comments_enabled,
-            "downloads_enabled": downloads_enabled,
-            "pinned": pinned,
-            "publish_at": publish_at_value,
-            **moderation,
-        }
-    )
+    try:
+        training_examples = await _ai_training_examples_for(int(auth["id"]))
+        analysis = await _analyze_uploaded_media(
+            uploaded,
+            title=title,
+            description=description,
+            tags=tags,
+            ai_enabled=auto_ai and main.settings.ai_enabled,
+            training_examples=training_examples,
+        )
+        title = " ".join((title or analysis.title).strip().split())[:160]
+        if not title:
+            raise HTTPException(status_code=400, detail="Title is required.")
+        description_value = description.strip()[:2000] or None
+        parsed_tags = _merge_upload_tags(_parse_tags(tags), analysis.tags)
+        chosen_category_name = " ".join(category_name.strip().split())[:80] or analysis.category_name or ""
+        analysis_subcategory_names = normalize_subcategory_names(
+            getattr(analysis, "subcategory_names", None) or [analysis.subcategory_name],
+            limit=MAX_MEDIA_SUBCATEGORIES,
+        )
+        chosen_subcategory_names = submitted_subcategory_names or analysis_subcategory_names
+        if not category_id_int:
+            if not chosen_category_name:
+                raise HTTPException(status_code=400, detail="Category is required.")
+            inferred_kind = category_kind if category_kind in {"image", "video", "mixed"} else ("video" if uploaded["media_kind"] == "video" else "image")
+            category = await main.db.create_category(chosen_category_name, inferred_kind, int(auth["id"]))
+            category_id_int = int(category["id"])
+        chosen_subcategory_ids = await main.db.resolve_subcategory_ids(
+            category_id=category_id_int,
+            subcategory_ids=selected_subcategory_ids,
+            subcategory_names=chosen_subcategory_names,
+            user_id=int(auth["id"]),
+        )
+        subcategory_id_int = chosen_subcategory_ids[0] if chosen_subcategory_ids else None
+        stored_filename = uploaded["original_filename"]
+        if analysis.suggested_filename and (auto_ai or is_low_signal_filename(stored_filename)):
+            if is_low_signal_filename(stored_filename) or not title.strip():
+                stored_filename = analysis.suggested_filename[:255]
+        moderation = _moderate_upload(
+            title=title,
+            description=description_value,
+            tags=parsed_tags,
+            filename=stored_filename,
+            mime_type=uploaded["mime_type"],
+            user_marked_adult=bool(is_adult or analysis.is_adult),
+            human_confirmed=bool(is_adult),
+        )
+        media_kind = uploaded["media_kind"]
+        storage_info = await _store_uploaded_media(int(auth["id"]), uploaded, stored_filename)
+        item = await main.db.add_media(
+            {
+                "user_id": int(auth["id"]),
+                "category_id": category_id_int,
+                "subcategory_id": subcategory_id_int,
+                "subcategory_ids": chosen_subcategory_ids,
+                "title": title,
+                "description": description_value,
+                "tags": parsed_tags,
+                "media_kind": media_kind,
+                "mime_type": uploaded["mime_type"],
+                "original_filename": stored_filename,
+                "storage_path": storage_info["storage_path"],
+                "media_file_id": storage_info["media_file_id"],
+                "content_sha256": uploaded["sha256"],
+                "file_size": uploaded["file_size"],
+                "visibility": visibility,
+                "comments_enabled": comments_enabled,
+                "downloads_enabled": downloads_enabled,
+                "pinned": pinned,
+                "publish_at": publish_at_value,
+                **moderation,
+            }
+        )
+    finally:
+        # Large uploads stream to a temp file on disk (see
+        # _read_validated_upload_streamed); the DB-storage path only reads it,
+        # and the filesystem-storage path moves it away on success, so it must
+        # be cleaned up here regardless of which branch ran or whether the
+        # request succeeded.
+        if uploaded.get("path"):
+            _cleanup_upload_temp_file(uploaded["path"])
     if media_kind == "video":
         _queue_video_thumb_warmup(int(item["id"]), item=item, widths=VIDEO_THUMB_WARM_WIDTHS)
     adult_allowed = await _viewer_can_open_adult(request)
@@ -870,28 +946,25 @@ async def analyze_media_upload(
 ) -> dict[str, Any]:
     await _rate_limit(f"analyze:{auth['id']}", limit=main.settings.analyze_rate_limit_per_hour, window_seconds=3600)
     uploaded = await _read_validated_upload(file, main.settings.max_upload_bytes)
-    training_examples = await _ai_training_examples_for(int(auth["id"]))
-    analysis = await _analyze_media_safely(
-        content=uploaded["content"],
-        filename=uploaded["original_filename"],
-        mime_type=uploaded["mime_type"],
-        media_kind=uploaded["media_kind"],
-        title_hint=title,
-        description_hint=description,
-        tags_hint=_parse_tags(tags),
-        ai_enabled=main.settings.ai_enabled,
-        ai_api_key=main.settings.ai_api_key,
-        ai_base_url=main.settings.active_ai_base_url,
-        ai_model=main.settings.active_ai_model,
-        ai_timeout_seconds=main.settings.ai_timeout_seconds,
-        training_examples=training_examples,
-    )
-    return {
-        "analysis": analysis.to_dict(),
-        "media_kind": uploaded["media_kind"],
-        "mime_type": uploaded["mime_type"],
-        "original_filename": uploaded["original_filename"],
-    }
+    try:
+        training_examples = await _ai_training_examples_for(int(auth["id"]))
+        analysis = await _analyze_uploaded_media(
+            uploaded,
+            title=title,
+            description=description,
+            tags=tags,
+            ai_enabled=main.settings.ai_enabled,
+            training_examples=training_examples,
+        )
+        return {
+            "analysis": analysis.to_dict(),
+            "media_kind": uploaded["media_kind"],
+            "mime_type": uploaded["mime_type"],
+            "original_filename": uploaded["original_filename"],
+        }
+    finally:
+        if uploaded.get("path"):
+            _cleanup_upload_temp_file(uploaded["path"])
 
 
 @router.get("/api/media/{media_id}")

@@ -7,6 +7,8 @@ import json
 import mimetypes
 import os
 import re
+import shutil
+import tempfile
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -416,7 +418,19 @@ def _safe_extension(filename: str, mime_type: str) -> str:
     return ".jpg" if ext == ".jpe" else ext
 
 
+# Uploads at or under this size are read fully into memory, same as before —
+# simple, and small enough that AI analysis / PIL validation working from
+# `bytes` never puts real memory pressure on the host. Anything larger
+# streams straight to a temp file on disk instead (see
+# `_read_validated_upload_streamed`) so a multi-GB video is never held
+# entirely in RAM at once.
+IN_MEMORY_UPLOAD_CEILING = 64 * 1024 * 1024
+UPLOAD_STREAM_CHUNK_BYTES = 4 * 1024 * 1024
+
+
 async def _read_validated_upload(upload: UploadFile, max_bytes: int, *, image_only: bool = False) -> dict[str, Any]:
+    if max_bytes > IN_MEMORY_UPLOAD_CEILING:
+        return await _read_validated_upload_streamed(upload, max_bytes, image_only=image_only)
     # Read only one byte past the allowed size so oversized uploads do not exhaust RAM.
     content = await upload.read(max_bytes + 1)
     if not content:
@@ -449,10 +463,79 @@ async def _read_validated_upload(upload: UploadFile, max_bytes: int, *, image_on
     sha256 = hashlib.sha256(content).hexdigest()
     return {
         "content": content,
+        "path": None,
         "sha256": sha256,
         "mime_type": sniffed_mime,
         "media_kind": media_kind,
         "original_filename": original_filename,
         "file_size": len(content),
     }
+
+
+async def _read_validated_upload_streamed(upload: UploadFile, max_bytes: int, *, image_only: bool) -> dict[str, Any]:
+    """Same validation as the in-memory path above, but reads the upload in
+    small chunks straight to a temp file instead of buffering the whole
+    thing — the only way a multi-GB upload doesn't risk OOMing the host.
+    Caller owns the returned "path" and must delete it once done with it."""
+    free_bytes = shutil.disk_usage(tempfile.gettempdir()).free
+    if free_bytes < max_bytes + (256 * 1024 * 1024):
+        raise HTTPException(status_code=507, detail="Not enough disk space on the server to accept an upload this large right now.")
+
+    fd, tmp_path = tempfile.mkstemp(prefix="gallery_upload_")
+    hasher = hashlib.sha256()
+    head = b""
+    total = 0
+    try:
+        with os.fdopen(fd, "wb") as out:
+            while True:
+                chunk = await upload.read(UPLOAD_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(status_code=413, detail=f"Uploads must be {max_bytes // (1024 * 1024)}MB or smaller.")
+                if len(head) < 256:
+                    head += chunk[: 256 - len(head)]
+                hasher.update(chunk)
+                out.write(chunk)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="Upload is empty.")
+        sniffed_mime, media_kind = _sniff_magic(head)
+        if image_only and media_kind != "image":
+            raise HTTPException(status_code=400, detail="Profile pictures must be images.")
+        claimed = (upload.content_type or "").lower()
+        if claimed and not claimed.startswith(("image/", "video/", "application/octet-stream")):
+            raise HTTPException(status_code=400, detail="Invalid declared content type.")
+        original_filename = Path(upload.filename or "upload").name[:255]
+        _safe_extension(original_filename, sniffed_mime)
+        if media_kind == "image":
+            try:
+                from PIL import Image
+
+                Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+                with Image.open(tmp_path) as image:
+                    width, height = image.size
+                    if width <= 0 or height <= 0:
+                        raise HTTPException(status_code=400, detail="Image dimensions are invalid.")
+                    if width * height > MAX_IMAGE_PIXELS:
+                        raise HTTPException(status_code=413, detail="Image resolution is too large.")
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail="Image bytes are corrupt or unsupported by the server image decoder.") from exc
+        return {
+            "content": None,
+            "path": tmp_path,
+            "sha256": hasher.hexdigest(),
+            "mime_type": sniffed_mime,
+            "media_kind": media_kind,
+            "original_filename": original_filename,
+            "file_size": total,
+        }
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 

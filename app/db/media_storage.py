@@ -8,9 +8,28 @@ from ._shared import log
 
 
 class MediaBlobMixin:
-    async def save_media_file(self, *, user_id: int, content: bytes, sha256: str, mime_type: str, original_filename: str, media_kind: str, file_size: int | None = None) -> dict[str, Any]:
+    async def save_media_file(
+        self,
+        *,
+        user_id: int,
+        content: bytes | None = None,
+        content_path: str | None = None,
+        sha256: str,
+        mime_type: str,
+        original_filename: str,
+        media_kind: str,
+        file_size: int | None = None,
+    ) -> dict[str, Any]:
         # Large BLOB writes are serialized and chunked so uploads do not depend on
-        # one huge max_allowed_packet-sized INSERT.
+        # one huge max_allowed_packet-sized INSERT. `content_path` is used for
+        # uploads big enough that the caller already streamed them to a temp
+        # file instead of holding them fully in memory (see
+        # `_read_validated_upload_streamed` in app/routers/_shared.py) — chunks
+        # are read directly off disk here so the whole file still never sits
+        # in RAM at once.
+        if content is None and content_path is None:
+            raise ValueError("save_media_file requires either content or content_path")
+        total_size = file_size if file_size is not None else (len(content) if content is not None else 0)
         async with self._blob_lock:
             async with self.pool.acquire() as conn:
                 await conn.ping(reconnect=True)
@@ -31,17 +50,33 @@ class MediaBlobMixin:
                             INSERT INTO media_files (sha256, mime_type, original_filename, media_kind, file_size, content, created_by)
                             VALUES (%s, %s, %s, %s, %s, %s, %s)
                             """,
-                            (sha256, mime_type[:120], original_filename[:255], media_kind, file_size or len(content), b"", user_id),
+                            (sha256, mime_type[:120], original_filename[:255], media_kind, total_size, b"", user_id),
                         )
                         media_file_id = int(cur.lastrowid)
-                        for chunk_index, offset in enumerate(range(0, len(content), self.media_chunk_bytes)):
-                            await cur.execute(
-                                """
-                                INSERT INTO media_file_chunks (file_id, chunk_index, content)
-                                VALUES (%s, %s, %s)
-                                """,
-                                (media_file_id, chunk_index, content[offset:offset + self.media_chunk_bytes]),
-                            )
+                        if content_path is not None:
+                            with open(content_path, "rb") as source:
+                                chunk_index = 0
+                                while True:
+                                    chunk = source.read(self.media_chunk_bytes)
+                                    if not chunk:
+                                        break
+                                    await cur.execute(
+                                        """
+                                        INSERT INTO media_file_chunks (file_id, chunk_index, content)
+                                        VALUES (%s, %s, %s)
+                                        """,
+                                        (media_file_id, chunk_index, chunk),
+                                    )
+                                    chunk_index += 1
+                        else:
+                            for chunk_index, offset in enumerate(range(0, len(content), self.media_chunk_bytes)):
+                                await cur.execute(
+                                    """
+                                    INSERT INTO media_file_chunks (file_id, chunk_index, content)
+                                    VALUES (%s, %s, %s)
+                                    """,
+                                    (media_file_id, chunk_index, content[offset:offset + self.media_chunk_bytes]),
+                                )
                         await cur.execute(
                             "SELECT id, sha256, mime_type, original_filename, media_kind, file_size, created_by, created_at FROM media_files WHERE id=%s",
                             (media_file_id,),

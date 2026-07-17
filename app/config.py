@@ -196,7 +196,7 @@ def load_settings() -> Settings:
         pages_public_url=pages_url,
         uploads_dir=Path(_env("GALLERY_UPLOADS_DIR", str(ROOT_DIR / "uploads"))),
         storage_backend=storage_backend,
-        max_upload_bytes=int(_env("GALLERY_MAX_UPLOAD_BYTES", str(500 * 1024 * 1024))),
+        max_upload_bytes=int(_env("GALLERY_MAX_UPLOAD_BYTES", str(3 * 1024 * 1024 * 1024))),
         media_page_limit=max(1, min(200, int(_env("GALLERY_MEDIA_PAGE_LIMIT", "100")))),
         max_tags_per_upload=max(1, min(50, int(_env("GALLERY_MAX_TAGS_PER_UPLOAD", "12")))),
         max_tag_length=max(8, min(80, int(_env("GALLERY_MAX_TAG_LENGTH", "32")))),
