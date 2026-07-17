@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 
 import app.main as main
 from ._shared import _avatar_revision_token, _avatar_url, _bounded_query_limit, _bounded_query_offset, _current_user, _jsonable, _thumb_url

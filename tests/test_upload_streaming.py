@@ -5,7 +5,6 @@ import hashlib
 import os
 import tempfile
 
-import app.main as main
 from fastapi import HTTPException
 from app.routers._shared import IN_MEMORY_UPLOAD_CEILING, _read_validated_upload, _read_validated_upload_streamed
 
