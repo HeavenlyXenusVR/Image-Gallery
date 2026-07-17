@@ -36,6 +36,19 @@ final class GalleryAPIClient {
     private init() {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 20
+        // The backend is reached through a rotating tunnel URL (see
+        // LiveConfigService) rather than a stable domain, so brief connectivity
+        // blips (Wi-Fi/cellular handoff, tunnel recycling) are routine, not
+        // exceptional. `waitsForConnectivity` lets URLSession itself absorb
+        // those instead of failing the request immediately with "the network
+        // connection was lost" — the same class of error `sendWithRetry` below
+        // also retries at the app level once the tunnel URL has actually
+        // rotated out from under us. `timeoutIntervalForResource` is left at
+        // its (very generous) default rather than shortened: unlike
+        // `timeoutIntervalForRequest` (an idle timeout, reset by activity),
+        // it's a hard ceiling on the whole request — and multi-GB video
+        // uploads legitimately run for minutes.
+        configuration.waitsForConnectivity = true
         session = URLSession(configuration: configuration)
 
         decoder = JSONDecoder()
@@ -88,6 +101,45 @@ final class GalleryAPIClient {
         return request
     }
 
+    /// Errors that mean the request likely never reached the server at all
+    /// (dropped connection, tunnel mid-rotation, DNS blip) rather than the
+    /// server having received and acted on it — safe to retry after
+    /// refreshing the backend origin, unlike an HTTP error status.
+    private static func isTransientNetworkError(_ error: Error) -> Bool {
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .networkConnectionLost, .timedOut, .notConnectedToInternet,
+             .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+             .secureConnectionFailed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Mirrors `frontend/src/api.js`'s `fetchWithRemoteRetry`: the backend sits
+    /// behind a tunnel URL that rotates independently of the app, so a
+    /// transient network error is re-tried against a freshly-fetched origin
+    /// (up to twice, with a short backoff) before surfacing to the caller —
+    /// otherwise every tunnel rotation reads as a random "network was lost"
+    /// failure until the user manually hits Refresh in Settings.
+    private func sendWithRetry<T>(
+        buildRequest: () throws -> URLRequest,
+        perform: (URLRequest) async throws -> T
+    ) async throws -> T {
+        var attempt = 0
+        while true {
+            do {
+                return try await perform(try buildRequest())
+            } catch {
+                guard Self.isTransientNetworkError(error), attempt < 2 else { throw error }
+                attempt += 1
+                await LiveConfigService.shared.refresh()
+                try? await Task.sleep(nanoseconds: UInt64(300_000_000 * attempt))
+            }
+        }
+    }
+
     private func validate(_ response: URLResponse, data: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard !(200...299).contains(http.statusCode) else { return }
@@ -101,8 +153,10 @@ final class GalleryAPIClient {
 
     @discardableResult
     func requestJSON<T: Decodable>(_ path: String, method: String = "GET", query: [String: String]? = nil, requiresAuth: Bool = true) async throws -> T {
-        let request = try baseRequest(path: path, method: method, query: query, requiresAuth: requiresAuth)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await sendWithRetry(
+            buildRequest: { try baseRequest(path: path, method: method, query: query, requiresAuth: requiresAuth) },
+            perform: { try await session.data(for: $0) }
+        )
         try validate(response, data: data)
         do {
             return try decoder.decode(T.self, from: data)
@@ -115,10 +169,15 @@ final class GalleryAPIClient {
 
     @discardableResult
     func requestJSON<T: Decodable, B: Encodable>(_ path: String, method: String = "POST", body: B, query: [String: String]? = nil, requiresAuth: Bool = true) async throws -> T {
-        var request = try baseRequest(path: path, method: method, query: query, requiresAuth: requiresAuth)
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try encoder.encode(body)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await sendWithRetry(
+            buildRequest: {
+                var request = try baseRequest(path: path, method: method, query: query, requiresAuth: requiresAuth)
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try encoder.encode(body)
+                return request
+            },
+            perform: { try await session.data(for: $0) }
+        )
         try validate(response, data: data)
         do {
             return try decoder.decode(T.self, from: data)
@@ -165,23 +224,19 @@ final class GalleryAPIClient {
 
     @discardableResult
     func upload<T: Decodable>(_ path: String, fields: [String: String], file: MultipartFile, requiresAuth: Bool = true) async throws -> T {
-        var request = try baseRequest(path: path, method: "POST", query: nil, requiresAuth: requiresAuth)
         let boundary = "ImageGallery-\(UUID().uuidString)"
-        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-
-        let data: Data
-        let response: URLResponse
-
+        // The multipart body (in-memory or on-disk) is assembled once, up front —
+        // it doesn't depend on the backend origin, so `sendWithRetry` below can
+        // reuse it across attempts instead of re-composing (or, for a picked
+        // video, re-reading a multi-GB file from disk) on every retry.
+        let bodySource: MultipartFileSource
         switch file.source {
         case .data(let fileData):
             var body = multipartFieldsData(fields, boundary: boundary)
             body.append(multipartFileHeaderData(file, boundary: boundary))
             body.append(fileData)
             body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
-            // `httpBody` is intentionally left unset here — `session.upload(for:from:)`
-            // takes the body as its own `from:` argument, so setting both would
-            // just duplicate the payload in memory for no benefit.
-            (data, response) = try await session.upload(for: request, from: body)
+            bodySource = .data(body)
 
         case .fileURL(let fileURL):
             // Compose the multipart envelope in a temp file on disk — reading
@@ -190,7 +245,6 @@ final class GalleryAPIClient {
             // or by URLSession while it streams the request body over the
             // network.
             let bodyURL = FileManager.default.temporaryDirectory.appendingPathComponent("upload-body-\(UUID().uuidString)")
-            defer { try? FileManager.default.removeItem(at: bodyURL) }
             do {
                 FileManager.default.createFile(atPath: bodyURL.path, contents: nil)
                 let writer = try FileHandle(forWritingTo: bodyURL)
@@ -205,10 +259,35 @@ final class GalleryAPIClient {
                 try writer.write(contentsOf: "\r\n--\(boundary)--\r\n".data(using: .utf8)!)
                 try writer.close()
             } catch {
+                try? FileManager.default.removeItem(at: bodyURL)
                 throw GalleryAPIError.http(status: 0, message: "Could not prepare the upload: \(error.localizedDescription)")
             }
-            (data, response) = try await session.upload(for: request, fromFile: bodyURL)
+            bodySource = .fileURL(bodyURL)
         }
+        defer {
+            if case .fileURL(let bodyURL) = bodySource {
+                try? FileManager.default.removeItem(at: bodyURL)
+            }
+        }
+
+        let (data, response) = try await sendWithRetry(
+            buildRequest: {
+                var request = try baseRequest(path: path, method: "POST", query: nil, requiresAuth: requiresAuth)
+                request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+                return request
+            },
+            perform: { request in
+                switch bodySource {
+                case .data(let body):
+                    // `httpBody` is intentionally left unset here — `session.upload(for:from:)`
+                    // takes the body as its own `from:` argument, so setting both would
+                    // just duplicate the payload in memory for no benefit.
+                    return try await self.session.upload(for: request, from: body)
+                case .fileURL(let bodyURL):
+                    return try await self.session.upload(for: request, fromFile: bodyURL)
+                }
+            }
+        )
 
         try validate(response, data: data)
         do {
@@ -220,15 +299,19 @@ final class GalleryAPIClient {
 
     /// Fire-and-forget-shaped DELETE/POST calls that only return `{"ok": true}`-style acks.
     func requestVoid(_ path: String, method: String, query: [String: String]? = nil, requiresAuth: Bool = true) async throws {
-        let request = try baseRequest(path: path, method: method, query: query, requiresAuth: requiresAuth)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await sendWithRetry(
+            buildRequest: { try baseRequest(path: path, method: method, query: query, requiresAuth: requiresAuth) },
+            perform: { try await session.data(for: $0) }
+        )
         try validate(response, data: data)
     }
 
     /// Downloads a raw file (e.g. the "download my data" JSON export).
     func download(_ path: String, requiresAuth: Bool = true) async throws -> Data {
-        let request = try baseRequest(path: path, method: "GET", query: nil, requiresAuth: requiresAuth)
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await sendWithRetry(
+            buildRequest: { try baseRequest(path: path, method: "GET", query: nil, requiresAuth: requiresAuth) },
+            perform: { try await session.data(for: $0) }
+        )
         try validate(response, data: data)
         return data
     }
