@@ -40,7 +40,11 @@ struct AuthenticatedVideoPlayer: View {
                         .padding(.horizontal, 12)
                     Button("Try Again") {
                         retryAttempt = 0
-                        errorMessage = nil
+                        // Explicit `self.` — the `if let errorMessage` above shadows
+                        // the @State property with a local immutable `String` for
+                        // this whole block, so a bare `errorMessage = nil` here
+                        // would try to assign to that local constant instead.
+                        self.errorMessage = nil
                         startPlayback()
                     }
                     .font(.footnote.weight(.semibold))
