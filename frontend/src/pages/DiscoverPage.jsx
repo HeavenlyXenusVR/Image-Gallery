@@ -3,9 +3,20 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Bell, Columns2, Grid2X2, RefreshCw, Save, Search, SlidersHorizontal, Sparkles, X as XIcon } from "lucide-react";
 import { apiFetch, cachedApiFetch, clearApiCache, toQuery } from "../api.js";
 import { PAGE_SIZE } from "../config.js";
+import { CategoryPills, DiscoverTrending } from "../components/discover.jsx";
 import { MediaGrid } from "../components/media.jsx";
 import { Notice, Page, TagCloud } from "../components/ui.jsx";
 import { preloadMediaAssets, replaceMedia } from "../utils/media.js";
+
+function timeOfDayGreeting(user) {
+  const name = user?.display_name || user?.username || "there";
+  const hour = new Date().getHours();
+  if (hour < 5) return `Still up, ${name}?`;
+  if (hour < 12) return `Good morning, ${name}`;
+  if (hour < 17) return `Good afternoon, ${name}`;
+  if (hour < 22) return `Good evening, ${name}`;
+  return `Still up, ${name}?`;
+}
 
 const VIEW_MODE_KEY = "ig_discover_view";
 
@@ -283,20 +294,31 @@ export function DiscoverPage({ ctx }) {
         </>
       )}
     >
+      <div className="discover-greeting">
+        <strong>{timeOfDayGreeting(ctx.user)}</strong>
+        <span>Here&rsquo;s what the archive&rsquo;s been up to.</span>
+      </div>
+
+      <label className="discover-search">
+        <Search size={18} />
+        <input
+          value={filters.q}
+          onChange={(e) => updateFilter("q", e.target.value)}
+          type="search"
+          placeholder="Search wallpapers, memes, tags…"
+        />
+      </label>
+
+      {!filterChips.length ? <DiscoverTrending /> : null}
+
+      <CategoryPills
+        categories={ctx.lookups.categories}
+        selectedId={filters.category_id}
+        onSelect={(categoryId) => updateFilter("category_id", categoryId)}
+      />
+
       <section className="workspace">
         <aside className="filter-rail">
-          <label className="field">
-            <span>Search</span>
-            <div className="input-with-icon">
-              <Search size={16} />
-              <input
-                value={filters.q}
-                onChange={(e) => updateFilter("q", e.target.value)}
-                type="search"
-                placeholder="wallpaper, meme, vaporwave"
-              />
-            </div>
-          </label>
           <label className="field">
             <span>Type</span>
             <select value={filters.media_kind} onChange={(e) => updateFilter("media_kind", e.target.value)}>
