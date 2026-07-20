@@ -76,7 +76,7 @@ struct MediaDetailView: View {
             .frame(maxWidth: .infinity, minHeight: 220)
             .background(.secondary.opacity(0.1))
             .cornerRadius(12)
-        } else if media.isVideo, let urlString = media.url, let url = videoDetailURL(from: urlString) {
+        } else if media.isVideo, let urlString = media.url, let url = URL(string: urlString) {
             ZStack(alignment: .topTrailing) {
                 AuthenticatedVideoPlayer(url: url)
                     .frame(height: 260)
@@ -105,16 +105,6 @@ struct MediaDetailView: View {
                 expandButton
             }
         }
-    }
-
-    // Requests a bounded transcode instead of the raw original — same
-    // tradeoff the web app makes for its own previews (see `videoQualityUrl`
-    // in frontend/src/utils/media.js): much faster first paint over a
-    // tunneled/cellular connection, at a quality difference that's rarely
-    // noticeable played back at this inline size.
-    private func videoDetailURL(from urlString: String) -> URL? {
-        let separator = urlString.contains("?") ? "&" : "?"
-        return URL(string: "\(urlString)\(separator)quality=720p")
     }
 
     private var expandButton: some View {
