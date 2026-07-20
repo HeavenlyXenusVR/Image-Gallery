@@ -584,6 +584,93 @@ async def _db_backed_transcode_and_cache(
                     pass
 
 
+async def _ensure_video_quality_cache(
+    media_id: int,
+    *,
+    item: dict[str, Any] | None = None,
+    quality: str = "720p",
+) -> bool:
+    """Runs the same live-transcode-and-cache path `_video_variant_response`
+    uses for an interactive request, but to completion in the background with
+    no client to stream to. Lets a real playback request for this quality hit
+    the cache (a plain, Range-capable `FileResponse`) instead of triggering a
+    live transcode that has to outrun the requester's own timeout — which for
+    a moov-at-end source file (the slow temp-file-fallback path in
+    `_db_backed_transcode_and_cache`) it often can't.
+    """
+    quality = _normalize_video_quality(quality)
+    profile = VIDEO_QUALITY_PROFILES.get(quality)
+    if not profile:
+        return False
+
+    item = item or await main.db.get_media(media_id, None)
+    if not item or str(item.get("media_kind") or "").lower() != "video":
+        return False
+
+    file_info = await main.db.get_media_file_info(media_id)
+    if not file_info:
+        return False
+
+    # Matches _video_variant_response's own guard — large DB-backed files skip
+    # the transcode entirely rather than risk the container's memory limit.
+    _TRANSCODE_SIZE_LIMIT = 500 * 1024 * 1024
+    if int(file_info.get("file_size") or 0) > _TRANSCODE_SIZE_LIMIT:
+        return False
+
+    digest = str(file_info.get("sha256") or item.get("content_sha256") or item.get("updated_at") or item.get("created_at") or media_id)
+    cache_file = main.VIDEO_CACHE_DIR / f"{int(media_id)}_{quality}_{hashlib.sha256(digest.encode('utf-8')).hexdigest()[:16]}.mp4"
+    if cache_file.exists() and cache_file.stat().st_size > 0:
+        return False
+
+    # An interactive request for the same media+quality is already doing this
+    # transcode (or another warm-up beat us to it) — nothing to do here.
+    stream_key = (int(media_id), quality)
+    if stream_key in main._video_active_streams:
+        return False
+    main._video_active_streams.add(stream_key)
+    try:
+        safe_name = Path(str(file_info.get("original_filename") or f"{media_id}.video")).name or f"{media_id}.video"
+        # _db_backed_transcode_and_cache owns discarding stream_key from
+        # main._video_active_streams in every one of its own cleanup paths —
+        # draining it here (there's no client to stream the yielded chunks
+        # to) is enough to populate cache_file.
+        async for _chunk in _db_backed_transcode_and_cache(int(file_info["id"]), safe_name, cache_file, profile, stream_key):
+            pass
+    except Exception:
+        main.logger.debug("Video quality pre-warm failed for media_id=%s quality=%s", media_id, quality, exc_info=True)
+        return False
+    return cache_file.exists() and cache_file.stat().st_size > 0
+
+
+def _queue_video_quality_warmup(
+    media_id: int,
+    *,
+    item: dict[str, Any] | None = None,
+    quality: str = "720p",
+) -> asyncio.Task[Any]:
+    normalized_quality = _normalize_video_quality(quality)
+    key = (int(media_id), normalized_quality)
+    existing = main._video_quality_warm_tasks.get(key)
+    if existing and not existing.done():
+        return existing
+
+    async def _runner() -> None:
+        try:
+            warmed = await _ensure_video_quality_cache(int(media_id), item=item, quality=normalized_quality)
+            if warmed:
+                main.logger.info("Warmed %s video quality cache for media %s.", normalized_quality, media_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            main.logger.debug("Video quality warmup failed for media %s.", media_id, exc_info=True)
+        finally:
+            main._video_quality_warm_tasks.pop(key, None)
+
+    task = asyncio.create_task(_runner())
+    main._video_quality_warm_tasks[key] = task
+    return task
+
+
 async def _video_variant_response(media_id: int, item: dict[str, Any], file_info: dict[str, Any] | None, legacy: Path | None, quality: str) -> Response | None:
     quality = _normalize_video_quality(quality)
     profile = VIDEO_QUALITY_PROFILES.get(quality)

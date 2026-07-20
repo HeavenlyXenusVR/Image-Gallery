@@ -46,6 +46,7 @@ _api_cache: OrderedDict[str, tuple[float, str, str]] = OrderedDict()
 _thumb_generation_locks: dict[str, asyncio.Lock] = {}
 _video_active_streams: set[tuple[int, str]] = set()
 _video_thumb_warm_tasks: dict[tuple[int, tuple[int, ...]], asyncio.Task[Any]] = {}
+_video_quality_warm_tasks: dict[tuple[int, str], asyncio.Task[Any]] = {}
 
 # Router imports live here (after settings/db/caches are defined, not at the
 # top of the file) because several router modules read `main.settings` at

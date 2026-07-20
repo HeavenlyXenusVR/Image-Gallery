@@ -53,7 +53,7 @@ from ._shared import (
     _viewer_can_open_adult,
     _with_urls,
 )
-from .media_streaming import VIDEO_THUMB_WARM_WIDTHS, _queue_video_thumb_warmup
+from .media_streaming import VIDEO_THUMB_WARM_WIDTHS, _queue_video_quality_warmup, _queue_video_thumb_warmup
 
 ADULT_KEYWORDS = {
     "18plus", "18+", "adult", "nsfw", "not safe for work", "nude", "nudity",
@@ -974,6 +974,7 @@ async def upload_media(
             _cleanup_upload_temp_file(uploaded["path"])
     if media_kind == "video":
         _queue_video_thumb_warmup(int(item["id"]), item=item, widths=VIDEO_THUMB_WARM_WIDTHS)
+        _queue_video_quality_warmup(int(item["id"]), item=item, quality="720p")
     adult_allowed = await _viewer_can_open_adult(request)
     _invalidate_api_cache("media", "tags", "categories")
     enriched = _with_urls(request, item, adult_allowed)
@@ -1046,6 +1047,11 @@ async def media_detail(media_id: int, request: Request) -> dict[str, Any]:
     if item.get("is_adult") and not adult_allowed:
         raise HTTPException(status_code=403, detail="Age verification required for this 18+ post.")
     await main.db.increment_counter(media_id, "views")
+    if item.get("media_kind") == "video":
+        # Fire-and-forget — gives the transcode a head start while the viewer
+        # reads the page, so existing (pre-warmup-feature) videos also warm up
+        # on their first real view instead of only on future uploads.
+        _queue_video_quality_warmup(media_id, item=item, quality="720p")
     comments = await main.db.list_comments(media_id)
     reactions = await main.db.list_reactions(media_id, viewer_id)
     similar = await main.db.list_similar_media(media_id, viewer_id, limit=8)
