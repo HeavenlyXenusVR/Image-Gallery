@@ -76,7 +76,7 @@ struct MediaDetailView: View {
             .frame(maxWidth: .infinity, minHeight: 220)
             .background(.secondary.opacity(0.1))
             .cornerRadius(12)
-        } else if media.isVideo, let urlString = media.url, let url = URL(string: urlString) {
+        } else if media.isVideo, let urlString = media.url, let url = videoDetailURL(from: urlString) {
             ZStack(alignment: .topTrailing) {
                 AuthenticatedVideoPlayer(url: url)
                     .frame(height: 260)
@@ -84,7 +84,14 @@ struct MediaDetailView: View {
                     .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
                 expandButton
             }
-        } else if let urlString = media.url, let url = URL(string: urlString) {
+        } else if let urlString = media.previewUrl?.nilIfEmpty ?? media.url, let url = URL(string: urlString) {
+            // `previewUrl` is a server-resized/recompressed WEBP (capped at
+            // 1920px), not the raw original `url` — this inline viewer is
+            // capped to 480pt tall anyway, so fetching the full multi-MB
+            // original here just makes the first paint slow for no visible
+            // benefit. `FullScreenMediaView` (reached via `expandButton`
+            // below) still uses the true original for full quality once the
+            // viewer explicitly asks for it.
             ZStack(alignment: .topTrailing) {
                 ZoomableAsyncImage(url: url)
                 // scaledToFit alone is safe from the grid-overlap class of bug
@@ -98,6 +105,16 @@ struct MediaDetailView: View {
                 expandButton
             }
         }
+    }
+
+    // Requests a bounded transcode instead of the raw original — same
+    // tradeoff the web app makes for its own previews (see `videoQualityUrl`
+    // in frontend/src/utils/media.js): much faster first paint over a
+    // tunneled/cellular connection, at a quality difference that's rarely
+    // noticeable played back at this inline size.
+    private func videoDetailURL(from urlString: String) -> URL? {
+        let separator = urlString.contains("?") ? "&" : "?"
+        return URL(string: "\(urlString)\(separator)quality=720p")
     }
 
     private var expandButton: some View {
