@@ -399,20 +399,37 @@ def _needs_video_transcode(mime_type: str | None) -> bool:
 
 
 def _stdin_transcode_compatible(header: bytes) -> bool:
-    """Return True when the file's container can be demuxed from non-seekable stdin.
+    """Return True only when ffmpeg can demux this container from a
+    non-seekable stdin pipe.
 
     * WebM/MKV: starts with EBML magic (0x1A 0x45 0xDF 0xA3) — always streamable.
-    * MP4/MOV/M4V: first box is 'ftyp' or 'moov' — fast-start layout, seekable
-      from the start.  Files whose first box is 'mdat' have moov at the end and
-      require a seekable (file-backed) input.
+    * MP4/MOV/M4V: the box *immediately after* `ftyp` must be `moov` — true
+      fast-start layout. Merely starting with `ftyp` is NOT sufficient on its
+      own: virtually every MP4/MOV starts with an `ftyp` box regardless of
+      layout, including files where `moov` only appears at the very end
+      after a multi-hundred-MB `mdat` (the common case for phone-recorded
+      video that was never re-muxed with faststart). ffmpeg can't seek
+      forward past `mdat` on a pipe to reach a trailing `moov`, so treating
+      "starts with ftyp" as streamable made it fail partway through with a
+      "partial file" demux error instead of falling back to the (slower,
+      but always-correct) temp-file path below.
     """
-    if len(header) < 4:
+    if len(header) < 8:
         return False
     if header[:4] == b"\x1a\x45\xdf\xa3":
         return True
-    if len(header) >= 8 and header[4:8] in (b"ftyp", b"moov"):
+    if header[4:8] == b"moov":
         return True
-    return False
+    if header[4:8] != b"ftyp":
+        return False
+    box_size = int.from_bytes(header[0:4], "big")
+    # box_size==0 means "extends to EOF" and box_size==1 means "read a
+    # 64-bit size from the next 8 bytes instead" — both are valid ISO-BMFF
+    # but rare for an ftyp box specifically; treat them (and a box_size that
+    # runs past what we fetched) as "can't tell" rather than guess.
+    if box_size < 8 or box_size + 8 > len(header):
+        return False
+    return header[box_size + 4:box_size + 8] == b"moov"
 
 
 async def _stdin_transcode_and_cache(
@@ -548,7 +565,10 @@ async def _db_backed_transcode_and_cache(
       slower (full DB read + disk write before first output byte) but the
       connection stays alive and the browser eventually plays the video.
     """
-    header = await main.db.get_file_header_bytes(file_id, size=8)
+    # 128 bytes comfortably covers a typical ftyp box (usually 16-32 bytes,
+    # even with a long compatible-brands list) so _stdin_transcode_compatible
+    # can see the box that comes right after it.
+    header = await main.db.get_file_header_bytes(file_id, size=128)
     if _stdin_transcode_compatible(header):
         async for data in _stdin_transcode_and_cache(file_id, cache_file, profile, stream_key):
             yield data
