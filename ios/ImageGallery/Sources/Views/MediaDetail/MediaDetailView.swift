@@ -20,30 +20,20 @@ struct MediaDetailView: View {
                     Text(media.title?.nilIfEmpty ?? "Untitled")
                         .font(.title2).bold()
 
-                    if let username = media.username {
-                        NavigationLink(destination: ProfileView(username: username)) {
-                            Label(media.displayName ?? username, systemImage: "person.crop.circle")
-                        }
-                        .font(.footnote)
-                    }
+                    UploaderRow(media: media)
 
                     if let description = media.description, !description.isEmpty {
                         Text(description)
                     }
 
-                    HStack(spacing: 16) {
-                        statLabel(systemImage: "heart", value: media.likeCount)
-                        statLabel(systemImage: "eye", value: media.views)
-                        statLabel(systemImage: "arrow.down.circle", value: media.downloads)
-                        statLabel(systemImage: "bubble.left", value: media.commentCount)
-                        if let fileSize = media.fileSize {
-                            Label(ByteCountFormatter.string(fromByteCount: Int64(fileSize), countStyle: .file), systemImage: "doc")
-                        }
-                    }
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                    actionRow(media)
+                    MediaActionBar(
+                        media: media,
+                        isTogglingLike: viewModel.isTogglingLike,
+                        isTogglingBookmark: viewModel.isTogglingBookmark,
+                        onLike: { Task { await viewModel.toggleLike() } },
+                        onBookmark: { Task { await viewModel.toggleBookmark() } },
+                        onReport: { showingReport = true }
+                    )
 
                     ReactionTray(reactions: viewModel.reactions) { emoji in
                         Task { await viewModel.react(emoji: emoji) }
@@ -53,6 +43,7 @@ struct MediaDetailView: View {
                     CommentsSection(viewModel: viewModel)
 
                     Divider()
+                    Label("More like this", systemImage: "square.grid.2x2").font(.headline)
                     SimilarMediaRail(items: viewModel.similar)
                 } else if viewModel.isLoading {
                     ProgressView().padding(.top, 80)
@@ -89,7 +80,8 @@ struct MediaDetailView: View {
             ZStack(alignment: .topTrailing) {
                 AuthenticatedVideoPlayer(url: url)
                     .frame(height: 260)
-                    .cornerRadius(12)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
                 expandButton
             }
         } else if let urlString = media.url, let url = URL(string: urlString) {
@@ -101,7 +93,8 @@ struct MediaDetailView: View {
                 // of the screen — cap it so the rest of the page stays reachable.
                 .frame(maxHeight: 480)
                 .clipped()
-                .cornerRadius(12)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
                 expandButton
             }
         }
@@ -113,50 +106,10 @@ struct MediaDetailView: View {
         } label: {
             Image(systemName: "arrow.up.left.and.arrow.down.right")
                 .padding(8)
-                .background(.black.opacity(0.5))
+                .background(.ultraThinMaterial, in: Circle())
                 .foregroundStyle(.white)
-                .clipShape(Circle())
         }
         .padding(8)
         .accessibilityLabel("View fullscreen")
-    }
-
-    @ViewBuilder
-    private func actionRow(_ media: MediaItem) -> some View {
-        HStack(spacing: 20) {
-            Button {
-                Task { await viewModel.toggleLike() }
-            } label: {
-                Label(media.likedByMe == true ? "Liked" : "Like", systemImage: media.likedByMe == true ? "heart.fill" : "heart")
-            }
-            .disabled(viewModel.isTogglingLike)
-
-            Button {
-                Task { await viewModel.toggleBookmark() }
-            } label: {
-                Label(media.bookmarkedByMe == true ? "Saved" : "Save", systemImage: media.bookmarkedByMe == true ? "bookmark.fill" : "bookmark")
-            }
-            .disabled(viewModel.isTogglingBookmark)
-
-            if let downloadUrl = media.downloadUrl, let url = URL(string: downloadUrl) {
-                ShareLink(item: url) {
-                    Label("Share", systemImage: "square.and.arrow.up")
-                }
-            }
-
-            Spacer()
-
-            Menu {
-                Button("Report", role: .destructive) { showingReport = true }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-            }
-            .accessibilityLabel("More options")
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func statLabel(systemImage: String, value: Int?) -> some View {
-        Label("\(value ?? 0)", systemImage: systemImage)
     }
 }

@@ -2,24 +2,46 @@ import SwiftUI
 
 struct StudioView: View {
     @StateObject private var viewModel = StudioViewModel()
+    @State private var filter: StudioFilter = .all
     @State private var showingBulkDeleteConfirm = false
     @State private var showingBulkTagPrompt = false
     @State private var bulkTagInput = ""
 
-    var body: some View {
-        VStack(spacing: 0) {
-            if viewModel.isSelecting && !viewModel.selectedIds.isEmpty {
-                bulkActionBar
-            }
+    private let columns = [GridItem(.adaptive(minimum: 150), spacing: 12)]
 
-            List {
+    private var filteredItems: [MediaItem] {
+        switch filter {
+        case .all:
+            return viewModel.items.filter { $0.deletedAt == nil }
+        case .deleted:
+            return viewModel.items.filter { $0.deletedAt != nil }
+        case .scheduled:
+            return viewModel.items.filter { item in
+                guard item.deletedAt == nil, let publishAt = DateFormatting.parse(item.publishAt) else { return false }
+                return publishAt > Date()
+            }
+        case .public, .unlisted, .private:
+            return viewModel.items.filter { $0.deletedAt == nil && ($0.visibility ?? "public") == filter.rawValue }
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                StudioStatsHeader(items: viewModel.items)
+                StudioFilterChipsRow(selected: $filter)
+
                 if let errorMessage = viewModel.errorMessage {
-                    Text(errorMessage).foregroundStyle(.red)
+                    Text(errorMessage).font(.footnote).foregroundStyle(.red)
                 }
-                ForEach(viewModel.items) { item in
-                    StudioItemRow(item: item, viewModel: viewModel)
+
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(filteredItems) { item in
+                        StudioItemCard(item: item, viewModel: viewModel)
+                    }
                 }
             }
+            .padding()
         }
         .navigationTitle("Studio")
         .toolbar {
@@ -34,6 +56,11 @@ struct StudioView: View {
                 ProgressView()
             } else if viewModel.items.isEmpty && !viewModel.isLoading {
                 ContentUnavailableCompat(title: "No uploads yet", systemImage: "photo.stack")
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if viewModel.isSelecting && !viewModel.selectedIds.isEmpty {
+                bulkActionBar
             }
         }
         .refreshable { await viewModel.load() }
@@ -62,7 +89,7 @@ struct StudioView: View {
 
     private var bulkActionBar: some View {
         HStack {
-            Text("\(viewModel.selectedIds.count) selected").font(.footnote)
+            Text("\(viewModel.selectedIds.count) selected").font(.footnote.weight(.semibold))
             Spacer()
             Menu {
                 Button("Public") { Task { await viewModel.bulkSetVisibility("public") } }
@@ -86,86 +113,15 @@ struct StudioView: View {
             }
             .accessibilityLabel("Delete selected items")
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
         .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(.secondary.opacity(0.1))
+        .padding(.bottom, 8)
+        .shadow(color: .black.opacity(0.16), radius: 8, x: 0, y: 3)
         .disabled(viewModel.isBulkWorking)
         .overlay {
             if viewModel.isBulkWorking { ProgressView() }
-        }
-    }
-}
-
-struct StudioItemRow: View {
-    let item: MediaItem
-    @ObservedObject var viewModel: StudioViewModel
-
-    var body: some View {
-        Group {
-            if viewModel.isSelecting {
-                Button {
-                    viewModel.toggleSelected(item)
-                } label: {
-                    HStack {
-                        Image(systemName: viewModel.selectedIds.contains(item.id) ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(viewModel.selectedIds.contains(item.id) ? Color.accentColor : .secondary)
-                        rowContent
-                    }
-                }
-                .buttonStyle(.plain)
-            } else {
-                NavigationLink(destination: MediaDetailView(mediaId: item.id)) {
-                    rowContent
-                }
-                .swipeActions(edge: .trailing) {
-                    if item.deletedAt != nil {
-                        Button("Restore") { Task { await viewModel.restore(item) } }.tint(.green)
-                    } else {
-                        Button("Delete", role: .destructive) { Task { await viewModel.delete(item) } }
-                    }
-                }
-                .contextMenu {
-                    Button(item.pinnedAt != nil ? "Unpin" : "Pin") { Task { await viewModel.togglePinned(item) } }
-                    Menu("Set visibility") {
-                        Button("Public") { Task { await viewModel.updateVisibility(item, visibility: "public") } }
-                        Button("Unlisted") { Task { await viewModel.updateVisibility(item, visibility: "unlisted") } }
-                        Button("Private") { Task { await viewModel.updateVisibility(item, visibility: "private") } }
-                    }
-                }
-            }
-        }
-    }
-
-    private var rowContent: some View {
-        HStack {
-            thumbnail
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.title?.nilIfEmpty ?? "Untitled").bold()
-                Text(item.visibility ?? "public").font(.caption).foregroundStyle(.secondary)
-                if let publishAt = item.publishAt {
-                    Text("Scheduled for \(publishAt)").font(.caption2).foregroundStyle(.orange)
-                }
-                if item.deletedAt != nil {
-                    Text("Deleted").font(.caption2).foregroundStyle(.red)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var thumbnail: some View {
-        if let urlString = item.thumbUrl, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
-                if case .success(let image) = phase {
-                    image.resizable().scaledToFill()
-                } else {
-                    Color.secondary.opacity(0.2)
-                }
-            }
-            .frame(width: 56, height: 56)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        } else {
-            RoundedRectangle(cornerRadius: 8).fill(.secondary.opacity(0.2)).frame(width: 56, height: 56)
         }
     }
 }

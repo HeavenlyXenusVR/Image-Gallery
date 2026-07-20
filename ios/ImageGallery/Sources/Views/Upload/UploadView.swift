@@ -21,107 +21,103 @@ struct UploadView: View {
         return nil
     }
 
+    private var hasPickedFile: Bool {
+        viewModel.pickedData != nil || viewModel.pickedFileURL != nil
+    }
+
+    private var canSubmit: Bool {
+        hasPickedFile && !viewModel.title.isEmpty && !viewModel.isUploading
+    }
+
     var body: some View {
-        Form {
-            Section {
-                PhotosPicker(selection: $viewModel.pickerItem, matching: .any(of: [.images, .videos])) {
-                    if viewModel.pickedData != nil || viewModel.pickedFileURL != nil {
-                        Label("Change file", systemImage: "photo.on.rectangle")
-                    } else {
-                        Label("Choose photo or video", systemImage: "plus.square.on.square")
-                    }
-                }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                MediaPickerHeroCard(
+                    pickerItem: $viewModel.pickerItem,
+                    pickedData: viewModel.pickedData,
+                    pickedFileURL: viewModel.pickedFileURL,
+                    isVideo: viewModel.isVideo,
+                    isUploading: viewModel.isUploading
+                )
                 .onChange(of: viewModel.pickerItem) { _ in
                     Task { await viewModel.handlePickerSelection() }
                 }
 
-                if let data = viewModel.pickedData, !viewModel.isVideo, let uiImage = UIImage(data: data) {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(maxHeight: 200)
-                } else if viewModel.pickedFileURL != nil, viewModel.isVideo {
-                    Label("Video selected", systemImage: "video.fill")
+                if let errorMessage = viewModel.errorMessage {
+                    Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
-            }
-            .disabled(viewModel.isUploading)
 
-            Section("Details") {
-                TextField("Title", text: $viewModel.title)
-                    .onChange(of: viewModel.title) { newValue in
-                        if newValue.count > 160 { viewModel.title = String(newValue.prefix(160)) }
+                if hasPickedFile {
+                    UploadCardSection("Details", "text.alignleft") {
+                        TextField("Title", text: $viewModel.title)
+                            .onChange(of: viewModel.title) { newValue in
+                                if newValue.count > 160 { viewModel.title = String(newValue.prefix(160)) }
+                            }
+                        Divider()
+                        TextField("Description", text: $viewModel.description, axis: .vertical)
+                            .lineLimit(3...6)
+                            .onChange(of: viewModel.description) { newValue in
+                                if newValue.count > 2000 { viewModel.description = String(newValue.prefix(2000)) }
+                            }
                     }
-                TextField("Description", text: $viewModel.description, axis: .vertical)
-                    .lineLimit(3...6)
-                    .onChange(of: viewModel.description) { newValue in
-                        if newValue.count > 2000 { viewModel.description = String(newValue.prefix(2000)) }
+
+                    UploadCardSection("Category", "square.grid.2x2") {
+                        UploadCategoryChipsRow(categories: viewModel.categories, selectedName: $viewModel.categoryName)
+                        TextField("Category", text: $viewModel.categoryName)
+                            .onChange(of: viewModel.categoryName) { newValue in
+                                if newValue.count > 80 { viewModel.categoryName = String(newValue.prefix(80)) }
+                            }
                     }
-                TextField("Category", text: $viewModel.categoryName)
-                    .onChange(of: viewModel.categoryName) { newValue in
-                        if newValue.count > 80 { viewModel.categoryName = String(newValue.prefix(80)) }
+
+                    UploadCardSection("Tags", "tag") {
+                        TagChipsField(tags: $viewModel.tags)
+                        if let tagsWarning {
+                            Text(tagsWarning).font(.footnote).foregroundStyle(.secondary)
+                        }
                     }
-                TextField("Tags (comma separated)", text: $viewModel.tags)
-                if let tagsWarning {
-                    Text(tagsWarning).font(.footnote).foregroundStyle(.secondary)
-                }
-            }
-            .disabled(viewModel.isUploading)
 
-            Section("Visibility") {
-                Picker("Visibility", selection: $viewModel.visibility) {
-                    Text("Public").tag("public")
-                    Text("Unlisted").tag("unlisted")
-                    Text("Private").tag("private")
-                }
-                Toggle("18+", isOn: $viewModel.isAdult)
-                Toggle("Comments enabled", isOn: $viewModel.commentsEnabled)
-                Toggle("Downloads enabled", isOn: $viewModel.downloadsEnabled)
-                Toggle("AI metadata", isOn: $viewModel.autoAI)
-            }
-            .disabled(viewModel.isUploading)
+                    UploadCardSection("Visibility", "eye") {
+                        VisibilityCardPicker(visibility: $viewModel.visibility)
+                    }
 
-            Section("Schedule") {
-                Toggle("Schedule for later", isOn: $viewModel.scheduleEnabled)
-                if viewModel.scheduleEnabled {
-                    DatePicker("Publish at", selection: $viewModel.publishAt, in: Date()..., displayedComponents: [.date, .hourAndMinute])
-                }
-            }
-            .disabled(viewModel.isUploading)
+                    UploadCardSection("Settings", "slider.horizontal.3") {
+                        Toggle("18+", isOn: $viewModel.isAdult)
+                        Toggle("Comments enabled", isOn: $viewModel.commentsEnabled)
+                        Toggle("Downloads enabled", isOn: $viewModel.downloadsEnabled)
+                        Toggle("AI metadata", isOn: $viewModel.autoAI)
+                    }
 
-            if let errorMessage = viewModel.errorMessage {
-                Section {
-                    Text(errorMessage).foregroundStyle(.red)
-                }
-            }
+                    UploadCardSection("Schedule", "clock") {
+                        Toggle("Schedule for later", isOn: $viewModel.scheduleEnabled)
+                        if viewModel.scheduleEnabled {
+                            DatePicker("Publish at", selection: $viewModel.publishAt, in: Date()..., displayedComponents: [.date, .hourAndMinute])
+                        }
+                    }
 
-            if !viewModel.possibleDuplicates.isEmpty {
-                Section("Similar to posts you already have") {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(viewModel.possibleDuplicates) { match in
-                                duplicateThumbnail(match)
+                    if !viewModel.possibleDuplicates.isEmpty {
+                        UploadCardSection("Similar to posts you already have", "sparkle.magnifyingglass") {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 8) {
+                                    ForEach(viewModel.possibleDuplicates) { match in
+                                        duplicateThumbnail(match)
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-
-            Section {
-                Button {
-                    Task {
-                        if await viewModel.submit() {
-                            showingSuccess = true
-                        }
-                    }
-                } label: {
-                    if viewModel.isUploading {
-                        ProgressView()
-                    } else {
-                        Text("Upload").frame(maxWidth: .infinity)
-                    }
-                }
-                .disabled((viewModel.pickedData == nil && viewModel.pickedFileURL == nil) || viewModel.title.isEmpty || viewModel.isUploading)
-            }
+            .padding()
+            .animation(.easeOut(duration: 0.25), value: hasPickedFile)
+        }
+        .disabled(viewModel.isUploading)
+        .safeAreaInset(edge: .bottom) {
+            publishBar
         }
         .navigationTitle("Upload")
         .task { await viewModel.loadCategories() }
@@ -132,6 +128,33 @@ struct UploadView: View {
                 Text("Heads up — this looked similar to \(viewModel.possibleDuplicates.count) post\(viewModel.possibleDuplicates.count == 1 ? "" : "s") already in your library.")
             }
         }
+    }
+
+    private var publishBar: some View {
+        Button {
+            Task {
+                if await viewModel.submit() {
+                    showingSuccess = true
+                }
+            }
+        } label: {
+            Group {
+                if viewModel.isUploading {
+                    ProgressView().tint(.white)
+                } else {
+                    Text("Publish").font(.headline)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(canSubmit ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(Color.secondary.opacity(0.3)), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .foregroundStyle(.white)
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSubmit)
+        .padding(.horizontal)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
     }
 
     @ViewBuilder
