@@ -1,0 +1,86 @@
+-- Settings loader. Mirrors app/config.py's fallback chains (GALLERY_DB_HOST ->
+-- DB_HOST -> MYSQL_HOST etc.) closely enough to work from the same .env file
+-- image_gallery already uses, loaded into the container's environment via
+-- docker-compose's `env_file: ../Image Gallery/.env` (unchanged from the
+-- Python deployment) -- this module never reads .env itself, only
+-- os.getenv(), matching how the container actually receives config.
+--
+-- KEY DIFFERENCE FROM app/config.py: db_port here defaults to 5432 (Postgres),
+-- not 3306 (MariaDB) -- the .env file's GALLERY_DB_PORT=3306 is a leftover
+-- from the still-live MariaDB config and MUST be overridden to 5432 for this
+-- Lua backend via docker-compose (see final report: exact env var to add/
+-- change). If GALLERY_DB_PORT is left at 3306 this backend will fail to
+-- connect (Postgres does not speak the MySQL wire protocol on that port).
+
+local function env(name, default)
+  local v = os.getenv(name)
+  if v == nil or v == "" then return default end
+  return v
+end
+
+local function env_int(name, default)
+  local v = os.getenv(name)
+  if v == nil or v == "" then return default end
+  return tonumber(v) or default
+end
+
+local function env_bool(name, default)
+  local v = os.getenv(name)
+  if v == nil or v == "" then return default end
+  v = v:lower()
+  return v == "1" or v == "true" or v == "yes" or v == "on"
+end
+
+local function env_csv(name)
+  local raw = env(name, "")
+  local out = {}
+  for item in raw:gmatch("[^,]+") do
+    local trimmed = item:match("^%s*(.-)%s*$")
+    if trimmed ~= "" then out[#out + 1] = trimmed end
+  end
+  return out
+end
+
+local M = {}
+
+function M.load()
+  local db_host = env("GALLERY_DB_HOST") or env("DB_HOST") or env("MYSQL_HOST") or "127.0.0.1"
+  return {
+    db_host = db_host,
+    -- NOTE: intentionally 5432 default (Postgres), unlike Python's 3306 default.
+    db_port = env_int("GALLERY_PG_PORT", env_int("GALLERY_DB_PORT_PG", 5432)),
+    db_user = env("GALLERY_DB_USER") or env("DB_USER") or env("MYSQL_USER") or "botuser",
+    db_password = env("GALLERY_DB_PASSWORD") or env("DB_PASSWORD") or env("MYSQL_PASSWORD") or "bot_logins",
+    db_name = env("GALLERY_DB_SCHEMA", "image_gallery"),
+
+    session_secret = env("GALLERY_SESSION_SECRET", ""),
+    api_token_ttl_seconds = env_int("GALLERY_API_TOKEN_TTL_SECONDS", 1209600),
+
+    cors_allowed_origins = env_csv("GALLERY_CORS_ALLOWED_ORIGINS"),
+    cors_allow_origin_regex = env("GALLERY_CORS_ALLOW_ORIGIN_REGEX", ""),
+    trusted_hosts = env_csv("GALLERY_TRUSTED_HOSTS"),
+    pages_public_url = env("GALLERY_PAGES_PUBLIC_URL", "https://heavenlyxenusvr.github.io/Image-Gallery/"),
+
+    -- Python defaults this to ROOT_DIR/uploads (the project root that
+    -- contains app/, one level above app/config.py). This Lua backend's cwd
+    -- at runtime is lua/ (see main.lua's package.path setup and the
+    -- Dockerfile's WORKDIR /app, which COPYs the *contents* of lua/), so the
+    -- equivalent default is "../uploads" -- the sibling uploads/ directory
+    -- at the project root. In a container deployment this directory must be
+    -- bind-mounted (same requirement the Python backend already has) and
+    -- GALLERY_UPLOADS_DIR pointed at wherever it's mounted.
+    uploads_dir = env("GALLERY_UPLOADS_DIR", "../uploads"):gsub("/+$", ""),
+    storage_backend = env("GALLERY_STORAGE_BACKEND", "database"),
+    max_upload_bytes = env_int("GALLERY_MAX_UPLOAD_BYTES", 3 * 1024 * 1024 * 1024),
+    media_page_limit = math.max(1, math.min(200, env_int("GALLERY_MEDIA_PAGE_LIMIT", 100))),
+    max_tags_per_upload = math.max(1, math.min(50, env_int("GALLERY_MAX_TAGS_PER_UPLOAD", 12))),
+    max_tag_length = math.max(8, math.min(80, env_int("GALLERY_MAX_TAG_LENGTH", 32))),
+
+    host = env("GALLERY_HTTP_HOST", "0.0.0.0"),
+    port = env_int("GALLERY_HTTP_PORT", 8788),
+
+    db_schema = env("GALLERY_DB_SCHEMA", "image_gallery"),
+  }
+end
+
+return M
