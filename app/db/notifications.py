@@ -2,7 +2,7 @@
 
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 NOTIFICATION_KINDS = {
     "follow", "friend_request", "friend_accept", "comment", "message",

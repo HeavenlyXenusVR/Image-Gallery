@@ -2,7 +2,7 @@
 
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 
 class MessagingMixin:
@@ -20,10 +20,10 @@ class MessagingMixin:
                 if not await cur.fetchone():
                     raise ValueError("User not found.")
                 await cur.execute(
-                    "INSERT INTO user_messages (sender_id, recipient_id, body) VALUES (%s, %s, %s)",
+                    "INSERT INTO user_messages (sender_id, recipient_id, body) VALUES (%s, %s, %s) RETURNING id",
                     (sender_id, recipient_id, cleaned),
                 )
-                message_id = cur.lastrowid
+                message_id = (await cur.fetchone())["id"]
                 await cur.execute(
                     """
                     SELECT msg.*, u.username, u.display_name, u.avatar_path, u.profile_color, u.public_profile, u.last_seen_at
@@ -45,8 +45,8 @@ class MessagingMixin:
                       other_user.id AS id,
                       other_user.id AS user_id,
                       other_user.username,
-                      CASE WHEN other_user.public_profile=1 THEN other_user.display_name ELSE other_user.username END AS display_name,
-                      CASE WHEN other_user.public_profile=1 THEN other_user.avatar_path ELSE NULL END AS avatar_path,
+                      CASE WHEN other_user.public_profile=true THEN other_user.display_name ELSE other_user.username END AS display_name,
+                      CASE WHEN other_user.public_profile=true THEN other_user.avatar_path ELSE NULL END AS avatar_path,
                       other_user.profile_color,
                       other_user.public_profile,
                       other_user.last_seen_at,

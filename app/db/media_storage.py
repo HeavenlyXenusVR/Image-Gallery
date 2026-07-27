@@ -2,7 +2,7 @@
 
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 from ._shared import log
 
@@ -49,10 +49,11 @@ class MediaBlobMixin:
                             """
                             INSERT INTO media_files (sha256, mime_type, original_filename, media_kind, file_size, content, created_by)
                             VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            RETURNING id
                             """,
                             (sha256, mime_type[:120], original_filename[:255], media_kind, total_size, b"", user_id),
                         )
-                        media_file_id = int(cur.lastrowid)
+                        media_file_id = int((await cur.fetchone())["id"])
                         if content_path is not None:
                             with open(content_path, "rb") as source:
                                 chunk_index = 0

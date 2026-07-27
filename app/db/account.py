@@ -5,7 +5,7 @@ import time as _time
 from datetime import date
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 from ..auth import hash_password, verify_password
 from ..discord_webhook import is_valid_discord_webhook_url
@@ -36,10 +36,12 @@ class AccountMixin:
                     """
                     INSERT INTO users (username, display_name, password_hash, email, email_verification_token_hash, email_verification_sent_at)
                     VALUES (%s, %s, %s, %s, %s, CASE WHEN %s IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END)
+                    RETURNING id
                     """,
                     (username, display_name, hash_password(password), email, token_hash, token_hash),
                 )
-                return await self.get_user(cur.lastrowid)
+                new_id = (await cur.fetchone())["id"]
+                return await self.get_user(new_id)
 
 
     async def verify_email_by_token(self, token: str) -> dict[str, Any] | None:
@@ -201,11 +203,11 @@ class AccountMixin:
             "profile_headline": self._clean_text(payload.get("profile_headline"), 120),
             "featured_tags": json.dumps(self._clean_tags(payload.get("featured_tags") or [])),
             "profile_color": self._clean_color(payload.get("profile_color")),
-            "public_profile": 1 if payload.get("public_profile", True) else 0,
-            "show_liked_count": 1 if payload.get("show_liked_count", True) else 0,
-            "show_collections": 1 if payload.get("show_collections", True) else 0,
-            "show_recent_uploads": 1 if payload.get("show_recent_uploads", True) else 0,
-            "show_friends": 1 if payload.get("show_friends", True) else 0,
+            "public_profile": bool(payload.get("public_profile", True)),
+            "show_liked_count": bool(payload.get("show_liked_count", True)),
+            "show_collections": bool(payload.get("show_collections", True)),
+            "show_recent_uploads": bool(payload.get("show_recent_uploads", True)),
+            "show_friends": bool(payload.get("show_friends", True)),
         }
         if fields["website_url"] and not fields["website_url"].startswith(("http://", "https://")):
             raise ValueError("Website must start with http:// or https://.")
@@ -247,7 +249,7 @@ class AccountMixin:
                 await cur.execute(
                     """
                     UPDATE users
-                    SET birthdate=%s, age_verified_at=CURRENT_TIMESTAMP, adult_content_consent=1
+                    SET birthdate=%s, age_verified_at=CURRENT_TIMESTAMP, adult_content_consent=true
                     WHERE id=%s
                     """,
                     (birthdate.isoformat(), user_id),
@@ -331,11 +333,12 @@ class AccountMixin:
                     """
                     INSERT INTO user_avatar_files (user_id, sha256, mime_type, original_filename, file_size, content)
                     VALUES (%s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id), created_at=CURRENT_TIMESTAMP
+                    ON CONFLICT (user_id, sha256) DO UPDATE SET id=user_avatar_files.id, created_at=CURRENT_TIMESTAMP
+                    RETURNING id
                     """,
                     (user_id, sha256, mime_type[:120], original_filename[:255], len(content), content),
                 )
-                file_id = cur.lastrowid
+                file_id = (await cur.fetchone())["id"]
                 await cur.execute(
                     """
                     UPDATE users
@@ -392,7 +395,7 @@ class AccountMixin:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "INSERT INTO auth_attempts (username, ip_address, successful) VALUES (%s, %s, %s)",
-                    ((username or "")[:80] or None, ip_address[:64], 1 if successful else 0),
+                    ((username or "")[:80] or None, ip_address[:64], bool(successful)),
                 )
 
 
@@ -402,7 +405,7 @@ class AccountMixin:
                 await cur.execute(
                     """
                     SELECT COUNT(*) AS n FROM auth_attempts
-                    WHERE successful=0 AND created_at >= (CURRENT_TIMESTAMP - INTERVAL %s MINUTE)
+                    WHERE successful=false AND created_at >= (CURRENT_TIMESTAMP - make_interval(mins => %s))
                       AND (ip_address=%s OR username=%s)
                     """,
                     (minutes, ip_address[:64], (username or "")[:80]),
@@ -423,7 +426,7 @@ class AccountMixin:
                 try:
                     await cur.execute(
                         """
-                        SELECT event_count, TIMESTAMPDIFF(SECOND, window_start, UTC_TIMESTAMP()) AS age_seconds
+                        SELECT event_count, EXTRACT(EPOCH FROM ((now() AT TIME ZONE 'utc') - window_start)) AS age_seconds
                         FROM api_rate_limits
                         WHERE bucket_key=%s
                         FOR UPDATE
@@ -433,7 +436,7 @@ class AccountMixin:
                     row = await cur.fetchone()
                     if not row:
                         await cur.execute(
-                            "INSERT INTO api_rate_limits (bucket_key, window_start, event_count) VALUES (%s, UTC_TIMESTAMP(), 1)",
+                            "INSERT INTO api_rate_limits (bucket_key, window_start, event_count) VALUES (%s, (now() AT TIME ZONE 'utc'), 1)",
                             (bucket_key,),
                         )
                         await conn.commit()
@@ -442,7 +445,7 @@ class AccountMixin:
                     count = int(row.get("event_count") or 0)
                     if age >= window_seconds:
                         await cur.execute(
-                            "UPDATE api_rate_limits SET window_start=UTC_TIMESTAMP(), event_count=1 WHERE bucket_key=%s",
+                            "UPDATE api_rate_limits SET window_start=(now() AT TIME ZONE 'utc'), event_count=1 WHERE bucket_key=%s",
                             (bucket_key,),
                         )
                         await conn.commit()

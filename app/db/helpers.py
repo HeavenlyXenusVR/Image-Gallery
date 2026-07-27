@@ -5,7 +5,7 @@ import re
 from decimal import Decimal
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 from ._shared import DEFAULT_USER_SETTINGS
 

@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 from ._shared import MEDIA_CATEGORY_JOIN, MEDIA_CATEGORY_SELECT, normalize_subcategory_ids
 
@@ -26,6 +26,7 @@ class MediaMixin:
                            is_adult, adult_marked_by_user, adult_marked_by_ai,
                            moderation_status, moderation_score, moderation_reason, moderated_at, publish_at, image_phash, image_dhash)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE NULL END, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s, %s)
+                        RETURNING id
                         """,
                         (
                             item["user_id"], item["category_id"], primary_subcategory_id, item["title"], item.get("description"), tags_json,
@@ -33,12 +34,12 @@ class MediaMixin:
                             item.get("storage_path") or f"db://media/{item.get('media_file_id')}", item["file_size"],
                             item.get("media_file_id"), item.get("content_sha256"),
                             item.get("visibility") if item.get("visibility") in {"public", "unlisted", "private"} else "public",
-                            1 if item.get("comments_enabled", True) else 0,
-                            1 if item.get("downloads_enabled", True) else 0,
+                            bool(item.get("comments_enabled", True)),
+                            bool(item.get("downloads_enabled", True)),
                             1 if item.get("pinned") else 0,
-                            1 if item.get("is_adult") else 0,
-                            1 if item.get("adult_marked_by_user") else 0,
-                            1 if item.get("adult_marked_by_ai") else 0,
+                            bool(item.get("is_adult")),
+                            bool(item.get("adult_marked_by_user")),
+                            bool(item.get("adult_marked_by_ai")),
                             item.get("moderation_status") or "clear",
                             float(item.get("moderation_score") or 0),
                             item.get("moderation_reason"),
@@ -47,7 +48,7 @@ class MediaMixin:
                             item.get("image_dhash"),
                         ),
                     )
-                    media_id = int(cur.lastrowid)
+                    media_id = int((await cur.fetchone())["id"])
                     await self._write_media_subcategories(cur, media_id, subcategory_ids or ([primary_subcategory_id] if primary_subcategory_id else []))
                     await conn.commit()
                 except Exception:
@@ -103,7 +104,7 @@ class MediaMixin:
         clauses = [
             "m.deleted_at IS NULL",
             "(m.visibility='public' OR m.user_id=%s)",
-            "(m.publish_at IS NULL OR m.publish_at <= UTC_TIMESTAMP() OR m.user_id=%s)",
+            "(m.publish_at IS NULL OR m.publish_at <= (now() AT TIME ZONE 'utc') OR m.user_id=%s)",
         ]
         params: list[Any] = [viewer, viewer]
         if media_kind in {"image", "video"}:
@@ -136,9 +137,9 @@ class MediaMixin:
             clauses.append("DATE(m.created_at) <= %s")
             params.append(date_to)
         if adult == "only":
-            clauses.append("m.is_adult=1")
+            clauses.append("m.is_adult=true")
         elif adult == "hide":
-            clauses.append("m.is_adult=0")
+            clauses.append("m.is_adult=false")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         order = {
             "popular": "m.pinned_at DESC, like_count DESC, m.views DESC, m.created_at DESC",
@@ -153,10 +154,10 @@ class MediaMixin:
                     f"""
                     SELECT m.*, {MEDIA_CATEGORY_SELECT}
                            u.username,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
                            u.profile_color, u.public_profile,
                            COUNT(DISTINCT l.user_id) AS like_count,
                            COUNT(DISTINCT cm.id) AS comment_count,
@@ -170,7 +171,7 @@ class MediaMixin:
                     LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id = %s
                     LEFT JOIN media_comments cm ON cm.media_id = m.id
                     {where}
-                    GROUP BY m.id
+                    GROUP BY m.id, c.id, sc.id, u.id
                     ORDER BY {order}
                     LIMIT %s OFFSET %s
                     """,
@@ -200,7 +201,7 @@ class MediaMixin:
                     LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id = %s
                     LEFT JOIN media_comments cm ON cm.media_id = m.id
                     WHERE m.user_id=%s AND (%s=1 OR m.deleted_at IS NULL)
-                    GROUP BY m.id
+                    GROUP BY m.id, c.id, sc.id, u.id
                     ORDER BY m.created_at DESC
                     LIMIT %s
                     """,
@@ -225,10 +226,10 @@ class MediaMixin:
                     f"""
                     SELECT m.*, {MEDIA_CATEGORY_SELECT}
                            u.username,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
                            u.profile_color, u.public_profile,
                            COUNT(DISTINCT l.user_id) AS like_count,
                            COUNT(DISTINCT cm.id) AS comment_count,
@@ -243,9 +244,9 @@ class MediaMixin:
                     LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id = %s
                     LEFT JOIN media_comments cm ON cm.media_id = m.id
                     WHERE m.deleted_at IS NULL AND (m.visibility='public' OR m.user_id=%s)
-                      AND (m.publish_at IS NULL OR m.publish_at <= UTC_TIMESTAMP() OR m.user_id=%s)
-                      AND m.created_at >= (UTC_TIMESTAMP() - INTERVAL %s DAY)
-                    GROUP BY m.id
+                      AND (m.publish_at IS NULL OR m.publish_at <= (now() AT TIME ZONE 'utc') OR m.user_id=%s)
+                      AND m.created_at >= ((now() AT TIME ZONE 'utc') - make_interval(days => %s))
+                    GROUP BY m.id, c.id, sc.id, u.id
                     ORDER BY trend_score DESC, m.created_at DESC
                     LIMIT %s
                     """,
@@ -316,10 +317,10 @@ class MediaMixin:
                     f"""
                     SELECT m.*, {MEDIA_CATEGORY_SELECT}
                            u.username,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
                            u.profile_color, u.public_profile,
                            COUNT(DISTINCT l.user_id) AS like_count,
                            COUNT(DISTINCT cm.id) AS comment_count,
@@ -333,7 +334,7 @@ class MediaMixin:
                     LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id = %s
                     LEFT JOIN media_comments cm ON cm.media_id = m.id
                     WHERE m.id=%s
-                    GROUP BY m.id
+                    GROUP BY m.id, c.id, sc.id, u.id
                     """,
                     (viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, viewer_id or 0, media_id),
                 )
@@ -357,7 +358,7 @@ class MediaMixin:
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cur:
                 if liked:
-                    await cur.execute("INSERT IGNORE INTO media_likes (user_id, media_id) VALUES (%s, %s)", (user_id, media_id))
+                    await cur.execute("INSERT INTO media_likes (user_id, media_id) VALUES (%s, %s) ON CONFLICT (user_id, media_id) DO NOTHING", (user_id, media_id))
                 else:
                     await cur.execute("DELETE FROM media_likes WHERE user_id=%s AND media_id=%s", (user_id, media_id))
         return await self.get_media(media_id, user_id)
@@ -387,18 +388,19 @@ class MediaMixin:
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "INSERT INTO media_comments (media_id, user_id, body, parent_comment_id) VALUES (%s, %s, %s, %s)",
+                    "INSERT INTO media_comments (media_id, user_id, body, parent_comment_id) VALUES (%s, %s, %s, %s) RETURNING id",
                     (media_id, user_id, body, parent_id),
                 )
+                new_comment_id = (await cur.fetchone())["id"]
                 await cur.execute(
                     """
                     SELECT cm.*, u.username,
-                           CASE WHEN u.public_profile=1 THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 THEN u.avatar_path ELSE NULL END AS user_avatar_path
+                           CASE WHEN u.public_profile=true THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true THEN u.avatar_path ELSE NULL END AS user_avatar_path
                     FROM media_comments cm JOIN users u ON u.id = cm.user_id
                     WHERE cm.id=%s
                     """,
-                    (cur.lastrowid,),
+                    (new_comment_id,),
                 )
                 return await cur.fetchone()
 
@@ -411,8 +413,8 @@ class MediaMixin:
                 await cur.execute(
                     """
                     SELECT cm.*, u.username,
-                           CASE WHEN u.public_profile=1 THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 THEN u.avatar_path ELSE NULL END AS user_avatar_path
+                           CASE WHEN u.public_profile=true THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true THEN u.avatar_path ELSE NULL END AS user_avatar_path
                     FROM media_comments cm JOIN users u ON u.id = cm.user_id
                     WHERE cm.media_id=%s
                     ORDER BY cm.created_at ASC
@@ -442,7 +444,7 @@ class MediaMixin:
                 else:
                     await cur.execute(
                         "INSERT INTO media_reactions (media_id, user_id, emoji) VALUES (%s, %s, %s) "
-                        "ON DUPLICATE KEY UPDATE emoji=VALUES(emoji), created_at=CURRENT_TIMESTAMP",
+                        "ON CONFLICT (media_id, user_id) DO UPDATE SET emoji=EXCLUDED.emoji, created_at=CURRENT_TIMESTAMP",
                         (media_id, user_id, emoji),
                     )
         return await self.list_reactions(media_id, user_id)
@@ -492,22 +494,22 @@ class MediaMixin:
         tag_conditions = []
         params: list[Any] = []
         for tag in tags[:8]:
-            tag_conditions.append("JSON_CONTAINS(m.tags, JSON_QUOTE(%s))")
+            tag_conditions.append("(m.tags::jsonb @> jsonb_build_array(%s::text))::int")
             params.append(str(tag))
         tag_score_sql = " + ".join(f"({cond})" for cond in tag_conditions) if tag_conditions else "0"
-        adult_clause = "" if viewer_id else "AND m.is_adult=0"
+        adult_clause = "" if viewer_id else "AND m.is_adult=false"
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
                     f"""
                     SELECT m.*, {MEDIA_CATEGORY_SELECT}
                            u.username, u.display_name, u.avatar_path AS user_avatar_path, u.profile_color,
-                           ({tag_score_sql} + (m.category_id=%s)) AS relevance
+                           ({tag_score_sql} + (m.category_id=%s)::int) AS relevance
                     FROM media_items m
                     {MEDIA_CATEGORY_JOIN}
                     JOIN users u ON u.id = m.user_id
                     WHERE m.id != %s AND m.deleted_at IS NULL AND m.visibility='public'
-                          AND (m.publish_at IS NULL OR m.publish_at <= UTC_TIMESTAMP())
+                          AND (m.publish_at IS NULL OR m.publish_at <= (now() AT TIME ZONE 'utc'))
                           {adult_clause}
                           AND (m.category_id=%s OR {tag_score_sql if tag_conditions else '0'} > 0)
                     ORDER BY relevance DESC, m.created_at DESC
@@ -542,9 +544,9 @@ class MediaMixin:
         visibility = str(payload.get("visibility") or "public").lower()
         if visibility not in {"public", "unlisted", "private"}:
             raise ValueError("Visibility must be public, unlisted, or private.")
-        is_adult = 1 if payload.get("is_adult") else 0
-        comments_enabled = 1 if payload.get("comments_enabled", True) else 0
-        downloads_enabled = 1 if payload.get("downloads_enabled", True) else 0
+        is_adult = bool(payload.get("is_adult"))
+        comments_enabled = bool(payload.get("comments_enabled", True))
+        downloads_enabled = bool(payload.get("downloads_enabled", True))
         pinned = 1 if payload.get("pinned") else 0
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -565,9 +567,9 @@ class MediaMixin:
                             visibility=%s, comments_enabled=%s, downloads_enabled=%s,
                             pinned_at=CASE WHEN %s=1 THEN COALESCE(pinned_at, CURRENT_TIMESTAMP) ELSE NULL END,
                             is_adult=%s, adult_marked_by_user=%s,
-                            moderation_status=CASE WHEN %s=1 THEN 'adult' ELSE moderation_status END,
-                            moderation_reason=CASE WHEN %s=1 THEN 'Uploader marked this post as 18+.' ELSE moderation_reason END,
-                            moderated_at=CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE moderated_at END
+                            moderation_status=CASE WHEN %s THEN 'adult' ELSE moderation_status END,
+                            moderation_reason=CASE WHEN %s THEN 'Uploader marked this post as 18+.' ELSE moderation_reason END,
+                            moderated_at=CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE moderated_at END
                         WHERE id=%s AND user_id=%s
                         """,
                         (title, description, json.dumps(clean_tags), category_id, subcategory_id, visibility, comments_enabled, downloads_enabled,
@@ -596,7 +598,7 @@ class MediaMixin:
         for key in ("comments_enabled", "downloads_enabled"):
             if key in payload:
                 updates.append(f"{key}=%s")
-                params.append(1 if payload.get(key) else 0)
+                params.append(bool(payload.get(key)))
         if "pinned" in payload:
             updates.append("pinned_at=CASE WHEN %s=1 THEN COALESCE(pinned_at, CURRENT_TIMESTAMP) ELSE NULL END")
             params.append(1 if payload.get("pinned") else 0)
@@ -667,7 +669,7 @@ class MediaMixin:
                     """
                     INSERT INTO media_reports (media_id, user_id, reason, details)
                     VALUES (%s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE reason=VALUES(reason), details=VALUES(details), status='open', created_at=CURRENT_TIMESTAMP
+                    ON CONFLICT (media_id, user_id) DO UPDATE SET reason=EXCLUDED.reason, details=EXCLUDED.details, status='open', created_at=CURRENT_TIMESTAMP
                     """,
                     (media_id, user_id, reason, details),
                 )

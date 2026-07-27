@@ -2,7 +2,7 @@
 
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 from ._shared import (
     MAX_MEDIA_SUBCATEGORIES,
@@ -29,10 +29,11 @@ class CategoriesMixin:
                 if existing:
                     return existing
                 await cur.execute(
-                    "INSERT INTO categories (name, slug, media_kind, created_by) VALUES (%s, %s, %s, %s)",
+                    "INSERT INTO categories (name, slug, media_kind, created_by) VALUES (%s, %s, %s, %s) RETURNING id",
                     (name, base_slug, media_kind, user_id),
                 )
-                await cur.execute("SELECT * FROM categories WHERE id=%s", (cur.lastrowid,))
+                new_id = (await cur.fetchone())["id"]
+                await cur.execute("SELECT * FROM categories WHERE id=%s", (new_id,))
                 return await cur.fetchone()
 
 
@@ -57,10 +58,12 @@ class CategoriesMixin:
                     """
                     INSERT INTO subcategories (category_id, name, slug, created_by)
                     VALUES (%s, %s, %s, %s)
+                    RETURNING id
                     """,
                     (category_id, name, slug, user_id),
                 )
-                await cur.execute("SELECT * FROM subcategories WHERE id=%s", (cur.lastrowid,))
+                new_id = (await cur.fetchone())["id"]
+                await cur.execute("SELECT * FROM subcategories WHERE id=%s", (new_id,))
                 return await cur.fetchone()
 
 

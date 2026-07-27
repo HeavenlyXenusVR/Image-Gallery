@@ -4,7 +4,7 @@ import json
 from decimal import Decimal
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 from ._shared import DEFAULT_USER_SETTINGS, normalize_username
 
@@ -18,14 +18,14 @@ class ProfileFriendsMixin:
                 await cur.execute(
                     """
                     SELECT u.id, u.username,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS bio,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.profile_headline ELSE NULL END AS profile_headline,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.featured_tags ELSE NULL END AS featured_tags,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.website_url ELSE NULL END AS website_url,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.location_label ELSE NULL END AS location_label,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.user_settings ELSE NULL END AS user_settings,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.bio ELSE NULL END AS bio,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.profile_headline ELSE NULL END AS profile_headline,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.featured_tags ELSE NULL END AS featured_tags,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.website_url ELSE NULL END AS website_url,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.location_label ELSE NULL END AS location_label,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.user_settings ELSE NULL END AS user_settings,
                            u.avatar_file_id, u.profile_color, u.public_profile, u.show_liked_count,
                            u.show_collections, u.show_recent_uploads, u.show_friends, u.created_at,
                            u.last_seen_at,
@@ -94,7 +94,7 @@ class ProfileFriendsMixin:
                 if not await cur.fetchone():
                     return None
                 if following:
-                    await cur.execute("INSERT IGNORE INTO user_follows (follower_id, followed_id) VALUES (%s, %s)", (follower_id, followed_id))
+                    await cur.execute("INSERT INTO user_follows (follower_id, followed_id) VALUES (%s, %s) ON CONFLICT (follower_id, followed_id) DO NOTHING", (follower_id, followed_id))
                 else:
                     await cur.execute("DELETE FROM user_follows WHERE follower_id=%s AND followed_id=%s", (follower_id, followed_id))
                 await cur.execute("SELECT COUNT(*) AS n FROM user_follows WHERE followed_id=%s", (followed_id,))
@@ -115,7 +115,13 @@ class ProfileFriendsMixin:
                     FROM friend_requests
                     WHERE (requester_id=%s AND addressee_id=%s)
                        OR (requester_id=%s AND addressee_id=%s)
-                    ORDER BY FIELD(status, 'accepted', 'pending', 'declined', 'cancelled'), created_at DESC
+                    ORDER BY CASE status
+                        WHEN 'accepted' THEN 1
+                        WHEN 'pending' THEN 2
+                        WHEN 'declined' THEN 3
+                        WHEN 'cancelled' THEN 4
+                        ELSE 5
+                    END, created_at DESC
                     LIMIT 1
                     """,
                     (viewer_id, user_id, user_id, viewer_id),
@@ -141,7 +147,13 @@ class ProfileFriendsMixin:
                     SELECT * FROM friend_requests
                     WHERE (requester_id=%s AND addressee_id=%s)
                        OR (requester_id=%s AND addressee_id=%s)
-                    ORDER BY FIELD(status, 'accepted', 'pending', 'declined', 'cancelled'), created_at DESC
+                    ORDER BY CASE status
+                        WHEN 'accepted' THEN 1
+                        WHEN 'pending' THEN 2
+                        WHEN 'declined' THEN 3
+                        WHEN 'cancelled' THEN 4
+                        ELSE 5
+                    END, created_at DESC
                     LIMIT 1
                     """,
                     (requester_id, addressee_id, addressee_id, requester_id),
@@ -170,10 +182,10 @@ class ProfileFriendsMixin:
                     request_id = existing["id"]
                 else:
                     await cur.execute(
-                        "INSERT INTO friend_requests (requester_id, addressee_id) VALUES (%s, %s)",
+                        "INSERT INTO friend_requests (requester_id, addressee_id) VALUES (%s, %s) RETURNING id",
                         (requester_id, addressee_id),
                     )
-                    request_id = cur.lastrowid
+                    request_id = (await cur.fetchone())["id"]
                 await cur.execute("SELECT * FROM friend_requests WHERE id=%s", (request_id,))
                 return {"status": "pending_out", "request": await cur.fetchone()}
 
@@ -234,9 +246,9 @@ class ProfileFriendsMixin:
                 await cur.execute(
                     """
                     SELECT u.id, u.username,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS bio,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.bio ELSE NULL END AS bio,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
                            u.profile_color, u.public_profile, u.last_seen_at, fr.responded_at AS friended_at
                     FROM friend_requests fr
                     JOIN users u ON u.id = CASE WHEN fr.requester_id=%s THEN fr.addressee_id ELSE fr.requester_id END
@@ -258,10 +270,10 @@ class ProfileFriendsMixin:
                 await cur.execute(
                     """
                     SELECT u.id, u.username,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS bio,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.profile_headline ELSE NULL END AS profile_headline,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.bio ELSE NULL END AS bio,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.profile_headline ELSE NULL END AS profile_headline,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
                            u.profile_color, u.public_profile, u.show_liked_count, u.show_collections,
                            u.show_recent_uploads, u.show_friends, u.adult_content_consent, u.email_verified_at,
                            u.last_seen_at,
@@ -274,9 +286,9 @@ class ProfileFriendsMixin:
                     LEFT JOIN user_follows mine ON mine.followed_id=u.id AND mine.follower_id=%s
                     WHERE %s = ''
                        OR u.username LIKE %s
-                       OR (CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE NULL END) LIKE %s
-                       OR (CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END) LIKE %s
-                       OR (CASE WHEN u.public_profile=1 OR u.id=%s THEN u.profile_headline ELSE NULL END) LIKE %s
+                       OR (CASE WHEN u.public_profile=true OR u.id=%s THEN u.display_name ELSE NULL END) LIKE %s
+                       OR (CASE WHEN u.public_profile=true OR u.id=%s THEN u.bio ELSE NULL END) LIKE %s
+                       OR (CASE WHEN u.public_profile=true OR u.id=%s THEN u.profile_headline ELSE NULL END) LIKE %s
                     GROUP BY u.id
                     ORDER BY (u.username=%s) DESC, follower_count DESC, media_count DESC, u.created_at DESC
                     LIMIT %s
@@ -322,7 +334,7 @@ class ProfileFriendsMixin:
                     raise ValueError("User not found.")
                 if active:
                     await cur.execute(
-                        "INSERT IGNORE INTO user_blocks (blocker_id, blocked_id, kind) VALUES (%s, %s, %s)",
+                        "INSERT INTO user_blocks (blocker_id, blocked_id, kind) VALUES (%s, %s, %s) ON CONFLICT (blocker_id, blocked_id, kind) DO NOTHING",
                         (actor_id, target_id, kind),
                     )
                 else:

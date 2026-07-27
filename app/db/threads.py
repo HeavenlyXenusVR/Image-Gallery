@@ -7,7 +7,7 @@ or mutating anything.
 
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 
 class ThreadsMixin:
@@ -44,10 +44,10 @@ class ThreadsMixin:
                 await conn.begin()
                 try:
                     await cur.execute(
-                        "INSERT INTO message_threads (name, created_by) VALUES (%s, %s)",
+                        "INSERT INTO message_threads (name, created_by) VALUES (%s, %s) RETURNING id",
                         (clean_name, creator_id),
                     )
-                    thread_id = int(cur.lastrowid)
+                    thread_id = int((await cur.fetchone())["id"])
                     await cur.executemany(
                         "INSERT INTO message_thread_members (thread_id, user_id) VALUES (%s, %s)",
                         [(thread_id, member_id) for member_id in members],
@@ -78,8 +78,8 @@ class ThreadsMixin:
                 await cur.execute(
                     """
                     SELECT u.id, u.username,
-                           CASE WHEN u.public_profile=1 THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 THEN u.avatar_path ELSE NULL END AS avatar_path,
+                           CASE WHEN u.public_profile=true THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true THEN u.avatar_path ELSE NULL END AS avatar_path,
                            u.profile_color, u.public_profile, u.last_seen_at
                     FROM message_thread_members mtm
                     JOIN users u ON u.id = mtm.user_id
@@ -123,8 +123,8 @@ class ThreadsMixin:
                 await cur.execute(
                     f"""
                     SELECT mtm.thread_id, u.id, u.username,
-                           CASE WHEN u.public_profile=1 THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 THEN u.avatar_path ELSE NULL END AS avatar_path,
+                           CASE WHEN u.public_profile=true THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true THEN u.avatar_path ELSE NULL END AS avatar_path,
                            u.profile_color, u.public_profile, u.last_seen_at
                     FROM message_thread_members mtm
                     JOIN users u ON u.id = mtm.user_id
@@ -162,8 +162,8 @@ class ThreadsMixin:
                 await cur.execute(
                     """
                     SELECT tm.*, u.username,
-                           CASE WHEN u.public_profile=1 THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 THEN u.avatar_path ELSE NULL END AS user_avatar_path
+                           CASE WHEN u.public_profile=true THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true THEN u.avatar_path ELSE NULL END AS user_avatar_path
                     FROM thread_messages tm
                     JOIN users u ON u.id = tm.sender_id
                     WHERE tm.thread_id=%s
@@ -191,15 +191,15 @@ class ThreadsMixin:
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "INSERT INTO thread_messages (thread_id, sender_id, body) VALUES (%s, %s, %s)",
+                    "INSERT INTO thread_messages (thread_id, sender_id, body) VALUES (%s, %s, %s) RETURNING id",
                     (thread_id, user_id, cleaned),
                 )
-                message_id = cur.lastrowid
+                message_id = (await cur.fetchone())["id"]
                 await cur.execute(
                     """
                     SELECT tm.*, u.username,
-                           CASE WHEN u.public_profile=1 THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 THEN u.avatar_path ELSE NULL END AS user_avatar_path
+                           CASE WHEN u.public_profile=true THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true THEN u.avatar_path ELSE NULL END AS user_avatar_path
                     FROM thread_messages tm
                     JOIN users u ON u.id = tm.sender_id
                     WHERE tm.id=%s

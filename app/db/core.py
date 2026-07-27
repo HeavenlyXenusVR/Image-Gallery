@@ -4,7 +4,7 @@ import asyncio
 import json
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 from ..config import Settings
 from ._shared import (
@@ -34,8 +34,17 @@ class CoreMixin:
         async with self._connect_lock:
             if self.pool and not getattr(self.pool, "closed", False):
                 return
-            await self._ensure_schema()
-            await self.ensure_packet_limit()
+            # The MySQL/MariaDB-specific schema-bootstrap DDL below (ALTER TABLE,
+            # ENGINE=InnoDB, information_schema.KEY_COLUMN_USAGE introspection,
+            # SET GLOBAL max_allowed_packet, etc.) does not translate to Postgres
+            # and isn't needed there anyway: the Postgres schema was already
+            # created directly (see scripts/pg_schema_fixups.sql) as part of the
+            # MariaDB->PostgreSQL migration, so this whole bootstrap is skipped
+            # on Postgres rather than ported statement-by-statement.
+            is_postgres = int(self.settings.db_port) == 5432
+            if not is_postgres:
+                await self._ensure_schema()
+                await self.ensure_packet_limit()
             self.pool = await aiomysql.create_pool(
                 host=self.settings.db_host,
                 port=self.settings.db_port,
@@ -49,7 +58,8 @@ class CoreMixin:
                 pool_recycle=int(getattr(self.settings, "db_pool_recycle_seconds", 180) or 180),
                 connect_timeout=int(getattr(self.settings, "db_connect_timeout_seconds", 10) or 10),
             )
-            await self.ensure_tables()
+            if not is_postgres:
+                await self.ensure_tables()
 
 
     async def close(self) -> None:
@@ -65,6 +75,13 @@ class CoreMixin:
 
 
     async def get_max_allowed_packet(self) -> int:
+        # MariaDB-only concept (a hard per-statement packet-size ceiling this
+        # app must chunk large BLOB writes under). Postgres has no comparable
+        # limit for normal queries, so this whole preflight check is skipped
+        # by returning 0 ("no limit") — the caller (_store_uploaded_media)
+        # treats a falsy return as "don't enforce a limit".
+        if int(self.settings.db_port) == 5432:
+            return 0
         async with self.pool.acquire() as conn:
             await conn.ping(reconnect=True)
             async with conn.cursor(aiomysql.DictCursor) as cur:
@@ -621,7 +638,7 @@ class CoreMixin:
                     """,
                 )
                 await cur.execute(
-                    "INSERT IGNORE INTO site_settings (id, announcement_level) VALUES (1, 'info')"
+                    "INSERT INTO site_settings (id, announcement_level) VALUES (1, 'info') ON CONFLICT (id) DO NOTHING"
                 )
         await self.ensure_user_columns()
         await self.ensure_subcategory_tables()

@@ -1,6 +1,8 @@
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
 aiomysql==0.2.0
+aiopg==1.4.0
+psycopg2-binary==2.9.12
 Pillow==11.2.1
 python-dotenv==1.1.0
 python-multipart==0.0.20

@@ -5,7 +5,7 @@ import mimetypes
 from pathlib import Path
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 
 class AdminMixin:
@@ -150,7 +150,7 @@ class AdminMixin:
                     SET moderation_status=%s, is_adult=%s, moderated_at=CURRENT_TIMESTAMP
                     WHERE id=%s AND moderation_status='pending_review'
                     """,
-                    (decision, 1 if decision == "adult" else 0, media_id),
+                    (decision, decision == "adult", media_id),
                 )
                 if cur.rowcount == 0:
                     return None
@@ -212,7 +212,7 @@ class AdminMixin:
                 continue
             sets.append(f"{key}=%s")
             if key in {"announcement_active", "maintenance_mode"}:
-                params.append(1 if value else 0)
+                params.append(bool(value))
             else:
                 params.append(str(value)[:500])
         if not sets:
@@ -305,11 +305,12 @@ class AdminMixin:
                             """
                             INSERT INTO media_files (sha256, mime_type, original_filename, media_kind, file_size, content, created_by)
                             VALUES (%s, %s, %s, %s, %s, %s, %s)
-                            ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)
+                            ON CONFLICT (sha256) DO UPDATE SET id=media_files.id
+                            RETURNING id
                             """,
                             (sha256, mime_type, original, media_kind, len(content), b"", row.get("user_id")),
                         )
-                        file_id = int(cur.lastrowid)
+                        file_id = int((await cur.fetchone())["id"])
                         await cur.execute("SELECT COUNT(*) AS n FROM media_file_chunks WHERE file_id=%s", (file_id,))
                         chunk_count = int((await cur.fetchone() or {}).get("n") or 0)
                         if chunk_count == 0:
@@ -350,8 +351,8 @@ class AdminMixin:
                         (SELECT COUNT(*) FROM media_items
                             WHERE deleted_at IS NULL AND (media_file_id IS NULL OR media_file_id=0)) AS missing_db_files,
                         (SELECT COUNT(*) FROM media_items WHERE visibility='private' AND deleted_at IS NULL) AS private_posts,
-                        (SELECT COUNT(*) FROM media_items WHERE comments_enabled=0 AND deleted_at IS NULL) AS comments_disabled,
-                        (SELECT COUNT(*) FROM media_items WHERE downloads_enabled=0 AND deleted_at IS NULL) AS downloads_disabled,
+                        (SELECT COUNT(*) FROM media_items WHERE comments_enabled=false AND deleted_at IS NULL) AS comments_disabled,
+                        (SELECT COUNT(*) FROM media_items WHERE downloads_enabled=false AND deleted_at IS NULL) AS downloads_disabled,
                         (SELECT COUNT(*) FROM media_reports WHERE status='open') AS open_reports
                     """
                 )

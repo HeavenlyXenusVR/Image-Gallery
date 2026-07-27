@@ -4,7 +4,7 @@ import hashlib
 import json
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 from ._shared import MEDIA_CATEGORY_JOIN, MEDIA_CATEGORY_SELECT
 
@@ -94,7 +94,7 @@ class AIVisionMixin:
                             category_name,
                             subcategory_name,
                             json.dumps(corrected_tags),
-                            1 if bool(corrected.get("is_adult") or corrected.get("corrected_is_adult")) else 0,
+                            bool(corrected.get("is_adult") or corrected.get("corrected_is_adult")),
                             notes_text,
                             original_filename,
                             image_phash,
@@ -115,6 +115,7 @@ class AIVisionMixin:
                          source_tags, corrected_title, corrected_category_name, corrected_subcategory_name, corrected_tags,
                          corrected_is_adult, notes, dedupe_key, image_phash, image_dhash, image_width, image_height, training_origin, training_confidence)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
                         """,
                         (
                             user_id,
@@ -128,7 +129,7 @@ class AIVisionMixin:
                             category_name,
                             subcategory_name,
                             json.dumps(corrected_tags),
-                            1 if bool(corrected.get("is_adult") or corrected.get("corrected_is_adult")) else 0,
+                            bool(corrected.get("is_adult") or corrected.get("corrected_is_adult")),
                             notes_text,
                             dedupe_key,
                             image_phash,
@@ -139,7 +140,7 @@ class AIVisionMixin:
                             training_confidence,
                         ),
                     )
-                    training_id = int(cur.lastrowid)
+                    training_id = int((await cur.fetchone())["id"])
                 await cur.execute("SELECT * FROM ai_vision_training_examples WHERE id=%s", (training_id,))
                 row = await cur.fetchone()
                 return self._decode_ai_training_example(row)
@@ -213,9 +214,9 @@ class AIVisionMixin:
                         OR m.updated_at > s.last_scanned_at
                         OR (
                           s.last_scan_status='error'
-                          AND COALESCE(s.updated_at, s.last_scanned_at) < (CURRENT_TIMESTAMP - INTERVAL %s MINUTE)
+                          AND COALESCE(s.updated_at, s.last_scanned_at) < (CURRENT_TIMESTAMP - make_interval(mins => %s))
                         )
-                        OR s.last_scanned_at < (CURRENT_TIMESTAMP - INTERVAL %s MINUTE)
+                        OR s.last_scanned_at < (CURRENT_TIMESTAMP - make_interval(mins => %s))
                       )
                     ORDER BY
                       CASE
@@ -288,16 +289,16 @@ class AIVisionMixin:
                       (%s, %s, CURRENT_TIMESTAMP, %s, %s, %s, %s, %s,
                        CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE NULL END,
                        CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE NULL END)
-                    ON DUPLICATE KEY UPDATE
-                      user_id=VALUES(user_id),
+                    ON CONFLICT (media_id) DO UPDATE SET
+                      user_id=EXCLUDED.user_id,
                       last_scanned_at=CURRENT_TIMESTAMP,
-                      last_scan_status=VALUES(last_scan_status),
-                      last_scan_source=VALUES(last_scan_source),
-                      last_scan_confidence=VALUES(last_scan_confidence),
-                      last_scan_title=VALUES(last_scan_title),
-                      last_scan_error=VALUES(last_scan_error),
-                      last_learned_at=CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE last_learned_at END,
-                      last_autofill_at=CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE last_autofill_at END
+                      last_scan_status=EXCLUDED.last_scan_status,
+                      last_scan_source=EXCLUDED.last_scan_source,
+                      last_scan_confidence=EXCLUDED.last_scan_confidence,
+                      last_scan_title=EXCLUDED.last_scan_title,
+                      last_scan_error=EXCLUDED.last_scan_error,
+                      last_learned_at=CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE ai_media_learning_state.last_learned_at END,
+                      last_autofill_at=CASE WHEN %s=1 THEN CURRENT_TIMESTAMP ELSE ai_media_learning_state.last_autofill_at END
                     """,
                     (
                         int(media_id),

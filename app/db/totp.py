@@ -4,7 +4,7 @@ import json
 import time
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 from ..auth import hash_password, verify_password
 from ..totp import generate_recovery_codes, generate_secret, provisioning_uri, verify_code

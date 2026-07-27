@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-import aiomysql
+from . import pg_compat as aiomysql
 
 from ._shared import MEDIA_CATEGORY_JOIN, MEDIA_CATEGORY_SELECT
 
@@ -105,10 +105,10 @@ class FeedSocialMixin:
                     f"""
                     SELECT m.*, {MEDIA_CATEGORY_SELECT}
                            u.username,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
                            u.profile_color, u.public_profile,
                            COUNT(DISTINCT l.user_id) AS like_count,
                            COUNT(DISTINCT cm.id) AS comment_count,
@@ -122,8 +122,8 @@ class FeedSocialMixin:
                     LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id = %s
                     LEFT JOIN media_comments cm ON cm.media_id = m.id
                     WHERE m.deleted_at IS NULL AND m.visibility='public'
-                    GROUP BY m.id
-                    ORDER BY RAND()
+                    GROUP BY m.id, c.id, sc.id, u.id
+                    ORDER BY RANDOM()
                     LIMIT 1
                     """,
                     (viewer, viewer, viewer, viewer, viewer, viewer),
@@ -145,7 +145,7 @@ class FeedSocialMixin:
                            m.media_kind, m.file_size, m.is_adult, m.visibility,
                            m.image_width, m.image_height, {MEDIA_CATEGORY_SELECT}
                            u.username,
-                           CASE WHEN u.public_profile=1 THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true THEN u.display_name ELSE u.username END AS display_name,
                            u.profile_color, u.public_profile
                     FROM media_items m
                     {MEDIA_CATEGORY_JOIN}
@@ -153,7 +153,7 @@ class FeedSocialMixin:
                     WHERE m.deleted_at IS NULL
                       AND m.visibility='public'
                       AND m.media_kind='image'
-                      AND m.is_adult=0
+                      AND m.is_adult=false
                     ORDER BY COALESCE(m.pinned_at, m.created_at) DESC, m.created_at DESC
                     LIMIT %s
                     """,
@@ -187,9 +187,9 @@ class FeedSocialMixin:
                     LEFT JOIN user_blocks ub1 ON ub1.blocker_id=%s AND ub1.blocked_id=f.followed_id
                     LEFT JOIN user_blocks ub2 ON ub2.blocker_id=f.followed_id AND ub2.blocked_id=%s AND ub2.kind='block'
                     WHERE f.follower_id=%s AND m.deleted_at IS NULL AND m.visibility='public'
-                          AND (m.publish_at IS NULL OR m.publish_at <= UTC_TIMESTAMP())
+                          AND (m.publish_at IS NULL OR m.publish_at <= (now() AT TIME ZONE 'utc'))
                           AND ub1.id IS NULL AND ub2.id IS NULL
-                    GROUP BY m.id
+                    GROUP BY m.id, c.id, sc.id, u.id
                     ORDER BY m.created_at DESC
                     LIMIT %s OFFSET %s
                     """,
@@ -220,7 +220,7 @@ class FeedSocialMixin:
                     LEFT JOIN media_bookmarks b ON b.media_id=m.id AND b.user_id=%s
                     LEFT JOIN media_comments cm ON cm.media_id=m.id
                     WHERE liked.user_id=%s AND m.deleted_at IS NULL AND (m.visibility='public' OR m.user_id=%s)
-                    GROUP BY m.id
+                    GROUP BY m.id, c.id, sc.id, u.id
                     ORDER BY liked.created_at DESC
                     LIMIT %s OFFSET %s
                     """,
@@ -238,10 +238,10 @@ class FeedSocialMixin:
                     f"""
                     SELECT m.*, {MEDIA_CATEGORY_SELECT}
                            u.username,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
                            u.profile_color, u.public_profile,
                            COUNT(DISTINCT l.user_id) AS like_count,
                            COUNT(DISTINCT cm.id) AS comment_count,
@@ -255,8 +255,8 @@ class FeedSocialMixin:
                     LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id = %s
                     LEFT JOIN media_comments cm ON cm.media_id = m.id
                     WHERE m.user_id=%s AND m.deleted_at IS NULL AND (m.visibility='public' OR m.user_id=%s)
-                          AND (m.publish_at IS NULL OR m.publish_at <= UTC_TIMESTAMP() OR m.user_id=%s)
-                    GROUP BY m.id
+                          AND (m.publish_at IS NULL OR m.publish_at <= (now() AT TIME ZONE 'utc') OR m.user_id=%s)
+                    GROUP BY m.id, c.id, sc.id, u.id
                     ORDER BY m.pinned_at DESC, m.created_at DESC
                     LIMIT %s OFFSET %s
                     """,
@@ -277,9 +277,9 @@ class FeedSocialMixin:
                 await cur.execute(
                     f"""
                     SELECT u.id, u.username,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS bio,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.bio ELSE NULL END AS bio,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
                            u.profile_color, u.public_profile, u.last_seen_at, f.created_at AS followed_at,
                            MAX(CASE WHEN mine.follower_id IS NULL THEN 0 ELSE 1 END) AS followed_by_me
                     FROM user_follows f
@@ -299,7 +299,7 @@ class FeedSocialMixin:
         async with self.pool.acquire() as conn:
             async with conn.cursor() as cur:
                 if bookmarked:
-                    await cur.execute("INSERT IGNORE INTO media_bookmarks (user_id, media_id) VALUES (%s, %s)", (user_id, media_id))
+                    await cur.execute("INSERT INTO media_bookmarks (user_id, media_id) VALUES (%s, %s) ON CONFLICT (user_id, media_id) DO NOTHING", (user_id, media_id))
                 else:
                     await cur.execute("DELETE FROM media_bookmarks WHERE user_id=%s AND media_id=%s", (user_id, media_id))
         return await self.get_media(media_id, user_id)
@@ -325,7 +325,7 @@ class FeedSocialMixin:
                     LEFT JOIN media_likes l2 ON l2.media_id = m.id AND l2.user_id = %s
                     LEFT JOIN media_comments cm ON cm.media_id = m.id
                     WHERE bm.user_id=%s AND m.deleted_at IS NULL AND (m.visibility='public' OR m.user_id=%s)
-                    GROUP BY m.id, bm.created_at
+                    GROUP BY m.id, c.id, sc.id, u.id, bm.created_at
                     ORDER BY bm.created_at DESC
                     LIMIT %s
                     """,
@@ -353,10 +353,11 @@ class FeedSocialMixin:
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "INSERT INTO media_collections (user_id, name, description, is_public, is_smart, filter_json) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (user_id, name, description, 1 if is_public else 0, 1 if is_smart else 0, stored_filter),
+                    "INSERT INTO media_collections (user_id, name, description, is_public, is_smart, filter_json) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                    (user_id, name, description, bool(is_public), bool(is_smart), stored_filter),
                 )
-                return await self.get_collection(cur.lastrowid, user_id)
+                new_id = (await cur.fetchone())["id"]
+                return await self.get_collection(new_id, user_id)
 
 
     async def list_collections(self, viewer_id: int | None = None, mine: bool = False) -> list[dict[str, Any]]:
@@ -379,7 +380,7 @@ class FeedSocialMixin:
                            MAX(mi.storage_path) AS cover_path,
                            MAX(mi.media_kind) AS cover_media_kind,
                            MAX(mi.id) AS cover_media_id,
-                           MAX(CASE WHEN mi.is_adult=1 THEN 1 ELSE 0 END) AS cover_is_adult
+                           MAX(CASE WHEN mi.is_adult=true THEN 1 ELSE 0 END) AS cover_is_adult
                     FROM media_collections mc
                     JOIN users u ON u.id = mc.user_id
                     LEFT JOIN media_collection_items mci ON mci.collection_id = mc.id
@@ -406,7 +407,7 @@ class FeedSocialMixin:
                            MAX(mi.storage_path) AS cover_path,
                            MAX(mi.media_kind) AS cover_media_kind,
                            MAX(mi.id) AS cover_media_id,
-                           MAX(CASE WHEN mi.is_adult=1 THEN 1 ELSE 0 END) AS cover_is_adult
+                           MAX(CASE WHEN mi.is_adult=true THEN 1 ELSE 0 END) AS cover_is_adult
                     FROM media_collections mc
                     JOIN users u ON u.id = mc.user_id
                     LEFT JOIN media_collection_items mci ON mci.collection_id = mc.id
@@ -433,7 +434,7 @@ class FeedSocialMixin:
                            MAX(mi.storage_path) AS cover_path,
                            MAX(mi.media_kind) AS cover_media_kind,
                            MAX(mi.id) AS cover_media_id,
-                           MAX(CASE WHEN mi.is_adult=1 THEN 1 ELSE 0 END) AS cover_is_adult
+                           MAX(CASE WHEN mi.is_adult=true THEN 1 ELSE 0 END) AS cover_is_adult
                     FROM media_collections mc
                     JOIN users u ON u.id = mc.user_id
                     LEFT JOIN media_collection_items mci ON mci.collection_id = mc.id
@@ -462,7 +463,7 @@ class FeedSocialMixin:
             async with conn.cursor() as cur:
                 if saved:
                     await cur.execute(
-                        "INSERT IGNORE INTO media_collection_items (collection_id, media_id) VALUES (%s, %s)",
+                        "INSERT INTO media_collection_items (collection_id, media_id) VALUES (%s, %s) ON CONFLICT (collection_id, media_id) DO NOTHING",
                         (collection_id, media_id),
                     )
                 else:
@@ -506,10 +507,10 @@ class FeedSocialMixin:
                     f"""
                     SELECT m.*, {MEDIA_CATEGORY_SELECT}
                            u.username,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
-                           CASE WHEN u.public_profile=1 OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.display_name ELSE u.username END AS display_name,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.bio ELSE NULL END AS user_bio,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.website_url ELSE NULL END AS user_website_url,
+                           CASE WHEN u.public_profile=true OR u.id=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
                            u.profile_color, u.public_profile,
                            COUNT(DISTINCT l.user_id) AS like_count,
                            COUNT(DISTINCT cm.id) AS comment_count,
@@ -526,7 +527,7 @@ class FeedSocialMixin:
                     WHERE mci.collection_id=%s
                       AND m.deleted_at IS NULL
                       AND (m.visibility='public' OR m.user_id=%s)
-                    GROUP BY m.id, mci.added_at
+                    GROUP BY m.id, c.id, sc.id, u.id, mci.added_at
                     ORDER BY mci.added_at DESC
                     LIMIT 120
                     """,
@@ -544,10 +545,10 @@ class FeedSocialMixin:
         async with self.pool.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:
                 await cur.execute(
-                    "INSERT INTO saved_searches (user_id, name, filter_json) VALUES (%s, %s, %s)",
+                    "INSERT INTO saved_searches (user_id, name, filter_json) VALUES (%s, %s, %s) RETURNING id",
                     (user_id, name, json.dumps(cleaned)),
                 )
-                search_id = cur.lastrowid
+                search_id = (await cur.fetchone())["id"]
                 await cur.execute("SELECT * FROM saved_searches WHERE id=%s", (search_id,))
                 row = await cur.fetchone()
         row["filter_json"] = json.loads(row["filter_json"])
