@@ -2869,6 +2869,41 @@ textarea:focus {
   font-size: 1rem;
 }
 
+/* Server-owned appearance presets (gallery_looks.lua via /api/appearance/presets). */
+.appearance-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.appearance-preset-card {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--line));
+  border-radius: calc(var(--radius) - 6px);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  color: inherit;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.appearance-preset-card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.appearance-preset-card strong {
+  font-size: 0.92rem;
+}
+
+.appearance-preset-card span {
+  font-size: 0.78rem;
+  opacity: 0.75;
+}
+
 .settings-cluster-head p {
   margin: 0;
   color: var(--muted);
@@ -4725,7 +4760,7 @@ textarea:focus {
 .category-pill.active {
   border-color: transparent;
   background: var(--accent);
-  color: #04211c;
+  color: var(--accent-contrast-text, #04211c);
 }
 
 @media (max-width: 1180px) {

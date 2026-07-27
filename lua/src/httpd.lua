@@ -154,10 +154,11 @@ local function send_response(sock, status, status_text, headers, body)
 end
 
 local STATUS_TEXT = {
-  [200] = "OK", [201] = "Created", [204] = "No Content",
+  [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content",
   [301] = "Moved Permanently", [303] = "See Other",
   [400] = "Bad Request", [401] = "Unauthorized", [403] = "Forbidden",
   [404] = "Not Found", [405] = "Method Not Allowed", [409] = "Conflict",
+  [416] = "Range Not Satisfiable",
   [429] = "Too Many Requests", [500] = "Internal Server Error",
   [503] = "Service Unavailable",
 }

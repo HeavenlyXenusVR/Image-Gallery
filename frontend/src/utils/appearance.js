@@ -60,6 +60,12 @@ export function galleryStyle(settings) {
     style["--accent-secondary"] = secondaryRaw;
   }
 
+  // Server-computed (colorutil.lua via routes.lua's with_derived_accent):
+  // real WCAG contrast-ratio text color and an auto-derived gradient partner
+  // when accent_secondary was never set by the user.
+  if (settings?.accent_contrast_text) style["--accent-contrast-text"] = safeColor(settings.accent_contrast_text);
+  if (settings?.accent_gradient) style["--accent-gradient"] = settings.accent_gradient;
+
   // Gallery background color override
   const bgRaw = String(settings?.gallery_bg_color || "").trim();
   if (/^#[0-9a-f]{6}$/i.test(bgRaw)) {

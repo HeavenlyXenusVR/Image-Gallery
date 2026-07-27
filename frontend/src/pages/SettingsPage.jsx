@@ -134,6 +134,25 @@ export function SettingsPage({ ctx }) {
     setPrefs((current) => ({ ...current, [key]: value }));
   }
 
+  function applyPrefsPatch(patch) {
+    setPrefs((current) => ({ ...current, ...patch }));
+  }
+
+  // Server-owned presets (gallery_looks.lua) -- see /api/appearance/presets.
+  const [galleryPresets, setGalleryPresets] = useState([]);
+  const [profilePresets, setProfilePresets] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch("/api/appearance/presets")
+      .then((data) => {
+        if (cancelled) return;
+        setGalleryPresets(Array.isArray(data.gallery) ? data.gallery : []);
+        setProfilePresets(Array.isArray(data.profile) ? data.profile : []);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   async function saveProfile(event) {
     event.preventDefault();
     try {
@@ -334,6 +353,19 @@ export function SettingsPage({ ctx }) {
           </form>
           <form className="stacked-form side-box settings-form-card" onSubmit={savePrefs}>
             <h2><Palette size={18} /> Preferences</h2>
+            {galleryPresets.length || profilePresets.length ? (
+              <div className="settings-cluster">
+                <div className="settings-cluster-head"><h3>Quick Looks</h3><p>Apply a preset combination, then fine-tune the fields below.</p></div>
+                <div className="appearance-preset-grid">
+                  {[...galleryPresets, ...profilePresets].map((preset) => (
+                    <button className="appearance-preset-card" key={preset.id} type="button" onClick={() => applyPrefsPatch(preset.patch)}>
+                      <strong>{preset.title}</strong>
+                      <span>{preset.note}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <div className="settings-cluster">
             <div className="settings-cluster-head"><h3>Gallery Defaults</h3><p>Control theme, density, sorting, and how much of the deck is visible at once.</p></div>
             <div className="two-col">

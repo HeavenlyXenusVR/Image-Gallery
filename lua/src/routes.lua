@@ -13,6 +13,25 @@ local gauth = require("gallery_auth")
 local ratelimit = require("ratelimit")
 local totp = require("totp")
 local media_files = require("media_files")
+local user_settings = require("user_settings")
+local gallery_looks = require("gallery_looks")
+local colorutil = require("colorutil")
+
+-- Attaches computed accent_contrast_text/accent_gradient onto a decoded
+-- user's user_settings table, mirroring SwarmPanel's with_derived_accent.
+-- Frontend no longer has to guess at readable text color for a user's
+-- chosen accent, and always gets a sensible gradient partner even if
+-- accent_secondary was never set.
+local function with_derived_accent(user)
+  if not user or type(user.user_settings) ~= "table" then return user end
+  local accent = user.user_settings.accent_color
+  if not accent or accent == "" then return user end
+  local secondary = user.user_settings.accent_secondary
+  if not secondary or secondary == "" then secondary = colorutil.auto_secondary(accent) end
+  user.user_settings.accent_contrast_text = colorutil.contrast_text(accent)
+  user.user_settings.accent_gradient = colorutil.gradient(accent, secondary)
+  return user
+end
 
 -- This LuaJIT build has no table.unpack (only the global unpack()) -- same
 -- shim already documented and applied in lib/swarmlua/pg.lua; needed again
@@ -314,7 +333,62 @@ function M.me(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
   user.site_owner = is_site_owner(user)
-  return 200, { user = user }
+  return 200, { user = with_derived_accent(user) }
+end
+
+-- Port of app/routers/account.py's PATCH /api/me/profile. Previously
+-- entirely missing (see this file's header comment: "first pass ... core
+-- media browsing only") -- SettingsPage.jsx/ProfilePage.jsx had no working
+-- server endpoint to save profile edits to against this backend.
+function M.update_profile(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local ok, result = pcall(user_settings.clean_profile_updates, json_body(req))
+  if not ok then return 400, { detail = tostring(result):gsub("^.-:%d+:%s*", "") } end
+  db.execute(
+    [[UPDATE users SET display_name=%s, bio=%s, profile_quote=%s, website_url=%s, location_label=%s,
+             profile_headline=%s, featured_tags=%s, profile_color=%s,
+             public_profile=%s, show_liked_count=%s, show_collections=%s,
+             show_recent_uploads=%s, show_friends=%s
+      WHERE id=%s]],
+    result.display_name, result.bio, result.profile_quote, result.website_url, result.location_label,
+    result.profile_headline, result.featured_tags, result.profile_color,
+    result.public_profile, result.show_liked_count, result.show_collections,
+    result.show_recent_uploads, result.show_friends, user.id
+  )
+  local refreshed = get_user(user.id)
+  refreshed.site_owner = is_site_owner(refreshed)
+  return 200, { user = with_derived_accent(refreshed) }
+end
+
+-- Port of app/routers/account.py's PATCH /api/me/settings + app/db/
+-- account.py's update_user_settings() enum/color/url validation (see
+-- user_settings.lua's header comment -- this whole endpoint, and the
+-- server-side enforcement of appearance.js's CHOICES set, was missing).
+function M.update_settings(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local payload = json_body(req)
+  -- exclude_unset-equivalent: only keys the client actually sent, and only
+  -- non-null values (matches account.py's `if value is not None` filter).
+  local filtered = {}
+  for k, v in pairs(payload) do
+    if v ~= nil and v ~= cjson.null then filtered[k] = v end
+  end
+  local ok, result = pcall(user_settings.clean_user_settings, filtered, user.user_settings or {})
+  if not ok then return 400, { detail = tostring(result):gsub("^.-:%d+:%s*", "") } end
+  db.execute("UPDATE users SET user_settings=%s WHERE id=%s", cjson.encode(result), user.id)
+  local refreshed = get_user(user.id)
+  refreshed.site_owner = is_site_owner(refreshed)
+  return 200, { user = with_derived_accent(refreshed) }
+end
+
+-- Server-owned appearance presets (see gallery_looks.lua), mirroring
+-- SwarmPanel's /api/appearance/presets.
+function M.appearance_presets(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  return 200, { gallery = gallery_looks.GALLERY_LOOKS, profile = gallery_looks.PROFILE_LOOKS }
 end
 
 -- ---------------------------------------------------------------------------
@@ -1163,6 +1237,50 @@ function M.serve_media_thumb(req)
   return 404, { detail = "File missing from database." }
 end
 
+-- Adds real HTTP Range/206 support. Previously flagged as a KNOWN
+-- LIMITATION (see this section's header comment above): httpd.lua always
+-- wrote one Content-Length-framed body with no partial-content path, so
+-- video <video> elements couldn't seek properly in the browser (seeking
+-- a <video> depends on the server answering a Range request, not just on
+-- the client re-requesting the whole file) and every scrub re-downloaded
+-- the entire file. The full byte content is already in memory by the time
+-- this runs (resolve_media_bytes() reads the whole DB blob), so this is
+-- just header parsing + a string slice + a 206 status -- no actual
+-- streaming/chunking machinery needed.
+local function respond_with_range(req, content, mime_type, extra_headers)
+  local total = #content
+  local headers = { ["Content-Type"] = mime_type or "application/octet-stream", ["Accept-Ranges"] = "bytes" }
+  for k, v in pairs(extra_headers or {}) do headers[k] = v end
+
+  local range = req.headers and req.headers["range"]
+  if not range then return 200, content, headers end
+
+  local start_s, end_s = tostring(range):match("^bytes=(%d*)-(%d*)$")
+  if not start_s or (start_s == "" and end_s == "") then
+    -- Malformed/unsupported Range (e.g. multi-range) -- ignore and serve
+    -- the full body rather than 416ing on something we just don't parse.
+    return 200, content, headers
+  end
+  local start_byte, end_byte
+  if start_s == "" then
+    -- "bytes=-500" -- last 500 bytes.
+    local suffix_len = tonumber(end_s) or 0
+    start_byte = math.max(0, total - suffix_len)
+    end_byte = total - 1
+  else
+    start_byte = tonumber(start_s) or 0
+    end_byte = (end_s ~= "" and tonumber(end_s)) or (total - 1)
+  end
+  end_byte = math.min(end_byte, total - 1)
+  if start_byte > end_byte or start_byte >= total then
+    headers["Content-Range"] = "bytes */" .. total
+    return 416, "", headers
+  end
+
+  headers["Content-Range"] = string.format("bytes %d-%d/%d", start_byte, end_byte, total)
+  return 206, content:sub(start_byte + 1, end_byte + 1), headers
+end
+
 local function serve_media_bytes_response(req, media_id, as_download)
   local auth = auth_optional(req)
   local viewer_id = auth and tostring(auth.id) or nil
@@ -1185,14 +1303,17 @@ local function serve_media_bytes_response(req, media_id, as_download)
   if as_download then
     db.execute("UPDATE media_items SET downloads=downloads+1 WHERE id=%s", tostring(media_id))
   end
-  local headers = { ["Content-Type"] = mime_type or "application/octet-stream" }
   if as_download then
-    headers["Content-Disposition"] = "attachment; filename=\"" .. (original_filename or "download"):gsub('"', "") .. "\""
-    headers["Cache-Control"] = "private, max-age=0, no-cache"
-  else
-    headers["Cache-Control"] = "public, max-age=86400"
+    -- Downloads always send the whole file -- Range/206 is a streaming-
+    -- playback concern (<video> seeking), not a "save as" one.
+    local headers = {
+      ["Content-Type"] = mime_type or "application/octet-stream",
+      ["Content-Disposition"] = "attachment; filename=\"" .. (original_filename or "download"):gsub('"', "") .. "\"",
+      ["Cache-Control"] = "private, max-age=0, no-cache",
+    }
+    return 200, content, headers
   end
-  return 200, content, headers
+  return respond_with_range(req, content, mime_type, { ["Cache-Control"] = "public, max-age=86400" })
 end
 
 function M.serve_media_file(req)
