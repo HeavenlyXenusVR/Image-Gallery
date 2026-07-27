@@ -31,7 +31,7 @@ class ProfileFriendsMixin:
                            u.last_seen_at,
                            COUNT(DISTINCT m.id) AS media_count,
                            COALESCE(SUM(CASE WHEN m.deleted_at IS NULL AND m.visibility='public' THEN m.downloads ELSE 0 END), 0) AS download_count,
-                           COUNT(DISTINCT ml.user_id, ml.media_id) AS like_count,
+                           COUNT(DISTINCT (ml.user_id, ml.media_id)) AS like_count,
                            COUNT(DISTINCT f1.follower_id) AS follower_count,
                            COUNT(DISTINCT f2.followed_id) AS following_count,
                            COUNT(DISTINCT CASE

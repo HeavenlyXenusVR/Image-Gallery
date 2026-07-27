@@ -172,7 +172,7 @@ class AdminMixin:
                     FROM media_items m
                     JOIN users u ON u.id = m.user_id
                     WHERE m.deleted_at IS NULL
-                    GROUP BY m.user_id
+                    GROUP BY m.user_id, u.id
                     ORDER BY total_bytes DESC
                     LIMIT %s
                     """,

@@ -368,7 +368,7 @@ class FeedSocialMixin:
             clauses.append("mc.user_id=%s")
             params.append(viewer)
         else:
-            clauses.append("(mc.is_public=1 OR mc.user_id=%s)")
+            clauses.append("(mc.is_public=true OR mc.user_id=%s)")
             params.append(viewer)
         where = f"WHERE {' AND '.join(clauses)}"
         async with self.pool.acquire() as conn:
@@ -388,7 +388,7 @@ class FeedSocialMixin:
                      AND mi.deleted_at IS NULL
                      AND (mi.visibility='public' OR mi.user_id=%s OR mc.user_id=%s)
                     {where}
-                    GROUP BY mc.id
+                    GROUP BY mc.id, u.id
                     ORDER BY mc.updated_at DESC, mc.created_at DESC
                     LIMIT 100
                     """,
@@ -414,8 +414,8 @@ class FeedSocialMixin:
                     LEFT JOIN media_items mi ON mi.id = mci.media_id
                      AND mi.deleted_at IS NULL
                      AND (mi.visibility='public' OR mi.user_id=%s OR mc.user_id=%s)
-                    WHERE mc.user_id=%s AND (mc.is_public=1 OR mc.user_id=%s)
-                    GROUP BY mc.id
+                    WHERE mc.user_id=%s AND (mc.is_public=true OR mc.user_id=%s)
+                    GROUP BY mc.id, u.id
                     ORDER BY mc.updated_at DESC, mc.created_at DESC
                     LIMIT %s
                     """,
@@ -441,8 +441,8 @@ class FeedSocialMixin:
                     LEFT JOIN media_items mi ON mi.id = mci.media_id
                      AND mi.deleted_at IS NULL
                      AND (mi.visibility='public' OR mi.user_id=%s OR mc.user_id=%s)
-                    WHERE mc.id=%s AND (mc.is_public=1 OR mc.user_id=%s)
-                    GROUP BY mc.id
+                    WHERE mc.id=%s AND (mc.is_public=true OR mc.user_id=%s)
+                    GROUP BY mc.id, u.id
                     """,
                     (viewer_id or 0, viewer_id or 0, collection_id, viewer_id or 0),
                 )
