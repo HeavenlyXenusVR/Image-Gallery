@@ -2,78 +2,90 @@
 
 **Cutover complete as of 2026-08-02.** The live site
 (gallery.xenusanimations.studio) is served directly by the Lua backend
-(`lua/`, port 8789) — the cloudflared tunnel points straight at it, the
-Python backend (`app/`, `web_image_gallery` docker container) is stopped,
-and the Node reverse proxy that used to bridge the two (`scripts/live_proxy.mjs`)
-has been removed along with its systemd service. The Telegram control-panel
-bot is now served exclusively by `lua/src/telegram.lua` — Python's poller is
-stopped, so there's no more conflict.
-
-`app/` (the Python source) is still present in the repo as historical
-reference but is not running. See "Not ported" below for the two small
-background-only gaps that come with that.
+(`lua/`, port 8789) — the cloudflared tunnel points straight at it. The
+Python backend (`app/`) has been **removed from the repo entirely** (was
+git history-preserved via normal commits, so it's fully recoverable with
+`git log --diff-filter=D -- app/` if ever needed), its docker container
+(`web_image_gallery`) stopped and removed, and its service block deleted
+from the shared `Music/docker-compose.yml` (so it can't come back via
+`restart: always` on a compose-wide restart). The Node reverse proxy that
+used to bridge Lua/Python (`scripts/live_proxy.mjs`) is also gone. The
+Telegram control-panel bot is now served exclusively by
+`lua/src/telegram.lua`.
 
 ## Not ported (both are background-only, no HTTP/user-facing surface)
 
-- **The periodic moderation-digest loop** (`_moderation_digest_loop` — new
-  reports/bans/signups/storage-growth summary, sent via Telegram/Discord).
-  Depends on `db.digest_counts_since()`/`site_settings.last_digest_at`,
-  neither ported.
-- **Background AI learning** (the periodic pass that turns curated gallery
-  metadata into new training examples). Depends on visual-hash/
-  training-example lookup matching (`_training_lookup_analysis`), not
-  ported.
-- Relatedly, **Ollama and OpenAI-compatible vision providers** and the local
-  CLIP classifier subprocess aren't ported — only Gemini is (this
-  deployment's actual configured provider). If `GALLERY_AI_PROVIDER` is ever
-  set to anything else, or no Gemini key is configured, analysis gracefully
-  degrades to heuristic/domain-hint instead of erroring.
+These two features existed only in the now-removed Python source. Losing
+them costs nothing a user would notice; they'd need to be written from
+scratch in Lua (not restored from Python, since that source is gone from
+the working tree — see git history above) if ever wanted:
+
+- **The periodic moderation-digest loop** — new reports/bans/signups/
+  storage-growth summary, sent via Telegram/Discord.
+- **Background AI learning** — the periodic pass that turned curated
+  gallery metadata into new AI training examples, plus visual-hash/
+  training-example lookup matching in the upload-analysis flow.
+- Relatedly, **Ollama and OpenAI-compatible vision providers** and a local
+  CLIP classifier were never ported to Lua either — only Gemini is (this
+  deployment's actual configured provider). If `GALLERY_AI_PROVIDER` is
+  ever set to anything else, or no Gemini key is configured, analysis
+  gracefully degrades to heuristic/domain-hint instead of erroring.
 
 ## What changed in the final cutover session (2026-08-02)
 
 - Ported the last two real HTTP gaps: `POST /api/media/:media_id/ai/train`
-  (mirrors `record_ai_vision_training_example` — upserts by a dedupe key;
-  not byte-identical to Python's hash, only used for this backend's own
-  future upserts) and `POST /api/media/:media_id/diagnostics/load`
-  (client-side telemetry logging). Both verified live.
+  and `POST /api/media/:media_id/diagnostics/load`. Verified live.
 - **Critical fix: an event-loop-blocking bug.** Every outbound HTTPS call
   (Telegram polling, Gemini vision, Discord webhooks, Ollama status) used
   `ssl.https`/`socket.http` directly, which blocks the single OS thread
   copas runs on for the full call duration — for Telegram's ~30s long-poll,
-  that froze the *entire server* for anyone else for ~30s at a stretch, and
-  is what caused a real request to hang mid-session. Fixed by switching all
-  four call sites to `copas.http` (vendored alongside copas, yields during
-  socket I/O instead of blocking). Verified: 20 rapid health checks during
-  active Telegram long-polling all returned instantly.
-- **Telegram bot cutover.** `lua/src/telegram.lua`'s bridge (all 8 gallery
-  commands, db-health watch, startup/db-problem alerts) is now the sole
-  `getUpdates` poller. Along the way, a systemd `Environment=` override
-  meant to keep it disabled during testing turned out not to take
-  precedence over the same key in `EnvironmentFile=` (contrary to
-  documented systemd behavior, not fully root-caused) — worked around with
-  a dedicated `GALLERY_LUA_TELEGRAM_FORCE_DISABLE` env var (a name `.env`
-  never sets, so no ambiguity), which has since been removed now that the
-  cutover is deliberate and complete.
-- Stopped `web_image_gallery` (Python container), pointed
+  that froze the *entire server* for anyone else for ~30s at a stretch.
+  Fixed by switching all four call sites to `copas.http`. Verified: 20
+  rapid health checks during active Telegram long-polling all returned
+  instantly.
+- **Telegram bot cutover.** `lua/src/telegram.lua`'s bridge is now the sole
+  `getUpdates` poller (Python's is gone).
+- Stopped and removed the `web_image_gallery` container, pointed
   `~/.cloudflared/image-gallery-ingress.yml` at `http://localhost:8789`
-  (Lua) directly, restarted `image-gallery-cloudflared.service`, retired
-  `image-gallery-proxy.service` and `scripts/live_proxy.mjs`, and
-  repointed `image-gallery-tunnel.service` (the health-gate/config
-  publisher) from port 8788 to 8789 so it stops crash-looping against a
-  backend that's now intentionally offline.
+  (Lua) directly, retired `image-gallery-proxy.service`/
+  `scripts/live_proxy.mjs`, and repointed `image-gallery-tunnel.service`
+  (the health-gate/config publisher) from port 8788 to 8789.
+- **Removed the Python source entirely**: `app/` (all routers/db modules),
+  `requirements.txt`, `Dockerfile`, the Python `tests/` suite, and the
+  scripts that only existed to operate on `app.*` (`api_route_test.py`,
+  `import_icloud_photos.py`, `prewarm_video_quality.py`,
+  `reclassify_media_categories.py`,
+  `seed_ai_vision_training_from_gallery.py`,
+  `seed_ai_vision_training_from_image_zip.py`, `test_ai_vision_model.py`).
+  Kept: `app/static/` (frontend build artifacts — `scripts/write-root-shell.mjs`
+  and `frontend/src/main.jsx` both still reference `app/static/react/`
+  as part of the GitHub Pages deploy shell, unrelated to the Python
+  backend) and a few standalone scripts that never imported `app.*`
+  (`fill_character_subcategories.py`, `repair_gallery_metadata.py` — both
+  raw `pymysql`, pre-Postgres-migration legacy; `start_pinggy_tunnel.py`,
+  an alternate tunnel provider tool).
+  Rewrote `.github/workflows/ci.yml` to syntax-check every Lua module and
+  any remaining `.mjs` scripts instead of running Python lint/tests
+  against a package that no longer exists.
+  **Not touched** (still reference Python, but are manual/diagnostic
+  tools not in the automatic live-serving path, so left alone rather than
+  risking a large rewrite under time pressure): `scripts/start_live_backend.sh`,
+  `scripts/nixos_live_doctor.sh`, and the disabled-by-default
+  (`GALLERY_SERVICE_START_BACKEND_IF_MISSING=0`) Python-fallback branch
+  inside `scripts/start_live_tunnel_service.sh`.
 - Verified live end-to-end after every step: `/api/health`,
   `/api/categories`, `/api/media`, `/api/tags`, `/api/site/announcement`
-  all correct through the new direct-to-Lua path; Telegram's own
-  `getWebhookInfo` showed `pending_update_count: 0` (actively being
-  drained by Lua's poller, no backlog).
+  all correct through the direct-to-Lua path; Telegram's own
+  `getWebhookInfo` showed `pending_update_count: 0` (actively drained by
+  Lua's poller, no backlog).
 
 ## If you ever want to go further
 
-- `app/` (Python) is stopped but still in the repo. Whether to actually
-  delete it or keep it as reference is up to you — it's a single monolith
-  (`app/main.py`) mixing the FastAPI app, startup/lifespan, and the two
-  background loops above that aren't ported, so a clean "delete what Lua
-  replaced" pass would need a careful read-through first, not a blind
-  `rm -rf app/`.
 - Porting the two background loops and/or the Ollama/OpenAI vision
-  providers, if you ever need them.
+  providers to Lua from scratch, if you ever need them (Python source is
+  gone from the working tree, but fully recoverable from git history for
+  reference).
+- Cleaning up the remaining Python references in `start_live_backend.sh`,
+  `nixos_live_doctor.sh`, and the dead fallback branch in
+  `start_live_tunnel_service.sh` (all currently harmless/inert, not part
+  of the live path).
