@@ -150,6 +150,13 @@ else
   print("[image-gallery-lua] WARNING: Postgres not reachable at startup: " .. tostring(err))
 end
 
+-- Telegram control-panel bridge (see lua/src/telegram.lua) -- runs as a
+-- copas background coroutine within this same event loop, started before
+-- httpd.run() so it's polling by the time the first HTTP request arrives.
+-- No-op if no bot token is configured.
+local telegram = require("telegram")
+telegram.start(settings)
+
 httpd.listen(settings.host, settings.port)
 print(string.format("[image-gallery-lua] listening on %s:%d", settings.host, settings.port))
 httpd.run()

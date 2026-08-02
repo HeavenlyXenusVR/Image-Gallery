@@ -12,9 +12,20 @@ This is a punch list for finishing the full replacement.
 
 ## Not yet ported
 
-- **Telegram bot integration** (`app/telegram.py` + gallery-specific command
-  handlers) — long-running polling background service, not an HTTP route at
-  all. Needs its own standalone Lua process/service, not just a route port.
+- **The Telegram bot's live cutover from Python to Lua.** The bridge itself
+  IS ported (see below) and verified working, but is deliberately kept
+  disabled in production: Telegram only allows one active `getUpdates`
+  poller per bot token, and Python's `app/telegram.py` is still the live one.
+  Running both would cause 409 conflicts and unpredictably split/drop
+  messages. `image-gallery-lua.service` forces
+  `GALLERY_TELEGRAM_POLLING_ENABLED=0` to override the real `.env`'s `true`
+  (which is correct for Python, not this instance) until the bot is
+  deliberately cut over — at that point, remove that override, stop/disable
+  Python's Telegram polling, and restart `image-gallery-lua.service`.
+- **The periodic moderation-digest loop** (`_moderation_digest_loop` — new
+  reports/bans/signups/storage-growth summary, sent via Telegram/Discord) —
+  a separate feature from the bridge itself; depends on
+  `db.digest_counts_since()`/`site_settings.last_digest_at`, neither ported.
 - **Ollama and OpenAI-compatible vision providers**, the local CLIP
   classifier subprocess, and **visual-hash/training-example lookup matching**
   (the "learn from corrections" part of `_training_lookup_analysis`) — the
@@ -106,12 +117,28 @@ error reason rather than crashing the upload; a full upload with no title
 or category provided at all was correctly auto-filled end-to-end and
 verified in the database. All test rows cleaned up after.
 
+The Telegram control-panel bridge (`lua/src/telegram.lua`, new file) is also
+now ported: the generic long-polling bridge (mirrors
+`TelegramPollingService`), all 8 gallery commands (`/status`, `/health`,
+`/storage`, `/recent`, `/users`, `/ai`, `/id`, `/help`), the db-health watch
+loop, and the startup/db-problem alert plumbing. Runs as a copas background
+coroutine within the same event loop as the HTTP server (started from
+`main.lua` before `httpd.run()`), the same way `discord_webhook.lua` already
+uses `copas.addthread`. Verified: all 8 commands produce correct output
+against the live production database (through a temporary test hook, since
+removed); a real, read-only `getMe` call against the actual configured bot
+token succeeded (confirms the HTTP/URL-encoding plumbing works against the
+real Telegram API). The actual long-polling loop was deliberately never
+started against the live bot token during testing or in the current
+deployment — see the cutover note above.
+
 ## Once everything above is ported
 
 - Add the newly-ported routes to `PORTED_ROUTES` in `scripts/live_proxy.mjs`
   (keep it in sync with `lua/main.lua`'s `httpd.route(...)` calls).
-- When the list covers 100% of `app/`'s routes and the Telegram bot has a
-  Lua equivalent running, retire the Python backend and `scripts/live_proxy.mjs`
-  entirely, and point the cloudflared ingress
+- Perform the Telegram bot cutover described above.
+- When the list covers 100% of `app/`'s routes and the Telegram bot has been
+  cut over, retire the Python backend and `scripts/live_proxy.mjs` entirely,
+  and point the cloudflared ingress
   (`~/.cloudflared/image-gallery-ingress.yml`) straight at the Lua backend's
   port.

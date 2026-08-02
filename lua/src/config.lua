@@ -98,6 +98,20 @@ function M.load()
     ai_model = env("GALLERY_GEMINI_MODEL") or env("GEMINI_MODEL") or env("GALLERY_AI_MODEL", "gpt-4o-mini"),
     ai_ollama_model = env("GALLERY_OLLAMA_MODEL", "llava"),
     ai_timeout_seconds = env_int("GALLERY_AI_TIMEOUT_SECONDS", 45),
+
+    telegram_bot_token = env("GALLERY_TELEGRAM_BOT_TOKEN") or env("TELEGRAM_BOT_TOKEN", ""),
+    telegram_allowed_chat_ids = (function()
+      local raw = env_csv("GALLERY_TELEGRAM_ALLOWED_CHAT_IDS")
+      if #raw == 0 then raw = env_csv("TELEGRAM_ALLOWED_CHAT_IDS") end
+      local ids = {}
+      for _, v in ipairs(raw) do
+        local n = tonumber(v)
+        if n then ids[#ids + 1] = math.floor(n) end
+      end
+      return ids
+    end)(),
+    telegram_owner_chat_id = tonumber(env("GALLERY_TELEGRAM_OWNER_CHAT_ID") or env("TELEGRAM_OWNER_CHAT_ID")),
+    telegram_polling_enabled = env_bool("GALLERY_TELEGRAM_POLLING_ENABLED", (env("GALLERY_TELEGRAM_BOT_TOKEN") or env("TELEGRAM_BOT_TOKEN")) ~= nil),
     ai_training_examples_limit = math.max(0, math.min(1000, env_int("GALLERY_AI_TRAINING_EXAMPLES_LIMIT", 300))),
   }
 end
