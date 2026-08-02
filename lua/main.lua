@@ -117,6 +117,13 @@ httpd.route("GET", "/api/admin/flagged-media", routes.admin_flagged_media)
 httpd.route("POST", "/api/admin/flagged-media/:media_id/resolve", routes.admin_resolve_flagged_media)
 httpd.route("PATCH", "/api/admin/site-settings", routes.admin_update_site_settings)
 
+-- "/export" MUST be registered before a future "/api/ai/vision/training/:id"-
+-- shaped route, if one is ever added (none exists today, so ordering is not
+-- currently load-bearing, but keep it above /training for consistency).
+httpd.route("GET", "/api/ai/vision/status", routes.ai_vision_status)
+httpd.route("GET", "/api/ai/vision/training/export", routes.export_ai_training)
+httpd.route("GET", "/api/ai/vision/training", routes.list_ai_training)
+
 local ok, err = db.ping()
 if ok then
   print(string.format("[image-gallery-lua] Postgres reachable (server time: %s)", tostring(err)))

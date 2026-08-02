@@ -82,6 +82,18 @@ function M.load()
     port = env_int("GALLERY_HTTP_PORT", 8788),
 
     db_schema = env("GALLERY_DB_SCHEMA", "image_gallery"),
+
+    -- AI vision status/config surface only (see routes.lua's ai_vision
+    -- section header for what's NOT ported: the actual LLM-calling
+    -- classification/analysis pipeline in app/ai_metadata.py).
+    ai_enabled = env_bool("GALLERY_AI_ENABLED", (env("GALLERY_AI_API_KEY") or env("OPENAI_API_KEY") or env("GALLERY_GEMINI_API_KEY") or env("GALLERY_OLLAMA_MODEL")) ~= nil),
+    ai_provider = env("GALLERY_AI_PROVIDER", (env("GALLERY_AI_API_KEY") or env("OPENAI_API_KEY")) and "openai" or "ollama"),
+    ai_api_key = env("GALLERY_AI_API_KEY") or env("OPENAI_API_KEY") or env("GALLERY_GEMINI_API_KEY") or "",
+    ai_base_url = (env("GALLERY_AI_BASE_URL") or env("OPENAI_BASE_URL") or "https://api.openai.com/v1"):gsub("/+$", ""),
+    ai_ollama_base_url = env("GALLERY_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
+    ai_model = env("GALLERY_GEMINI_MODEL") or env("GEMINI_MODEL") or env("GALLERY_AI_MODEL", "gpt-4o-mini"),
+    ai_ollama_model = env("GALLERY_OLLAMA_MODEL", "llava"),
+    ai_training_examples_limit = math.max(0, math.min(1000, env_int("GALLERY_AI_TRAINING_EXAMPLES_LIMIT", 300))),
   }
 end
 

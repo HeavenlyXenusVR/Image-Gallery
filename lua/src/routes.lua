@@ -2177,6 +2177,143 @@ function M.admin_update_site_settings(req)
 end
 
 -- ---------------------------------------------------------------------------
+-- AI vision status + training-example listing/export. Mirrors
+-- app/routers/ai_vision.py.
+--
+-- NOT PORTED as part of this pass: the actual LLM-calling classification
+-- pipeline (app/ai_metadata.py, ~2150 lines of prompt construction, OpenAI/
+-- Gemini/Ollama request handling, and heuristic fallback analysis) that
+-- powers auto_ai on upload and POST /api/media/analyze -- this is a
+-- substantially larger, separate effort flagged for its own follow-up
+-- pass. What IS ported: provider/config status reporting and reading back
+-- previously-recorded training examples (ai_vision_training_examples rows),
+-- neither of which requires the analysis pipeline itself.
+-- ---------------------------------------------------------------------------
+
+local function normalized_ai_provider()
+  local provider = tostring(M.settings.ai_provider or ""):lower()
+  if provider == "google" or provider == "google-gemini" then provider = "gemini" end
+  if provider == "" then provider = "heuristic-only" end
+  return provider
+end
+
+local function active_ai_model()
+  local provider = M.settings.ai_provider
+  if provider == "gemini" or provider == "google" or provider == "google-gemini" then return M.settings.ai_model end
+  if provider == "ollama" then return M.settings.ai_ollama_model end
+  return M.settings.ai_model
+end
+
+local function active_ai_base_url()
+  if M.settings.ai_provider == "ollama" then return M.settings.ai_ollama_base_url end
+  return M.settings.ai_base_url
+end
+
+function M.ai_vision_status(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local provider = normalized_ai_provider()
+  local training_count = 0
+  local rows = db.fetchall(
+    "SELECT id FROM ai_vision_training_examples WHERE user_id=%s ORDER BY created_at DESC LIMIT 1000",
+    user.id
+  )
+  training_count = #rows
+
+  local vision = {
+    provider = provider,
+    ai_enabled = M.settings.ai_enabled and true or false,
+    training_examples_loaded_limit = M.settings.ai_training_examples_limit,
+    training_examples_available = training_count,
+    active_model = active_ai_model(),
+    active_base_url = provider == "ollama" and active_ai_base_url() or nil,
+    gemini_key_configured = (M.settings.ai_api_key ~= "" and provider == "gemini") and true or false,
+  }
+  if provider == "gemini" then
+    vision.active_base_url = "https://generativelanguage.googleapis.com"
+    vision.reachable = M.settings.ai_api_key ~= "" and nil or false
+    vision.reason = M.settings.ai_api_key ~= "" and nil or "Gemini provider is selected but no Gemini API key is configured."
+  elseif provider == "ollama" then
+    local base_url = tostring(M.settings.ai_ollama_base_url or "http://127.0.0.1:11434"):gsub("/+$", "")
+    local ok, http = pcall(require, "socket.http")
+    local ok2, result = pcall(function()
+      local ltn12 = require("ltn12")
+      local chunks = {}
+      http.TIMEOUT = 3
+      local _, code = http.request({ url = base_url .. "/api/tags", sink = ltn12.sink.table(chunks) })
+      if code ~= 200 then error("HTTP " .. tostring(code)) end
+      local decoded = cjson.decode(table.concat(chunks)) or {}
+      local models = {}
+      for _, item in ipairs(decoded.models or {}) do
+        if item.name and item.name ~= "" then models[#models + 1] = item.name end
+        if #models >= 50 then break end
+      end
+      return models
+    end)
+    if ok and ok2 then
+      vision.reachable = true
+      vision.models = arr(result)
+    else
+      vision.reachable = false
+      vision.reason = tostring(result):sub(1, 240)
+    end
+  end
+  return 200, { vision = vision }
+end
+
+local function decode_ai_training_example(row)
+  if not row then return nil end
+  for _, key in ipairs({ "source_tags", "corrected_tags" }) do
+    if row[key] and row[key] ~= cjson.null then
+      local ok, decoded = pcall(cjson.decode, row[key])
+      row[key] = (ok and type(decoded) == "table") and decoded or {}
+    else
+      row[key] = {}
+    end
+  end
+  row.corrected_is_adult = db.tobool(row.corrected_is_adult)
+  return row
+end
+
+function M.list_ai_training(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local limit = math.max(1, math.min(tonumber(req.query.limit) or 50, 80))
+  local rows = db.fetchall(
+    "SELECT * FROM ai_vision_training_examples WHERE user_id=%s ORDER BY created_at DESC LIMIT %s",
+    user.id, tostring(limit)
+  )
+  for _, row in ipairs(rows) do decode_ai_training_example(row) end
+  return 200, { training_examples = arr(rows) }
+end
+
+function M.export_ai_training(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local limit = math.max(1, math.min(tonumber(req.query.limit) or 500, 5000))
+  local rows = db.fetchall(
+    [[
+      SELECT t.*, m.media_kind, m.mime_type
+      FROM ai_vision_training_examples t
+      LEFT JOIN media_items m ON m.id = t.media_id
+      WHERE t.user_id=%s
+      ORDER BY t.created_at DESC
+      LIMIT %s
+    ]],
+    user.id, tostring(limit)
+  )
+  local lines = {}
+  for _, row in ipairs(rows) do
+    decode_ai_training_example(row)
+    lines[#lines + 1] = cjson.encode(row)
+  end
+  return 200, table.concat(lines, "\n") .. (#lines > 0 and "\n" or ""), {
+    ["Content-Type"] = "application/x-ndjson; charset=utf-8",
+    ["Content-Disposition"] = 'attachment; filename="gallery-ai-vision-training.jsonl"',
+  }
+end
+
+-- ---------------------------------------------------------------------------
 -- Media byte-serving: thumb / file / preview / download / avatar.
 -- Mirrors app/routers/media_streaming.py. See media_files.lua's module
 -- docstring for the storage-model correction versus this task's original
