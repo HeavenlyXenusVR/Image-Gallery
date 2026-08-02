@@ -395,4 +395,59 @@ function M.image_fingerprint(content)
   }
 end
 
+-- ---------------------------------------------------------------------------
+-- Media dimensions + JPEG preview, used by ai_metadata.lua's heuristic
+-- analysis (landscape/portrait/4k tags) and vision-provider calls (a small
+-- JPEG preview to send as the image payload). Mirrors app/ai_metadata.py's
+-- _media_size/_video_size/_preview_base64/_video_preview_base64, again via
+-- ffmpeg/ffprobe instead of PIL -- works uniformly for images and videos
+-- (ffprobe/ffmpeg treat a still image as a 1-frame video), so one pair of
+-- helpers covers both media kinds instead of Python's separate image/video
+-- branches.
+-- ---------------------------------------------------------------------------
+
+-- Returns {width, height} or nil.
+function M.media_dimensions(content)
+  local src = write_temp_file(content, "")
+  local width, height
+  local probe = io.popen(string.format(
+    "%s -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x %s 2>/dev/null",
+    ffprobe_bin(), shell_quote(src)
+  ))
+  if probe then
+    local line = probe:read("*l")
+    probe:close()
+    if line then width, height = line:match("^(%d+)x(%d+)$") end
+  end
+  os.remove(src)
+  if not width or not height then return nil end
+  return { tonumber(width), tonumber(height) }
+end
+
+-- Returns a base64-encoded JPEG preview (scaled to fit 1600x1600, matching
+-- Python's preview.thumbnail((1600, 1600))), or nil on failure.
+function M.jpeg_preview_base64(content)
+  local sodium = require("luasodium")
+  local src = write_temp_file(content, "")
+  local dst = os.tmpname() .. ".jpg"
+  local cmd = string.format(
+    "%s -y -hide_banner -loglevel error -i %s -frames:v 1 -vf %s -q:v 3 -f mjpeg %s </dev/null >/dev/null 2>&1",
+    ffmpeg_bin(), shell_quote(src), shell_quote("scale='min(1600,iw)':'min(1600,ih)':force_original_aspect_ratio=decrease:flags=lanczos"),
+    shell_quote(dst)
+  )
+  local ok = os.execute(cmd)
+  local success = (ok == 0 or ok == true)
+  os.remove(src)
+  if not success or not file_exists(dst) then
+    os.remove(dst)
+    return nil
+  end
+  local f = io.open(dst, "rb")
+  local bytes = f:read("*a")
+  f:close()
+  os.remove(dst)
+  if not bytes or #bytes == 0 then return nil end
+  return sodium.sodium_bin2base64(bytes, sodium.sodium_base64_VARIANT_ORIGINAL)
+end
+
 return M

@@ -33,6 +33,7 @@ local user_settings = require("user_settings")
 local gallery_looks = require("gallery_looks")
 local colorutil = require("colorutil")
 local discord_webhook = require("discord_webhook")
+local ai_metadata = require("ai_metadata")
 
 -- Attaches computed accent_contrast_text/accent_gradient onto a decoded
 -- user's user_settings table, mirroring SwarmPanel's with_derived_accent.
@@ -1458,11 +1459,9 @@ function M.upload_media(req)
     return 400, { detail = "Unsupported file extension." }
   end
 
-  local title = trim(nn(form.title) or ""):sub(1, 160)
-  if title == "" then return 400, { detail = "Title is required." } end
+  local title_raw = trim(nn(form.title) or ""):sub(1, 160)
   local description_raw = trim(nn(form.description) or "")
-  local description = description_raw ~= "" and description_raw:sub(1, 2000) or nil
-  local tags = parse_tags(form.tags)
+  local tags_hint = parse_tags(form.tags)
   local visibility = (nn(form.visibility) or "public"):lower()
   if visibility ~= "public" and visibility ~= "unlisted" and visibility ~= "private" then
     return 400, { detail = "Visibility must be public, unlisted, or private." }
@@ -1470,11 +1469,32 @@ function M.upload_media(req)
   local comments_enabled = form_bool(form.comments_enabled, true)
   local downloads_enabled = form_bool(form.downloads_enabled, true)
   local is_adult_input = form_bool(form.is_adult, false)
+  local auto_ai = form_bool(form.auto_ai, true)
+
+  -- AI-assisted auto-fill (see ai_metadata.lua for what this does and
+  -- doesn't cover): only ever fills in gaps the uploader left blank --
+  -- title, tags, category/subcategory -- and is best-effort (pcall'd; a
+  -- broken/unreachable AI provider must never fail the upload itself).
+  local analysis = nil
+  if auto_ai and M.settings.ai_enabled and (media_kind == "image" or media_kind == "video") then
+    local ok, result = pcall(ai_metadata.analyze_media_bytes, {
+      content = upload.content, filename = original_filename, mime_type = sniffed_mime, media_kind = media_kind,
+      title_hint = title_raw, description_hint = description_raw, tags_hint = tags_hint, settings = M.settings,
+    })
+    if ok then analysis = result end
+  end
+
+  local title = title_raw ~= "" and title_raw or (analysis and analysis.title) or ""
+  if title == "" then return 400, { detail = "Title is required." } end
+  local description = description_raw ~= "" and description_raw:sub(1, 2000) or nil
+  local tags = (analysis and #analysis.tags > 0) and analysis.tags or tags_hint
 
   local category_id = tonumber(form.category_id)
   if not category_id or category_id <= 0 then
     local category_kind = nn(form.category_kind) or (media_kind == "video" and "video" or "image")
-    category_id = find_or_create_category(form.category_name, category_kind, user.id)
+    local category_name = nn(form.category_name)
+    if not category_name or trim(category_name) == "" then category_name = analysis and analysis.category_name or nil end
+    category_id = find_or_create_category(category_name, category_kind, user.id)
     if not category_id then return 400, { detail = "Category is required." } end
   end
   -- Multi-subcategory form fields: subcategory_ids_json/subcategory_names_json
@@ -1499,6 +1519,9 @@ function M.upload_media(req)
   if nn(form.subcategory_name) and trim(form.subcategory_name) ~= "" then
     table.insert(requested_names, 1, form.subcategory_name)
   end
+  if #requested_ids == 0 and #requested_names == 0 and analysis then
+    for _, name in ipairs(analysis.subcategory_names or {}) do requested_names[#requested_names + 1] = name end
+  end
   requested_names = normalize_subcategory_names(requested_names)
 
   local resolved_subcategory_ids, subcat_err = resolve_subcategory_ids(category_id, requested_ids, requested_names, user.id)
@@ -1506,7 +1529,8 @@ function M.upload_media(req)
   local subcategory_id = resolved_subcategory_ids[1]
 
   local sha256 = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(upload.content))
-  local moderation = moderate_upload(title, description, tags, original_filename, sniffed_mime, is_adult_input)
+  local moderation = moderate_upload(title, description, tags, original_filename, sniffed_mime,
+    is_adult_input or (analysis and analysis.is_adult) or false)
 
   local fingerprint = media_kind == "image" and media_files.image_fingerprint(upload.content) or nil
   local possible_duplicates = find_possible_duplicates(req, user.id, fingerprint)
@@ -1555,6 +1579,70 @@ function M.upload_media(req)
     notify_matching_saved_searches(user.id, enriched)
   end
   return 200, { media = enriched, possible_duplicates = arr(possible_duplicates) }
+end
+
+-- Standalone "preview the AI suggestion before uploading" endpoint. Mirrors
+-- app/routers/media.py's analyze_media_upload(): does NOT save anything --
+-- just runs the same analysis + possible-duplicate check upload_media does
+-- and returns the result for a client to show as a suggestion.
+function M.analyze_media(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+
+  local form = req.form or {}
+  local upload = (req.files or {}).file
+  if not upload or not upload.content or upload.content == "" then
+    return 400, { detail = "Upload is empty." }
+  end
+  if #upload.content > M.settings.max_upload_bytes then
+    return 413, { detail = string.format("Uploads must be %dMB or smaller.", math.floor(M.settings.max_upload_bytes / (1024 * 1024))) }
+  end
+
+  local rl_status, rl_body = ratelimit.check("analyze:" .. user.id, M.settings.analyze_rate_limit_per_hour, 3600)
+  if rl_status then return rl_status, rl_body end
+
+  local sniffed_mime, media_kind = sniff_magic(upload.content)
+  if not sniffed_mime then return 400, { detail = "Unsupported or invalid file bytes." } end
+  local original_filename = ((upload.filename or "upload"):match("([^/\\]+)$") or "upload"):sub(1, 255)
+
+  local title_hint = trim(nn(form.title) or ""):sub(1, 160)
+  local description_hint = trim(nn(form.description) or "")
+  local tags_hint = parse_tags(form.tags)
+
+  local analysis
+  if M.settings.ai_enabled and (media_kind == "image" or media_kind == "video") then
+    local ok, result = pcall(ai_metadata.analyze_media_bytes, {
+      content = upload.content, filename = original_filename, mime_type = sniffed_mime, media_kind = media_kind,
+      title_hint = title_hint, description_hint = description_hint, tags_hint = tags_hint, settings = M.settings,
+    })
+    if ok then analysis = result end
+  end
+  if not analysis then
+    analysis = ai_metadata.heuristic_analysis(original_filename, sniffed_mime, media_kind, title_hint, description_hint, tags_hint, media_files.media_dimensions(upload.content))
+  end
+
+  local fingerprint = media_kind == "image" and media_files.image_fingerprint(upload.content) or nil
+  local possible_duplicates = find_possible_duplicates(req, user.id, fingerprint)
+
+  return 200, {
+    analysis = {
+      title = analysis.title,
+      suggested_filename = analysis.suggested_filename,
+      tags = arr(analysis.tags),
+      category_name = analysis.category_name,
+      subcategory_name = analysis.subcategory_name,
+      subcategory_names = arr(analysis.subcategory_names),
+      is_adult = analysis.is_adult,
+      source = analysis.source,
+      confidence = analysis.confidence,
+      reason = analysis.reason,
+      description = analysis.description,
+    },
+    media_kind = media_kind,
+    mime_type = sniffed_mime,
+    original_filename = original_filename,
+    possible_duplicates = arr(possible_duplicates),
+  }
 end
 
 -- ---------------------------------------------------------------------------

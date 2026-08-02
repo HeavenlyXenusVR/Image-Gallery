@@ -73,6 +73,7 @@ function M.load()
     storage_backend = env("GALLERY_STORAGE_BACKEND", "database"),
     max_upload_bytes = env_int("GALLERY_MAX_UPLOAD_BYTES", 3 * 1024 * 1024 * 1024),
     upload_rate_limit_per_hour = math.max(1, env_int("GALLERY_UPLOAD_RATE_LIMIT_PER_HOUR", 60)),
+    analyze_rate_limit_per_hour = math.max(1, env_int("GALLERY_ANALYZE_RATE_LIMIT_PER_HOUR", 120)),
     db_blob_chunk_bytes = math.max(1024 * 1024, math.min(env_int("GALLERY_DB_BLOB_CHUNK_BYTES", 8 * 1024 * 1024), 16 * 1024 * 1024)),
     media_page_limit = math.max(1, math.min(200, env_int("GALLERY_MEDIA_PAGE_LIMIT", 100))),
     max_tags_per_upload = math.max(1, math.min(50, env_int("GALLERY_MAX_TAGS_PER_UPLOAD", 12))),
@@ -85,9 +86,10 @@ function M.load()
 
     db_schema = env("GALLERY_DB_SCHEMA", "image_gallery"),
 
-    -- AI vision status/config surface only (see routes.lua's ai_vision
-    -- section header for what's NOT ported: the actual LLM-calling
-    -- classification/analysis pipeline in app/ai_metadata.py).
+    -- AI vision config. ai_metadata.lua implements the heuristic analyzer,
+    -- domain-hint text matcher, and a real Gemini vision call; Ollama/
+    -- OpenAI-compatible vision and the local CLIP classifier are NOT
+    -- ported (see that file's header comment).
     ai_enabled = env_bool("GALLERY_AI_ENABLED", (env("GALLERY_AI_API_KEY") or env("OPENAI_API_KEY") or env("GALLERY_GEMINI_API_KEY") or env("GALLERY_OLLAMA_MODEL")) ~= nil),
     ai_provider = env("GALLERY_AI_PROVIDER", (env("GALLERY_AI_API_KEY") or env("OPENAI_API_KEY")) and "openai" or "ollama"),
     ai_api_key = env("GALLERY_AI_API_KEY") or env("OPENAI_API_KEY") or env("GALLERY_GEMINI_API_KEY") or "",
@@ -95,6 +97,7 @@ function M.load()
     ai_ollama_base_url = env("GALLERY_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
     ai_model = env("GALLERY_GEMINI_MODEL") or env("GEMINI_MODEL") or env("GALLERY_AI_MODEL", "gpt-4o-mini"),
     ai_ollama_model = env("GALLERY_OLLAMA_MODEL", "llava"),
+    ai_timeout_seconds = env_int("GALLERY_AI_TIMEOUT_SECONDS", 45),
     ai_training_examples_limit = math.max(0, math.min(1000, env_int("GALLERY_AI_TRAINING_EXAMPLES_LIMIT", 300))),
   }
 end

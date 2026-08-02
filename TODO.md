@@ -12,20 +12,23 @@ This is a punch list for finishing the full replacement.
 
 ## Not yet ported
 
-- **LLM classification pipeline** (`app/ai_metadata.py`, ~2150 lines) —
-  OpenAI/Gemini/Ollama prompt construction plus heuristic fallback. Powers
-  `auto_ai` uploads and `POST /api/media/analyze`. The Lua side only has the
-  status/config surface (`ai_vision_status` etc.), not the actual
-  classification calls.
 - **Telegram bot integration** (`app/telegram.py` + gallery-specific command
   handlers) — long-running polling background service, not an HTTP route at
   all. Needs its own standalone Lua process/service, not just a route port.
-- **Background AI learning** (training examples feeding back into future
-  classification, part of the LLM pipeline above — not separable from it).
-- **`POST /api/media/analyze`, `POST /api/media/:media_id/ai/train`,
-  `POST /api/media/:media_id/diagnostics/load`** — the two `ai/` ones need
-  the LLM pipeline above; diagnostics/load is just client-side telemetry
-  logging and is low priority.
+- **Ollama and OpenAI-compatible vision providers**, the local CLIP
+  classifier subprocess, and **visual-hash/training-example lookup matching**
+  (the "learn from corrections" part of `_training_lookup_analysis`) — the
+  LLM pipeline below only implements Gemini (this deployment's actual
+  configured provider) plus the heuristic/domain-hint fallbacks. If
+  `GALLERY_AI_PROVIDER` is set to anything other than `gemini`, or no Gemini
+  key is configured, analysis gracefully degrades to heuristic/domain-hint
+  instead of erroring — it just won't call out to Ollama/OpenAI/CLIP.
+- **Background AI learning** (the periodic pass that turns curated gallery
+  metadata into new training examples) — depends on the training-example
+  table/lookup above, which isn't ported.
+- **`POST /api/media/:media_id/ai/train`, `POST /api/media/:media_id/diagnostics/load`**
+  — `ai/train` needs the training-example table above; diagnostics/load is
+  just client-side telemetry logging and is low priority.
 
 (`PATCH /api/media/:media_id`, `PATCH /api/media/:media_id/controls`,
 `DELETE /api/media/:media_id`, `POST /api/media/:media_id/restore`,
@@ -84,6 +87,24 @@ cache file exists). Verified live: uploaded a test video, requested
 matches Python's scheme exactly, cache-hit is near-instant on a second
 request, and an unsupported quality value falls back to serving the
 original.
+
+The LLM classification pipeline (`lua/src/ai_metadata.lua`, new file) is
+also now ported, scoped down as described above: heuristic (no-network)
+analysis, the filename/text domain-hint character/franchise matcher, and a
+real Gemini vision call (prompt/schema mirror `app/ai_metadata.py`'s
+`_gemini_vision_analysis` closely), wired into `POST /api/media` (the
+`auto_ai` form field now actually does something — fills in title/tags/
+category/subcategory when the uploader left them blank) and a new
+standalone `POST /api/media/analyze` (preview the AI suggestion without
+uploading). Image/video preview generation and dimension probing use
+ffmpeg/ffprobe (`media_files.lua`'s `jpeg_preview_base64`/`media_dimensions`)
+instead of PIL. Verified end-to-end against the live production Gemini API
+(not a mock): a synthetic test-pattern image was correctly classified with
+real title/tags/category/description; an invalid API key was confirmed to
+fail closed to the domain-hint/heuristic result with a redacted, readable
+error reason rather than crashing the upload; a full upload with no title
+or category provided at all was correctly auto-filled end-to-end and
+verified in the database. All test rows cleaned up after.
 
 ## Once everything above is ported
 

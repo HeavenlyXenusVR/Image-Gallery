@@ -50,6 +50,7 @@ const PORTED_ROUTES = [
   "POST /api/media",
   "POST /api/media/bulk",
   "POST /api/media/bulk-delete",
+  "POST /api/media/analyze",
   "GET /api/media/:media_id",
   "PATCH /api/media/:media_id",
   "DELETE /api/media/:media_id",
