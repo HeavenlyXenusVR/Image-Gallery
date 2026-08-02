@@ -145,7 +145,14 @@ local function get_user(user_id)
   return decode_user(row)
 end
 
-local SITE_OWNER_EMAIL = "heavenlyxenusvr@icloud.com"
+-- Must exactly match the real account's stored `email` column (case-
+-- insensitively, see is_site_owner() below) AND that account needs
+-- email_verified_at set, or the site-owner gate silently denies everyone,
+-- including the real owner -- confirmed happening in production
+-- (2026-08-02): this constant didn't match the live account's actual
+-- stored email, and email_verified_at was NULL, so /admin and every
+-- existing admin_* API endpoint had never actually been reachable.
+local SITE_OWNER_EMAIL = "uxzheavenlyyei@icloud.com"
 
 local function is_site_owner(user)
   return user and nn(user.email_verified_at) ~= nil and tostring(user.email or ""):lower() == SITE_OWNER_EMAIL
@@ -3410,6 +3417,11 @@ local function require_site_owner(req)
   end
   return user
 end
+-- Exported for pages_admin.lua's server-rendered dashboard, which needs the
+-- exact same "logged in AND verified site owner" check the JSON API
+-- endpoints below use, but renders an HTML page/redirect on failure instead
+-- of a JSON error body.
+M.require_site_owner_for_page = require_site_owner
 
 local function write_audit_log(actor_id, action, target_type, target_id, detail)
   detail = detail and tostring(detail):sub(1, 500) or nil

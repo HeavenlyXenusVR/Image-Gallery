@@ -33,41 +33,12 @@
 -- the attacker's account, which they'd notice immediately.
 
 local routes = require("routes")
+local html = require("html")
 
 local M = {}
 
-local ESCAPE_MAP = {
-  ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;",
-  ['"'] = "&quot;", ["'"] = "&#39;",
-}
-
-local function esc(v)
-  if v == nil then return "" end
-  return (tostring(v):gsub('[&<>"\']', ESCAPE_MAP))
-end
-
-local function urldecode(s)
-  s = s:gsub("+", " ")
-  s = s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
-  return s
-end
-
--- Parses "a=b&c=d%20e" (application/x-www-form-urlencoded) -- the body
--- shape a plain HTML <form method="POST"> without enctype sends. httpd.lua
--- only parses application/json and multipart/form-data bodies today; these
--- two pages are the first callers that need the third standard content
--- type, so it's handled locally here rather than growing httpd.lua's
--- request parser for a single call site.
-local function parse_urlencoded(raw_body)
-  local fields = {}
-  for pair in (raw_body or ""):gmatch("[^&]+") do
-    local k, v = pair:match("^([^=]*)=?(.*)$")
-    if k and k ~= "" then
-      fields[urldecode(k)] = urldecode(v or "")
-    end
-  end
-  return fields
-end
+local esc = html.esc
+local parse_urlencoded = html.parse_urlencoded
 
 local function layout(title, body_html)
   return ([[<!doctype html>

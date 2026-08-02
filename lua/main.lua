@@ -9,6 +9,7 @@ local config = require("config")
 local routes = require("routes")
 local static = require("static")
 local pages_auth = require("pages_auth")
+local pages_admin = require("pages_admin")
 
 local settings = config.load()
 routes.settings = settings
@@ -178,6 +179,18 @@ httpd.route("POST", "/login", pages_auth.login_submit)
 httpd.route("POST", "/login/2fa", pages_auth.twofa_submit)
 httpd.route("GET", "/register", pages_auth.register_page)
 httpd.route("POST", "/register", pages_auth.register_submit)
+
+-- Server-rendered site-owner admin dashboard -- see pages_admin.lua's
+-- header comment. Every /admin/actions/* route re-checks site-ownership
+-- itself (pages_admin.lua's gate()), so there's no privilege gap even
+-- though these are registered like any other public path.
+httpd.route("GET", "/admin", pages_admin.admin_page)
+httpd.route("POST", "/admin/actions/report-resolve", pages_admin.action_report_resolve)
+httpd.route("POST", "/admin/actions/flagged-resolve", pages_admin.action_flagged_resolve)
+httpd.route("POST", "/admin/actions/ban", pages_admin.action_ban)
+httpd.route("POST", "/admin/actions/unban", pages_admin.action_unban)
+httpd.route("POST", "/admin/actions/purge-orphans", pages_admin.action_purge_orphans)
+httpd.route("POST", "/admin/actions/site-settings", pages_admin.action_site_settings)
 
 -- Serves the built React SPA directly at this backend's own hostname
 -- (gallery.xenusanimations.studio), the same way SwarmPanel's Lua backend

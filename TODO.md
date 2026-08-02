@@ -60,6 +60,31 @@ step. What did move to Lua, as a deliberately narrow slice:
   Verified live: GET /login, GET /register, POST /register (real account
   created then deleted), POST /login with bad credentials (error
   re-rendered, 401) all correct through the direct-to-Lua path.
+- `/admin` is now a server-rendered site-owner dashboard
+  (`lua/src/pages_admin.lua`, new shared `lua/src/html.lua` for esc/
+  urlencoded-form-parsing/byte+date formatting): Reports, Flagged Uploads,
+  Users & Bans, Storage, Site Settings, and Audit Log as one page with
+  plain POST-per-action forms, reusing `routes.admin_*` directly (no logic
+  duplicated). Gated by the same `require_site_owner` check as the JSON
+  admin API (now exported as `routes.require_site_owner_for_page`).
+  **Found and fixed two more real bugs while wiring this up**:
+  (1) the site-owner gate had *never* actually granted access to the real
+  owner account in production — `SITE_OWNER_EMAIL` in routes.lua didn't
+  match the account's actual stored email, and `email_verified_at` was
+  NULL. Fixed both (see the constant's own comment; confirmed with the
+  user which email was authoritative before changing anything).
+  (2) `routes.lua`'s `arr()` returns the special `cjson.empty_array`
+  sentinel (lightuserdata, not a table) for empty lists, which is correct
+  for JSON responses but breaks `ipairs()` when these pages call
+  `routes.admin_*` directly instead of going through JSON encoding — added
+  `html.as_list()` to guard every such call site.
+  Verified live end-to-end with a real minted session token for the (now-
+  fixed) owner account: GET /admin renders real data (15 media items,
+  68.6 MB tracked, 507 orphaned cache files, top-storage-user table), and
+  a real POST to /admin/actions/site-settings round-trips correctly
+  (redirect + flash message + unchanged values confirmed via the JSON
+  endpoint). Non-owner and logged-out access correctly return 403 / redirect
+  to /login.
 
 ## Not ported (both are background-only, no HTTP/user-facing surface)
 
