@@ -127,6 +127,8 @@ httpd.route("POST", "/api/admin/users/:user_id/unban", routes.admin_unban_user)
 httpd.route("GET", "/api/admin/audit-log", routes.admin_audit_log)
 httpd.route("GET", "/api/admin/flagged-media", routes.admin_flagged_media)
 httpd.route("POST", "/api/admin/flagged-media/:media_id/resolve", routes.admin_resolve_flagged_media)
+httpd.route("GET", "/api/admin/storage", routes.admin_storage)
+httpd.route("POST", "/api/admin/storage/purge-orphans", routes.admin_purge_storage_orphans)
 httpd.route("PATCH", "/api/admin/site-settings", routes.admin_update_site_settings)
 
 -- "/export" MUST be registered before a future "/api/ai/vision/training/:id"-

@@ -93,6 +93,8 @@ const PORTED_ROUTES = [
   "GET /api/admin/audit-log",
   "GET /api/admin/flagged-media",
   "POST /api/admin/flagged-media/:media_id/resolve",
+  "GET /api/admin/storage",
+  "POST /api/admin/storage/purge-orphans",
   "PATCH /api/admin/site-settings",
   "GET /api/ai/vision/status",
   "GET /api/ai/vision/training/export",

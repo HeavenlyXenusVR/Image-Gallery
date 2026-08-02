@@ -2723,6 +2723,135 @@ function M.admin_resolve_flagged_media(req)
   return 200, { media = item }
 end
 
+-- ---------------------------------------------------------------------------
+-- Storage dashboard + orphaned-cache-file purge. Mirrors
+-- app/db/admin.py's storage_by_user() and app/routers/admin.py's
+-- _walk_cache_dir()/storage_dashboard()/purge_storage_orphans(), with one
+-- deliberate correction: Python builds its "referenced" set from
+-- storage_by_user()'s top-N-by-user aggregate rows, which only ever have a
+-- user_id column -- referenced = {str(row["id"]) ...} raises KeyError
+-- immediately (no "id" key in that row shape) and, even if it didn't, a
+-- per-user aggregate has no media ids in it to match cache filenames
+-- against anyway (those are named "<media_id>_<width>.webp", see
+-- serve_media_thumb). This port instead builds the referenced set from the
+-- actual set of live media_items ids, which is what the cache filenames are
+-- really keyed by, so orphan detection actually works.
+-- ---------------------------------------------------------------------------
+
+local function storage_by_user(limit)
+  limit = math.max(1, math.min(limit or 20, 100))
+  local totals = db.fetchone("SELECT COALESCE(SUM(file_size), 0) AS total_bytes, COUNT(*) AS total_items FROM media_items WHERE deleted_at IS NULL")
+  local by_user = db.fetchall([[
+    SELECT m.user_id, u.username, COALESCE(u.display_name, u.username) AS display_name,
+           COUNT(*) AS item_count, COALESCE(SUM(m.file_size), 0) AS total_bytes
+    FROM media_items m
+    JOIN users u ON u.id = m.user_id
+    WHERE m.deleted_at IS NULL
+    GROUP BY m.user_id, u.id
+    ORDER BY total_bytes DESC
+    LIMIT %s
+  ]], tostring(limit))
+  for _, row in ipairs(by_user) do
+    row.user_id = db.toint(row.user_id, row.user_id)
+    row.item_count = db.toint(row.item_count, 0)
+    row.total_bytes = db.toint(row.total_bytes, 0)
+  end
+  return {
+    total_bytes = db.toint(totals and totals.total_bytes, 0),
+    total_items = db.toint(totals and totals.total_items, 0),
+    by_user = by_user,
+  }
+end
+
+local function referenced_media_ids()
+  local rows = db.fetchall("SELECT id FROM media_items WHERE deleted_at IS NULL")
+  local set = {}
+  for _, row in ipairs(rows) do set[tostring(db.toint(row.id, row.id))] = true end
+  return set
+end
+
+local ORPHAN_CACHE_DIR_NAMES = { "_thumb_cache", "_video_cache" }
+local ORPHAN_MIN_AGE_SECONDS = 24 * 3600
+
+-- Lua's %q escapes for a *Lua* string literal, not a shell argument -- use
+-- real single-quote shell escaping instead (same convention as
+-- media_files.lua's own shell_quote(), duplicated here since that one is
+-- local to that module).
+local function shell_quote(s)
+  return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
+-- No lfs/posix rock is vendored, so directory listing shells out to `find`
+-- (same io.popen/os.execute pattern media_files.lua already uses for
+-- ffmpeg). `find -printf` gives size+mtime+path in one pass without a
+-- per-file stat() round-trip.
+local function walk_cache_dir(uploads_dir, referenced_ids)
+  local total_bytes, total_files, orphan_bytes = 0, 0, 0
+  local orphan_files = {}
+  local now = os.time()
+  for _, dir_name in ipairs(ORPHAN_CACHE_DIR_NAMES) do
+    local cache_dir = uploads_dir .. "/" .. dir_name
+    local handle = io.popen(string.format("find %s -type f -printf '%%s %%T@ %%p\\n' 2>/dev/null", shell_quote(cache_dir)))
+    if handle then
+      for line in handle:lines() do
+        local size_str, mtime_str, path = line:match("^(%d+) (%S+) (.+)$")
+        if size_str then
+          local size = tonumber(size_str) or 0
+          local mtime = tonumber(mtime_str) or 0
+          total_bytes = total_bytes + size
+          total_files = total_files + 1
+          local filename = path:match("([^/]+)$") or path
+          local media_id = filename:match("^(%d+)")
+          local is_referenced = media_id and referenced_ids[media_id]
+          if not is_referenced and (now - mtime) > ORPHAN_MIN_AGE_SECONDS then
+            orphan_bytes = orphan_bytes + size
+            orphan_files[#orphan_files + 1] = { path = path, size = size }
+          end
+        end
+      end
+      handle:close()
+    end
+  end
+  return {
+    cache_total_bytes = total_bytes,
+    cache_total_files = total_files,
+    orphan_bytes = orphan_bytes,
+    orphan_count = #orphan_files,
+    orphan_files = orphan_files,
+  }
+end
+
+function M.admin_storage(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local by_user = storage_by_user(25)
+  local cache_info = walk_cache_dir(M.settings.uploads_dir, referenced_media_ids())
+  return 200, {
+    total_bytes = by_user.total_bytes,
+    total_items = by_user.total_items,
+    by_user = arr(by_user.by_user),
+    cache_total_bytes = cache_info.cache_total_bytes,
+    cache_total_files = cache_info.cache_total_files,
+    orphan_bytes = cache_info.orphan_bytes,
+    orphan_count = cache_info.orphan_count,
+  }
+end
+
+function M.admin_purge_storage_orphans(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local cache_info = walk_cache_dir(M.settings.uploads_dir, referenced_media_ids())
+  local removed, freed_bytes = 0, 0
+  for _, entry in ipairs(cache_info.orphan_files) do
+    if os.remove(entry.path) then
+      removed = removed + 1
+      freed_bytes = freed_bytes + entry.size
+    end
+  end
+  write_audit_log(owner.id, "storage_purge_orphans", "storage", nil, string.format("removed=%d bytes=%d", removed, freed_bytes))
+  return 200, { removed = removed, freed_bytes = freed_bytes }
+end
+
 local SITE_SETTINGS_FIELDS = {
   "announcement_message", "announcement_level", "announcement_active",
   "maintenance_mode", "maintenance_message",
