@@ -3002,6 +3002,12 @@ local function shell_quote(s)
   return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
 end
 
+-- Duplicated from media_files.lua's own local ffmpeg_bin() for the same
+-- reason as shell_quote above.
+local function ffmpeg_bin()
+  return os.getenv("GALLERY_FFMPEG_BIN") or "ffmpeg"
+end
+
 -- No lfs/posix rock is vendored, so directory listing shells out to `find`
 -- (same io.popen/os.execute pattern media_files.lua already uses for
 -- ffmpeg). `find -printf` gives size+mtime+path in one pass without a
@@ -3343,6 +3349,99 @@ function M.serve_media_thumb(req)
   return 404, { detail = "File missing from database." }
 end
 
+-- ---------------------------------------------------------------------------
+-- Video quality-variant transcoding (?quality=720p on GET .../file). Mirrors
+-- app/routers/media_streaming.py's VIDEO_QUALITY_PROFILES/
+-- _normalize_video_quality/_ensure_video_quality_cache, with one deliberate
+-- simplification: Python streams the ffmpeg transcode to the client while
+-- simultaneously writing the cache file (so playback starts within ~1s), and
+-- dedups concurrent transcodes of the same (media_id, quality) via an
+-- in-memory active-streams set. This backend already loads full DB-blob
+-- content into memory and blocks copas' single-threaded event loop for the
+-- duration of any ffmpeg call (see media_files.lua's render_webp -- same
+-- accepted tradeoff, not new here), so a "transcode fully, then serve"
+-- approach is consistent with the rest of this file: no partial-progress
+-- streaming, and no dedup (two concurrent first-requests for the same
+-- quality will transcode twice -- rare, self-correcting once the cache
+-- file exists, and not worth an in-memory coordination table for this
+-- deployment's traffic level).
+-- ---------------------------------------------------------------------------
+
+local VIDEO_QUALITY_PROFILES = {
+  ["1080p"] = { max_width = 1920, crf = 22, audio_bitrate = "320k", preset = "fast", profile = "high" },
+  ["720p"]  = { max_width = 1280, crf = 25, audio_bitrate = "256k", preset = "fast", profile = "high" },
+  ["480p"]  = { max_width = 854,  crf = 28, audio_bitrate = "192k", preset = "fast", profile = "high" },
+  ["144p"]  = { max_width = 256,  crf = 36, audio_bitrate = "64k",  preset = "ultrafast", profile = "baseline" },
+}
+local VIDEO_TRANSCODE_SIZE_LIMIT = 500 * 1024 * 1024
+
+local function normalize_video_quality(value)
+  local quality = tostring(value or "high"):lower()
+  local legacy = { medium = "720p", low = "480p", high = "original", original = "original" }
+  quality = legacy[quality] or quality
+  if quality == "original" or VIDEO_QUALITY_PROFILES[quality] then return quality end
+  return "original"
+end
+
+local function video_quality_cache_path(media_id, quality, digest_seed)
+  local key = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(tostring(digest_seed))):sub(1, 16)
+  return M.settings.uploads_dir .. "/_video_cache/" .. tostring(media_id) .. "_" .. quality .. "_" .. key .. ".mp4"
+end
+
+-- Returns (transcoded_bytes, "video/mp4") on success, or (nil) to signal
+-- "serve the original instead" (quality is "original", no ffmpeg profile
+-- for that quality name, the file is too large to transcode, or the
+-- transcode itself failed).
+local function ensure_video_quality_cache(media_id, item, content, quality)
+  local profile = VIDEO_QUALITY_PROFILES[quality]
+  if not profile then return nil end
+  if #content > VIDEO_TRANSCODE_SIZE_LIMIT then return nil end
+
+  local sha_row = db.fetchone("SELECT content_sha256 FROM media_items WHERE id=%s", tostring(media_id))
+  local digest_seed = (sha_row and nn(sha_row.content_sha256)) or item.updated_at or item.created_at or tostring(media_id)
+  local cache_file = video_quality_cache_path(media_id, quality, digest_seed)
+
+  local existing = io.open(cache_file, "rb")
+  if existing then
+    local bytes = existing:read("*a")
+    existing:close()
+    if bytes and #bytes > 0 then return bytes, "video/mp4" end
+  end
+
+  os.execute("mkdir -p " .. shell_quote(M.settings.uploads_dir .. "/_video_cache"))
+  local src = os.tmpname()
+  local f = assert(io.open(src, "wb"))
+  f:write(content)
+  f:close()
+
+  local tmp_dst = cache_file .. ".tmp." .. tostring(math.random(100000, 999999)) .. ".mp4"
+  local scale_filter = string.format("scale='min(%d,iw)':-2:flags=lanczos", profile.max_width)
+  local cmd = string.format(
+    "%s -y -hide_banner -loglevel error -i %s -map 0:v:0 -map 0:a:0? -vf %s -c:v libx264 -preset %s -crf %d "
+      .. "-profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s -movflags +faststart -f mp4 %s </dev/null >/dev/null 2>&1",
+    ffmpeg_bin(), shell_quote(src), shell_quote(scale_filter),
+    profile.preset, profile.crf, profile.profile, profile.audio_bitrate, shell_quote(tmp_dst)
+  )
+  local ok = os.execute(cmd)
+  local success = (ok == 0 or ok == true)
+  os.remove(src)
+
+  if not success then
+    os.remove(tmp_dst)
+    return nil
+  end
+  local tf = io.open(tmp_dst, "rb")
+  if not tf then return nil end
+  local bytes = tf:read("*a")
+  tf:close()
+  if not bytes or #bytes == 0 then
+    os.remove(tmp_dst)
+    return nil
+  end
+  os.rename(tmp_dst, cache_file)
+  return bytes, "video/mp4"
+end
+
 -- Adds real HTTP Range/206 support. Previously flagged as a KNOWN
 -- LIMITATION (see this section's header comment above): httpd.lua always
 -- wrote one Content-Length-framed body with no partial-content path, so
@@ -3387,7 +3486,7 @@ local function respond_with_range(req, content, mime_type, extra_headers)
   return 206, content:sub(start_byte + 1, end_byte + 1), headers
 end
 
-local function serve_media_bytes_response(req, media_id, as_download)
+local function serve_media_bytes_response(req, media_id, as_download, quality)
   local auth = auth_optional(req)
   local viewer_id = auth and tostring(auth.id) or nil
   local item = fetch_media_by_id(media_id, viewer_id or "0")
@@ -3419,13 +3518,27 @@ local function serve_media_bytes_response(req, media_id, as_download)
     }
     return 200, content, headers
   end
+
+  local normalized_quality = normalize_video_quality(quality)
+  if item.media_kind == "video" and normalized_quality ~= "original" then
+    local transcoded, transcoded_mime = ensure_video_quality_cache(media_id, item, content, normalized_quality)
+    if transcoded then
+      return respond_with_range(req, transcoded, transcoded_mime, {
+        ["Cache-Control"] = "public, max-age=86400",
+        ["X-Video-Quality"] = normalized_quality,
+        ["X-Video-Codec"] = "h264/aac",
+      })
+    end
+    -- Transcode unavailable/failed/too large -- fall through to the original,
+    -- same as Python's _video_variant_response returning None.
+  end
   return respond_with_range(req, content, mime_type, { ["Cache-Control"] = "public, max-age=86400" })
 end
 
 function M.serve_media_file(req)
   local media_id = tonumber(req.params.media_id)
   if not media_id then return 404, { detail = "Media not found." } end
-  return serve_media_bytes_response(req, media_id, false)
+  return serve_media_bytes_response(req, media_id, false, req.query and req.query.quality)
 end
 
 function M.download_media(req)

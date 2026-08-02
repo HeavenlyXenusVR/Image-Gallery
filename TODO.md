@@ -21,16 +21,7 @@ This is a punch list for finishing the full replacement.
   handlers) — long-running polling background service, not an HTTP route at
   all. Needs its own standalone Lua process/service, not just a route port.
 - **Background AI learning** (training examples feeding back into future
-  classification).
-- **Video quality-variant transcoding** (`?quality=720p` on
-  `GET /api/media/:media_id/file`, see `app/routers/media_streaming.py`'s
-  `_video_variant_response`/`_ensure_video_quality_cache`/
-  `_db_backed_transcode_and_cache`) — a full ffmpeg-subprocess transcode
-  pipeline with a size-limit skip, active-transcode dedup, and a disk cache;
-  bigger than a simple route port. "Video thumbnail ... warmup" turned out to
-  be a non-issue once this exists: thumbnails already self-cache lazily on
-  first request (see `serve_media_thumb`), so there's nothing to separately
-  warm there.
+  classification, part of the LLM pipeline above — not separable from it).
 - **`POST /api/media/analyze`, `POST /api/media/:media_id/ai/train`,
   `POST /api/media/:media_id/diagnostics/load`** — the two `ai/` ones need
   the LLM pipeline above; diagnostics/load is just client-side telemetry
@@ -78,7 +69,21 @@ ffmpeg (no PIL equivalent in Lua) instead of Python's PIL-based
 (different resize filter/EXIF handling), which doesn't matter here since a
 backend only ever compares hashes it computed itself. See the comment above
 `image_fingerprint` in `lua/src/media_files.lua` and `find_possible_duplicates`
-in `lua/src/routes.lua`.)
+in `lua/src/routes.lua`.
+
+Video quality-variant transcoding (`?quality=720p` etc. on
+`GET /api/media/:media_id/file`) is also now ported — see the "Video
+quality-variant transcoding" section in `lua/src/routes.lua`, above
+`respond_with_range`. One deliberate simplification vs. Python: no
+streaming-while-transcoding (transcodes fully to a temp file, then serves —
+consistent with this backend already loading full DB blobs into memory
+elsewhere) and no active-transcode dedup (two concurrent first-requests for
+the same quality will transcode twice; rare and self-correcting once the
+cache file exists). Verified live: uploaded a test video, requested
+`?quality=480p`, confirmed the transcode, the on-disk cache file's naming
+matches Python's scheme exactly, cache-hit is near-instant on a second
+request, and an unsupported quality value falls back to serving the
+original.
 
 ## Once everything above is ported
 
