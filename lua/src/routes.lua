@@ -285,7 +285,14 @@ function M.register(req)
   if username == "" then return 400, { detail = "Username is required." } end
   if #password < 8 then return 400, { detail = "Password must be at least 8 characters." } end
 
-  local existing = db.fetchone("SELECT id FROM users WHERE username=%s OR (email=%s AND email IS NOT NULL)", username, email)
+  -- LOWER() on both sides here too: an exact-match check would let someone
+  -- register "heavenlyxenusvr" today even though "HeavenlyXenusVR" already
+  -- exists (see login's fix above for why case can differ on old
+  -- accounts), creating a second, genuinely different account that a
+  -- case-insensitive login could then no longer tell apart from the
+  -- original. Blocking the collision at registration time is the other
+  -- half of actually fixing this for good.
+  local existing = db.fetchone("SELECT id FROM users WHERE LOWER(username)=%s OR (LOWER(email)=%s AND email IS NOT NULL)", username, email)
   if existing then return 409, { detail = "That username or email is already taken." } end
 
   local password_hash = gauth.password_hash(password)
@@ -319,8 +326,17 @@ function M.login(req)
     return 429, { detail = "Too many failed login attempts. Try again later." }
   end
 
+  -- LOWER(username)=%s, not username=%s: normalize_username() lowercases
+  -- the input, but usernames created before the Lua rewrite (or imported
+  -- from the old MySQL DB) can have mixed-case stored values -- e.g. the
+  -- site owner's own "HeavenlyXenusVR". An exact-match comparison against
+  -- a lowercased input silently locked every such account out of login
+  -- entirely (confirmed live 2026-08-02: real failed attempts against a
+  -- correct password, not rate-limited, not banned -- just never matching
+  -- the row). Case-insensitive comparison fixes both the legacy accounts
+  -- and is simply more forgiving for everyone going forward.
   local username = normalize_username(username_raw)
-  local row = db.fetchone("SELECT id, password_hash FROM users WHERE username=%s", username)
+  local row = db.fetchone("SELECT id, password_hash FROM users WHERE LOWER(username)=%s", username)
   local password_ok = row and gauth.verify_password_hash(password, row.password_hash)
 
   db.execute("INSERT INTO auth_attempts (username, ip_address, successful) VALUES (%s, %s, %s)",
