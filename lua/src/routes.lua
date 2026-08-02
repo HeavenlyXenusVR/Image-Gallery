@@ -1382,6 +1382,185 @@ function M.notifications_list(req)
   return 200, { notifications = arr(rows), unread_count = db.toint(unread_row and unread_row.n, 0) }
 end
 
+local NOTIFICATION_KINDS = {
+  follow = true, like = true, comment = true, message = true, mention = true,
+  friend_request = true, friend_accept = true, report = true,
+}
+
+-- Mirrors app/db/notifications.py's create_notification(): silently skips
+-- self-notifications and unknown kinds rather than erroring, since callers
+-- (like send_direct_message below) don't want a notification-table hiccup
+-- to fail the actual action.
+local function create_notification(recipient_id, actor_id, kind, media_id, preview)
+  if not NOTIFICATION_KINDS[kind] then return end
+  if actor_id and tostring(actor_id) == tostring(recipient_id) then return end
+  preview = preview and trim(preview):sub(1, 160) or nil
+  if preview == "" then preview = nil end
+  db.execute(
+    "INSERT INTO notifications (recipient_id, actor_id, kind, media_id, preview) VALUES (%s, %s, %s, %s, %s)",
+    tostring(recipient_id), actor_id and tostring(actor_id) or nil, kind, media_id and tostring(media_id) or nil, preview
+  )
+end
+
+-- Mirrors app/db/social.py's is_blocked_either_way().
+local function is_blocked_either_way(user_a, user_b)
+  if not user_a or not user_b then return false end
+  local row = db.fetchone(
+    [[
+      SELECT 1 FROM user_blocks
+      WHERE kind='block' AND ((blocker_id=%s AND blocked_id=%s) OR (blocker_id=%s AND blocked_id=%s))
+      LIMIT 1
+    ]],
+    tostring(user_a), tostring(user_b), tostring(user_b), tostring(user_a)
+  )
+  return row ~= nil
+end
+
+-- Mirrors app/routers/_shared.py's _with_user_urls(): fills in avatar_url +
+-- site_owner for a user-shaped row that has an avatar_path/avatar_file_id.
+local function with_user_urls(req, user)
+  if not user then return nil end
+  if user.avatar_path and user.avatar_path ~= cjson.null then
+    local origin = request_origin(req)
+    user.avatar_url = origin .. "/api/users/" .. user.id .. "/avatar"
+  end
+  user.site_owner = is_site_owner(user)
+  return user
+end
+
+-- ---------------------------------------------------------------------------
+-- Direct messages. Mirrors app/routers/messages.py + app/db/messages.py.
+-- ---------------------------------------------------------------------------
+
+local function decode_message(row)
+  if not row then return nil end
+  row.id = db.toint(row.id, row.id)
+  row.sender_id = db.toint(row.sender_id, row.sender_id)
+  row.recipient_id = db.toint(row.recipient_id, row.recipient_id)
+  row.public_profile = db.tobool(row.public_profile)
+  row.is_online = db.tobool(row.is_online)
+  return row
+end
+
+function M.message_threads(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local rows = db.fetchall(
+    [[
+      SELECT
+        other_user.id AS id, other_user.id AS user_id, other_user.username,
+        CASE WHEN other_user.public_profile THEN other_user.display_name ELSE other_user.username END AS display_name,
+        CASE WHEN other_user.public_profile THEN other_user.avatar_path ELSE NULL END AS avatar_path,
+        other_user.profile_color, other_user.public_profile, other_user.last_seen_at,
+        (now() - other_user.last_seen_at) <= interval '180 seconds' AS is_online,
+        latest.id AS last_message_id, latest.body AS last_message, latest.created_at AS last_message_at,
+        latest.sender_id AS last_sender_id, COALESCE(unread.unread_count, 0) AS unread_count
+      FROM (
+        SELECT CASE WHEN sender_id=%s THEN recipient_id ELSE sender_id END AS other_id, MAX(id) AS last_id
+        FROM user_messages
+        WHERE sender_id=%s OR recipient_id=%s
+        GROUP BY other_id
+      ) threads
+      JOIN user_messages latest ON latest.id = threads.last_id
+      JOIN users other_user ON other_user.id = threads.other_id
+      LEFT JOIN (
+        SELECT sender_id AS other_id, COUNT(*) AS unread_count
+        FROM user_messages
+        WHERE recipient_id=%s AND read_at IS NULL
+        GROUP BY sender_id
+      ) unread ON unread.other_id = threads.other_id
+      ORDER BY latest.created_at DESC
+      LIMIT 100
+    ]],
+    user.id, user.id, user.id, user.id
+  )
+  for _, row in ipairs(rows) do
+    row.id = db.toint(row.id, row.id)
+    row.user_id = db.toint(row.user_id, row.user_id)
+    row.last_message_id = row.last_message_id and db.toint(row.last_message_id, row.last_message_id) or nil
+    row.last_sender_id = row.last_sender_id and db.toint(row.last_sender_id, row.last_sender_id) or nil
+    row.unread_count = db.toint(row.unread_count, 0)
+    row.public_profile = db.tobool(row.public_profile)
+    row.is_online = db.tobool(row.is_online)
+    with_user_urls(req, row)
+  end
+  return 200, { threads = arr(rows) }
+end
+
+local function fetch_direct_messages_sql(user_id, other_id, limit)
+  return db.fetchall(
+    [[
+      SELECT msg.*, u.username, u.display_name, u.avatar_path, u.profile_color, u.public_profile,
+             (now() - u.last_seen_at) <= interval '180 seconds' AS is_online
+      FROM user_messages msg
+      JOIN users u ON u.id = msg.sender_id
+      WHERE (msg.sender_id=%s AND msg.recipient_id=%s) OR (msg.sender_id=%s AND msg.recipient_id=%s)
+      ORDER BY msg.created_at DESC, msg.id DESC
+      LIMIT %s
+    ]],
+    tostring(user_id), tostring(other_id), tostring(other_id), tostring(user_id), tostring(math.max(1, math.min(limit, 200)))
+  )
+end
+
+function M.direct_messages(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local other_id = tonumber(req.params.user_id)
+  if not other_id then return 404, { detail = "User not found." } end
+  if tostring(other_id) == tostring(user.id) then
+    return 400, { detail = "Pick another user to view messages." }
+  end
+  local other = get_user(tostring(other_id))
+  if not other then return 400, { detail = "User not found." } end
+
+  db.execute(
+    "UPDATE user_messages SET read_at=COALESCE(read_at, CURRENT_TIMESTAMP) WHERE sender_id=%s AND recipient_id=%s AND read_at IS NULL",
+    tostring(other_id), user.id
+  )
+  local limit = tonumber(req.query.limit) or 80
+  local rows = fetch_direct_messages_sql(user.id, other_id, limit)
+  local ordered = {}
+  for i = #rows, 1, -1 do ordered[#ordered + 1] = decode_message(rows[i]) end
+  return 200, { messages = arr(ordered) }
+end
+
+function M.send_direct_message(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local other_id = tonumber(req.params.user_id)
+  if not other_id then return 404, { detail = "User not found." } end
+  if is_blocked_either_way(user.id, other_id) then
+    return 403, { detail = "You cannot message this user." }
+  end
+  if tostring(other_id) == tostring(user.id) then
+    return 400, { detail = "You cannot message yourself." }
+  end
+  local payload = json_body(req)
+  local cleaned = trim(nn(payload.body) or ""):gsub("%s+", " ")
+  if cleaned == "" then return 400, { detail = "Message cannot be empty." } end
+  if #cleaned > 2000 then return 400, { detail = "Message must be 2000 characters or fewer." } end
+  local other = get_user(tostring(other_id))
+  if not other then return 400, { detail = "User not found." } end
+
+  local row = db.fetchone(
+    "INSERT INTO user_messages (sender_id, recipient_id, body) VALUES (%s, %s, %s) RETURNING id",
+    user.id, tostring(other_id), cleaned
+  )
+  if not row then return 500, { detail = "Could not send message." } end
+  local message = db.fetchone(
+    [[
+      SELECT msg.*, u.username, u.display_name, u.avatar_path, u.profile_color, u.public_profile,
+             (now() - u.last_seen_at) <= interval '180 seconds' AS is_online
+      FROM user_messages msg
+      JOIN users u ON u.id = msg.sender_id
+      WHERE msg.id = %s
+    ]],
+    tostring(db.toint(row.id, row.id))
+  )
+  create_notification(other_id, user.id, "message", nil, cleaned)
+  return 200, { message = decode_message(message) }
+end
+
 -- ---------------------------------------------------------------------------
 -- Media byte-serving: thumb / file / preview / download / avatar.
 -- Mirrors app/routers/media_streaming.py. See media_files.lua's module

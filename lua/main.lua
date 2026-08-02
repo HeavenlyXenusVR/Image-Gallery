@@ -94,6 +94,12 @@ httpd.route("GET", "/api/notifications/unread-count", routes.notifications_unrea
 httpd.route("POST", "/api/notifications/read-all", routes.notifications_mark_all_read)
 httpd.route("POST", "/api/notifications/:notification_id/read", routes.notifications_mark_read)
 
+-- "/threads" MUST be registered before "/api/messages/:user_id" (same
+-- first-match-wins ordering trap noted above for /api/media/:media_id).
+httpd.route("GET", "/api/messages/threads", routes.message_threads)
+httpd.route("GET", "/api/messages/:user_id", routes.direct_messages)
+httpd.route("POST", "/api/messages/:user_id", routes.send_direct_message)
+
 local ok, err = db.ping()
 if ok then
   print(string.format("[image-gallery-lua] Postgres reachable (server time: %s)", tostring(err)))
