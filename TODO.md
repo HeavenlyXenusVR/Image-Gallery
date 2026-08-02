@@ -57,22 +57,35 @@ the working tree — see git history above) if ever wanted:
   `reclassify_media_categories.py`,
   `seed_ai_vision_training_from_gallery.py`,
   `seed_ai_vision_training_from_image_zip.py`, `test_ai_vision_model.py`).
-  Kept: `app/static/` (frontend build artifacts — `scripts/write-root-shell.mjs`
-  and `frontend/src/main.jsx` both still reference `app/static/react/`
-  as part of the GitHub Pages deploy shell, unrelated to the Python
-  backend) and a few standalone scripts that never imported `app.*`
-  (`fill_character_subcategories.py`, `repair_gallery_metadata.py` — both
-  raw `pymysql`, pre-Postgres-migration legacy; `start_pinggy_tunnel.py`,
-  an alternate tunnel provider tool).
   Rewrote `.github/workflows/ci.yml` to syntax-check every Lua module and
   any remaining `.mjs` scripts instead of running Python lint/tests
   against a package that no longer exists.
-  **Not touched** (still reference Python, but are manual/diagnostic
-  tools not in the automatic live-serving path, so left alone rather than
-  risking a large rewrite under time pressure): `scripts/start_live_backend.sh`,
-  `scripts/nixos_live_doctor.sh`, and the disabled-by-default
-  (`GALLERY_SERVICE_START_BACKEND_IF_MISSING=0`) Python-fallback branch
-  inside `scripts/start_live_tunnel_service.sh`.
+  **Second cleanup pass (2026-08-02)**, after gallery.xenusanimations.studio
+  started serving the SPA directly (see `lua/src/static.lua`): removed the
+  now-fully-dead Python/MySQL-era remnants confirmed unused by grepping for
+  callers — `pytest.ini`, `README_APPLY.txt` (referenced the deleted
+  `app/`), `scripts/fill_character_subcategories.py` and
+  `scripts/repair_gallery_metadata.py` (raw `pymysql` against the
+  since-replaced MariaDB, DB is Postgres on 5432 now), `scripts/start_pinggy_tunnel.py`
+  (only reachable via the launcher below; the live tunnel manager's
+  `TUNNEL_PROVIDER` never supported `pinggy` anyway),
+  `scripts/set_mariadb_500mb_packet.sh` and `scripts/prewarm_thumbnails.sh`
+  (both shelled out to the `mariadb` CLI against the gone MySQL DB), and
+  the whole `scripts/{start,stop,install_live_backend_service,uninstall_live_backend_service}.sh`
+  family (installed/ran a systemd unit named `image-gallery-live-backend.service`
+  that doesn't exist anymore — superseded by `image-gallery-lua.service` +
+  `image-gallery-tunnel.service` + `image-gallery-cloudflared.service`).
+  Also stripped the disabled-by-default Python-fallback branch
+  (`install_python_deps`/`start_fallback_backend`, gated on
+  `GALLERY_SERVICE_START_BACKEND_IF_MISSING`) out of the still-active
+  `scripts/start_live_tunnel_service.sh`, and fixed its stale `PORT="${1:-8788}"`
+  default to `8789`. Deleted the now-unused `.venv/` (100MB, was the Python
+  backend's virtualenv; gitignored, nothing left references it).
+  **Left alone**: `scripts/nixos_live_doctor.sh` and
+  `scripts/install_nixos_dependencies.sh` still list `python311`/`mariadb`
+  as NixOS packages to install/check — edited system-config-modifying
+  scripts felt out of scope for a "delete unused files" pass, and other
+  projects on this host may still use those packages.
 - Verified live end-to-end after every step: `/api/health`,
   `/api/categories`, `/api/media`, `/api/tags`, `/api/site/announcement`
   all correct through the direct-to-Lua path; Telegram's own
@@ -85,7 +98,6 @@ the working tree — see git history above) if ever wanted:
   providers to Lua from scratch, if you ever need them (Python source is
   gone from the working tree, but fully recoverable from git history for
   reference).
-- Cleaning up the remaining Python references in `start_live_backend.sh`,
-  `nixos_live_doctor.sh`, and the dead fallback branch in
-  `start_live_tunnel_service.sh` (all currently harmless/inert, not part
-  of the live path).
+- Removing `python311`/`mariadb` from `scripts/nixos_live_doctor.sh` and
+  `scripts/install_nixos_dependencies.sh`'s package lists, if nothing else
+  on this host still needs them.

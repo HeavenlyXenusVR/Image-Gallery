@@ -4,7 +4,7 @@ set -euo pipefail
 # NixOS/user profile PATH support for systemd user services.
 export PATH="/run/current-system/sw/bin:${HOME}/.nix-profile/bin:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
 
-PORT="${1:-8788}"
+PORT="${1:-8789}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 read_env_value() {
@@ -13,19 +13,16 @@ read_env_value() {
   [[ -f "${env_file}" ]] || return 0
   grep -E "^${key}=" "${env_file}" | tail -n 1 | cut -d= -f2- | sed -e 's/^\"//' -e 's/\"$//' -e "s/^'//" -e "s/'$//" || true
 }
-VENV_DIR="${ROOT_DIR}/.venv"
 BIN_DIR="${ROOT_DIR}/.bin"
 CONFIG_FILE="${ROOT_DIR}/live-config.json"
 LOG_DIR="${ROOT_DIR}/.runtime"
 TUNNEL_LOG="${LOG_DIR}/cloudflared-service.log"
-UVICORN_LOG="${LOG_DIR}/uvicorn-service-fallback.log"
 PID_FILE="${LOG_DIR}/live_tunnel_service.pid"
 INSTANCE_LOCK_FILE="${LOG_DIR}/live-manager.lock"
 AUTO_PUSH_CONFIG="${GALLERY_AUTO_PUSH_CONFIG:-1}"
 PUSH_OFFLINE_CONFIG="${GALLERY_PUSH_OFFLINE_CONFIG:-0}"
 CONFIG_PUSH_COOLDOWN_SECONDS="${GALLERY_CONFIG_PUSH_COOLDOWN_SECONDS:-120}"
 LAST_PUSH_FILE="${LOG_DIR}/last-live-config-push"
-ALLOW_FALLBACK_BACKEND="${GALLERY_SERVICE_START_BACKEND_IF_MISSING:-0}"
 TUNNEL_PROVIDER="${GALLERY_TUNNEL_PROVIDER:-$(read_env_value GALLERY_TUNNEL_PROVIDER)}"
 TUNNEL_PROVIDER="${TUNNEL_PROVIDER:-auto}"
 NGROK_STATIC_DOMAIN="${GALLERY_NGROK_DOMAIN:-$(read_env_value GALLERY_NGROK_DOMAIN)}"
@@ -259,18 +256,6 @@ publish_offline_config() {
   fi
 }
 
-install_python_deps() {
-  if [[ -x "${VENV_DIR}/bin/python" ]] && ! "${VENV_DIR}/bin/python" -m pip --version >/dev/null 2>&1; then
-    rm -rf "${VENV_DIR}"
-  fi
-  if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
-    python3 -m venv "${VENV_DIR}"
-  fi
-  "${VENV_DIR}/bin/python" -m pip install --upgrade pip
-  "${VENV_DIR}/bin/python" -m pip install -r "${ROOT_DIR}/requirements.txt"
-}
-
-
 ngrok_bin() {
   for candidate in "${HOME}/.local/bin/ngrok" "${BIN_DIR}/ngrok"; do
     if [[ -x "${candidate}" ]]; then echo "${candidate}"; return; fi
@@ -386,53 +371,6 @@ backend_ready() {
   curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1
 }
 
-port_in_use() {
-  if command -v ss >/dev/null 2>&1; then
-    ss -ltn "sport = :${PORT}" | grep -q ":${PORT}"
-    return
-  fi
-  if command -v lsof >/dev/null 2>&1; then
-    lsof -iTCP:"${PORT}" -sTCP:LISTEN >/dev/null 2>&1
-    return
-  fi
-  return 1
-}
-
-kill_stale_port() {
-  if [[ "${GALLERY_KILL_STALE_PORT:-0}" != "1" ]]; then
-    return 0
-  fi
-  if command -v fuser >/dev/null 2>&1; then
-    fuser -k "${PORT}/tcp" >/dev/null 2>&1 || true
-  elif command -v lsof >/dev/null 2>&1; then
-    lsof -ti tcp:"${PORT}" | xargs -r kill -TERM || true
-  fi
-}
-
-start_fallback_backend() {
-  if [[ "${ALLOW_FALLBACK_BACKEND}" != "1" ]]; then
-    return 1
-  fi
-  if port_in_use && ! backend_ready; then
-    echo "Port ${PORT} is busy but the Image Gallery backend is not responding; attempting cleanup."
-    kill_stale_port
-    sleep 1
-  fi
-  if port_in_use && ! backend_ready; then
-    echo "Port ${PORT} is still busy; cannot start fallback backend." >&2
-    return 1
-  fi
-  echo "No backend responded on http://127.0.0.1:${PORT}; starting local fallback backend."
-  install_python_deps
-  export GALLERY_PAGES_PUBLIC_URL="${PAGES_URL}"
-  export GALLERY_CORS_ALLOWED_ORIGINS="${GALLERY_CORS_ALLOWED_ORIGINS:-${PAGES_ORIGIN},${PAGES_URL%/},http://127.0.0.1:${PORT},http://localhost:${PORT}}"
-  export GALLERY_DB_HOST="${GALLERY_DB_HOST:-127.0.0.1}"
-  export GALLERY_DB_USER="${GALLERY_DB_USER:-${DB_USER:-${MYSQL_USER:-botuser}}}"
-  cd "${ROOT_DIR}"
-  "${VENV_DIR}/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port "${PORT}" >"${UVICORN_LOG}" 2>&1 &
-  UVICORN_PID="$!"
-}
-
 release_global_tunnel_slot() {
   if [[ -n "${GLOBAL_TUNNEL_SLOT_FD:-}" ]]; then
     flock -u "${GLOBAL_TUNNEL_SLOT_FD}" || true
@@ -450,9 +388,6 @@ cleanup() {
   fi
   if [[ -n "${TUNNEL_PID:-}" ]]; then
     kill "${TUNNEL_PID}" >/dev/null 2>&1 || true
-  fi
-  if [[ -n "${UVICORN_PID:-}" ]]; then
-    kill "${UVICORN_PID}" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT INT TERM
@@ -595,11 +530,9 @@ start_named_cloudflare_tunnel() {
 
 CLOUDFLARED="$(cloudflared_bin)"
 
-# Wait up to 5 minutes for the backend to appear.  On a fresh boot Docker
-# containers take time to start even though they carry restart:always; 90s was
-# not enough on slow boots.  When ALLOW_FALLBACK_BACKEND=0 (Docker mode) we
-# must simply be patient rather than exit and waste a 15-second restart cycle.
-echo "Waiting for Image Gallery backend on http://127.0.0.1:${PORT} (up to 300s for Docker boot)"
+# Wait up to 5 minutes for the Lua backend (image-gallery-lua.service) to
+# appear -- on a fresh boot it can take a little while after the unit starts.
+echo "Waiting for Image Gallery backend on http://127.0.0.1:${PORT} (up to 300s)"
 for _ in {1..150}; do
   if backend_ready; then
     break
@@ -608,23 +541,8 @@ for _ in {1..150}; do
 done
 
 if ! backend_ready; then
-  start_fallback_backend || true
-  for _ in {1..60}; do
-    if backend_ready; then
-      break
-    fi
-    if [[ -n "${UVICORN_PID:-}" ]] && ! kill -0 "${UVICORN_PID}" >/dev/null 2>&1; then
-      echo "Fallback backend exited early. Last log lines:" >&2
-      tail -80 "${UVICORN_LOG}" >&2 || true
-      exit 1
-    fi
-    sleep 1
-  done
-fi
-
-if ! backend_ready; then
   echo "Image Gallery backend did not become reachable on port ${PORT}." >&2
-  echo "Start Docker or run scripts/start_live_backend.sh ${PORT}." >&2
+  echo "Check: systemctl --user status image-gallery-lua.service" >&2
   publish_offline_config
   exit 1
 fi
