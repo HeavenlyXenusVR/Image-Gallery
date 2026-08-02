@@ -8,6 +8,7 @@ local db = require("db")
 local config = require("config")
 local routes = require("routes")
 local static = require("static")
+local pages_auth = require("pages_auth")
 
 local settings = config.load()
 routes.settings = settings
@@ -145,6 +146,17 @@ httpd.route("PATCH", "/api/admin/site-settings", routes.admin_update_site_settin
 httpd.route("GET", "/api/ai/vision/status", routes.ai_vision_status)
 httpd.route("GET", "/api/ai/vision/training/export", routes.export_ai_training)
 httpd.route("GET", "/api/ai/vision/training", routes.list_ai_training)
+
+-- Server-rendered login/register -- see pages_auth.lua's header comment for
+-- why only these two pages, and how they reuse routes.login/register/
+-- verify_2fa directly instead of duplicating auth logic. Registered before
+-- static.register()/the SPA fallback so these exact paths win over the
+-- React app's own client-side "/login" route on a hard navigation.
+httpd.route("GET", "/login", pages_auth.login_page)
+httpd.route("POST", "/login", pages_auth.login_submit)
+httpd.route("POST", "/login/2fa", pages_auth.twofa_submit)
+httpd.route("GET", "/register", pages_auth.register_page)
+httpd.route("POST", "/register", pages_auth.register_submit)
 
 -- Serves the built React SPA directly at this backend's own hostname
 -- (gallery.xenusanimations.studio), the same way SwarmPanel's Lua backend

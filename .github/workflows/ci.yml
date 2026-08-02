@@ -28,7 +28,17 @@ jobs:
           done
           exit $status
 
-      - name: Node syntax check (live_proxy/tooling scripts, if any remain)
+      - name: Syntax-check top-level Lua tooling scripts (scripts/*.lua)
+        run: |
+          for f in $(find scripts -name '*.lua' 2>/dev/null); do
+            out=$(luajit -e "local f, err = loadfile('$f'); if not f then print(err); os.exit(1) end" 2>&1)
+            if [ $? -ne 0 ]; then
+              echo "SYNTAX ERROR in $f: $out"
+              exit 1
+            fi
+          done
+
+      - name: Node syntax check (tooling scripts, if any remain)
         run: |
           for f in $(find scripts -name '*.mjs' 2>/dev/null); do
             node --check "$f" || exit 1

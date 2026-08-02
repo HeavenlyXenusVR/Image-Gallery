@@ -13,6 +13,32 @@ used to bridge Lua/Python (`scripts/live_proxy.mjs`) is also gone. The
 Telegram control-panel bot is now served exclusively by
 `lua/src/telegram.lua`.
 
+**Frontend, 2026-08-02**: the React SPA (`frontend/`, `node_modules/`,
+`static/react/`) is NOT going away — it's a real client-routed app (feed,
+media detail, messages, studio, upload, ...), not a SwarmPanel-style
+server-rendered admin panel, so a full port isn't a "safe" incremental
+step. What did move to Lua, as a deliberately narrow slice:
+- `scripts/write-root-shell.mjs` → `scripts/write_root_shell.lua` (verified
+  byte-identical output). `package.json`'s `build` script now runs
+  `vite build && luajit scripts/write_root_shell.lua` — Node/Vite still
+  builds the SPA itself, this only replaced the trivial static-file-writer
+  second step.
+- `/login` and `/register` are now server-rendered directly by
+  `lua/src/pages_auth.lua` (form POST → `routes.login`/`register`/
+  `verify_2fa`, no duplicated auth logic) instead of falling through to the
+  React SPA shell. On success they render a small bridge page that seeds
+  `localStorage`'s `image_gallery_token`/`image_gallery_user` (same keys
+  `frontend/src/api.js` reads) and redirects to `/`, so the SPA picks up
+  the session exactly like a normal in-app JS login would. Note:
+  react-router still owns a client-side `/login` route — in-app link
+  clicks never leave the SPA, so only a hard navigation (typed URL, fresh
+  load, external redirect) hits the new Lua page. Both are valid, just
+  visually different depending on entry point. No dedicated SPA
+  `/register` route existed, so that path is purely additive.
+  Verified live: GET /login, GET /register, POST /register (real account
+  created then deleted), POST /login with bad credentials (error
+  re-rendered, 401) all correct through the direct-to-Lua path.
+
 ## Not ported (both are background-only, no HTTP/user-facing surface)
 
 These two features existed only in the now-removed Python source. Losing
