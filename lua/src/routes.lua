@@ -16,6 +16,7 @@ local media_files = require("media_files")
 local user_settings = require("user_settings")
 local gallery_looks = require("gallery_looks")
 local colorutil = require("colorutil")
+local discord_webhook = require("discord_webhook")
 
 -- Attaches computed accent_contrast_text/accent_gradient onto a decoded
 -- user's user_settings table, mirroring SwarmPanel's with_derived_accent.
@@ -1110,6 +1111,35 @@ local function form_bool(value, default)
   return value == "true" or value == "1" or value == "on"
 end
 
+-- Mirrors app/routers/media.py's _notify_discord_upload/_notify_discord_upload_async.
+-- Fire-and-forget (see discord_webhook.lua): a slow/broken webhook must
+-- never delay or fail the upload response.
+local function notify_discord_upload(req, uploader, item)
+  local ok, err = pcall(function()
+    local webhook_url = uploader.user_settings and uploader.user_settings.discord_webhook_url
+    if not webhook_url or webhook_url == "" or webhook_url == cjson.null then return end
+    local page_url = request_origin(req):gsub("/+$", "") .. "/media/" .. item.id
+    local embed = {
+      title = (nn(item.title) or "New upload"):sub(1, 256),
+      url = page_url,
+      color = 0x37c9a7,
+      author = { name = uploader.display_name or uploader.username or "Someone" },
+    }
+    local description = trim(nn(item.description) or "")
+    if description ~= "" then embed.description = description:sub(1, 300) end
+    local image_url = nn(item.url) or nn(item.preview_url)
+    if image_url and item.media_kind ~= "video" then
+      embed.image = { url = image_url }
+    elseif nn(item.thumb_url) then
+      embed.thumbnail = { url = item.thumb_url }
+    end
+    discord_webhook.send(webhook_url, { embed })
+  end)
+  if not ok then
+    print("[image-gallery-lua] Discord upload webhook notification failed for user " .. tostring(uploader.id) .. ": " .. tostring(err))
+  end
+end
+
 function M.upload_media(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
@@ -1199,7 +1229,9 @@ function M.upload_media(req)
 
   local item = fetch_media_by_id(media_id, tostring(user.id))
   local adult_allowed = viewer_adult_allowed(tostring(user.id))
-  return 200, { media = decode_media_row(item, adult_allowed, req), possible_duplicates = {} }
+  local enriched = decode_media_row(item, adult_allowed, req)
+  notify_discord_upload(req, user, enriched)
+  return 200, { media = enriched, possible_duplicates = {} }
 end
 
 
