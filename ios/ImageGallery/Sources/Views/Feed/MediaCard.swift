@@ -10,8 +10,8 @@ struct MediaCard: View {
             .overlay(alignment: .bottom) { scrim }
             .overlay(alignment: .bottom) { footer }
             .overlay(alignment: .topTrailing) { kindBadge }
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .shadow(color: .black.opacity(0.16), radius: 6, x: 0, y: 3)
+            .clipShape(RoundedRectangle(cornerRadius: Metrics.Radius.md, style: .continuous))
+            .cardShadow()
     }
 
     // A dark gradient anchored to the bottom edge so the title/stat footer

@@ -17,7 +17,11 @@ struct MessagesView: View {
 
             List {
                 jumpToNewThreadLink
-                threadRows
+                if viewModel.isLoading && viewModel.directThreads.isEmpty && viewModel.groupThreads.isEmpty {
+                    SkeletonRowList()
+                } else {
+                    threadRows
+                }
             }
             .listStyle(.plain)
         }
@@ -41,11 +45,6 @@ struct MessagesView: View {
         }
         .refreshable { await viewModel.load() }
         .task { await viewModel.load() }
-        .overlay {
-            if viewModel.isLoading && viewModel.directThreads.isEmpty && viewModel.groupThreads.isEmpty {
-                ProgressView()
-            }
-        }
     }
 
     /// Hidden programmatic-navigation link for "just created a group, jump

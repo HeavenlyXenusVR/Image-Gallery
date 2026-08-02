@@ -64,8 +64,8 @@ struct StudioItemCard: View {
             .overlay(alignment: .bottom) { scrim }
             .overlay(alignment: .bottom) { titleFooter }
             .overlay(alignment: .topLeading) { leadingBadges }
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .shadow(color: .black.opacity(0.16), radius: 6, x: 0, y: 3)
+            .clipShape(RoundedRectangle(cornerRadius: Metrics.Radius.md, style: .continuous))
+            .cardShadow()
     }
 
     @ViewBuilder

@@ -20,6 +20,6 @@ struct UploadCardSection<Content: View>: View {
             content
         }
         .padding(16)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .softCard(radius: Metrics.Radius.lg)
     }
 }

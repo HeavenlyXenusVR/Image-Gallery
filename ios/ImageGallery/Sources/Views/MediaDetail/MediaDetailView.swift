@@ -74,14 +74,13 @@ struct MediaDetailView: View {
                 Button("Verify Age") { showingAgeVerification = true }
             }
             .frame(maxWidth: .infinity, minHeight: 220)
-            .background(.secondary.opacity(0.1))
-            .cornerRadius(12)
+            .softCard()
         } else if media.isVideo, let urlString = media.url, let url = videoDetailURL(from: urlString) {
             ZStack(alignment: .topTrailing) {
                 AuthenticatedVideoPlayer(url: url)
                     .frame(height: 260)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
+                    .clipShape(RoundedRectangle(cornerRadius: Metrics.Radius.md, style: .continuous))
+                    .cardShadow()
                 expandButton
             }
         } else if let urlString = media.previewUrl?.nilIfEmpty ?? media.url, let url = URL(string: urlString) {

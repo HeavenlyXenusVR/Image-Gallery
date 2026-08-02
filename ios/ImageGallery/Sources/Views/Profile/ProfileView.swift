@@ -127,35 +127,54 @@ struct ProfileView: View {
 private struct ProfileHeader: View {
     let user: GalleryUser
 
+    private var accent: Color { Color(hex: user.userSettings?.accentColor) }
+
     var body: some View {
-        HStack(spacing: 12) {
-            AvatarView(urlString: user.avatarUrl, fallbackInitial: String(user.username.prefix(1)), shape: AvatarShape(user.userSettings?.profileAvatarShape), size: 64)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(user.displayName ?? user.username).font(.title3).bold()
-                Text("@\(user.username)").foregroundStyle(.secondary)
-                if let bio = user.bio, !bio.isEmpty {
-                    Text(bio).font(.footnote)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 14) {
+                AvatarView(urlString: user.avatarUrl, fallbackInitial: String(user.username.prefix(1)), shape: AvatarShape(user.userSettings?.profileAvatarShape), size: 72)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 72 * AvatarShape(user.userSettings?.profileAvatarShape).cornerRadiusFraction)
+                            .strokeBorder(accent.opacity(0.6), lineWidth: 2)
+                    )
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(user.displayName ?? user.username).font(.title3).bold()
+                    Text("@\(user.username)").foregroundStyle(.secondary)
+                    if let bio = user.bio, !bio.isEmpty {
+                        Text(bio).font(.footnote)
+                    }
                 }
             }
-        }
 
-        HStack(spacing: 20) {
-            statColumn("Posts", user.mediaCount)
-            NavigationLink(destination: UserListView(userId: user.id, kind: .followers)) {
-                statColumn("Followers", user.followerCount)
+            HStack(spacing: 10) {
+                statPill("Posts", user.mediaCount)
+                NavigationLink(destination: UserListView(userId: user.id, kind: .followers)) {
+                    statPill("Followers", user.followerCount)
+                }
+                NavigationLink(destination: UserListView(userId: user.id, kind: .following)) {
+                    statPill("Following", user.followingCount)
+                }
+                statPill("Friends", user.friendCount)
             }
-            NavigationLink(destination: UserListView(userId: user.id, kind: .following)) {
-                statColumn("Following", user.followingCount)
-            }
-            statColumn("Friends", user.friendCount)
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
+        .padding(Metrics.Space.lg)
+        .background(AccentWash(color: accent))
+        .background(.thinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: Metrics.Radius.lg, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metrics.Radius.lg, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        )
     }
 
-    private func statColumn(_ label: String, _ value: Int?) -> some View {
-        VStack {
-            Text("\(value ?? 0)").bold()
-            Text(label).font(.caption).foregroundStyle(.secondary)
+    private func statPill(_ label: String, _ value: Int?) -> some View {
+        VStack(spacing: 2) {
+            Text("\(value ?? 0)").font(.subheadline).bold()
+            Text(label).font(.caption2).foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .softCard(radius: Metrics.Radius.sm)
     }
 }

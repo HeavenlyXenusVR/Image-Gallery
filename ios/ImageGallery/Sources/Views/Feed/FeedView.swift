@@ -117,7 +117,7 @@ struct FeedView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .softCard()
         .padding(.horizontal)
     }
 

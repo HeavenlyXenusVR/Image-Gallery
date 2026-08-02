@@ -12,7 +12,7 @@ struct SkeletonGridView: View {
     var body: some View {
         LazyVGrid(columns: columns, spacing: 12) {
             ForEach(0..<count, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                RoundedRectangle(cornerRadius: Metrics.Radius.md, style: .continuous)
                     .fill(.secondary.opacity(pulse ? 0.18 : 0.08))
                     .aspectRatio(1, contentMode: .fit)
             }

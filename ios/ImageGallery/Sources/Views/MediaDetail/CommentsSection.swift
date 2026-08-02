@@ -4,6 +4,8 @@ struct CommentsSection: View {
     @ObservedObject var viewModel: MediaDetailViewModel
     @EnvironmentObject private var session: SessionStore
     @State private var commentBody = ""
+    @State private var mentionSuggestions: [GalleryUser] = []
+    @State private var mentionSearchTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -21,6 +23,9 @@ struct CommentsSection: View {
                     }
                 }
                 commentInputRow
+                if !mentionSuggestions.isEmpty {
+                    mentionSuggestionsRow
+                }
             }
 
             ForEach(viewModel.topLevelComments) { comment in
@@ -53,7 +58,10 @@ struct CommentsSection: View {
             TextField("Add a comment (@mention a username)", text: $commentBody)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .softCard()
+                .onChange(of: commentBody) { newValue in
+                    scheduleMentionSearch(for: newValue)
+                }
             Button {
                 let body = commentBody
                 commentBody = ""
@@ -68,6 +76,69 @@ struct CommentsSection: View {
             .buttonStyle(.plain)
             .disabled(commentBody.trimmingCharacters(in: .whitespaces).isEmpty)
         }
+    }
+
+    // Suggestion strip shown while the trailing "word" being typed is an
+    // active "@partialname" token — tapping a row completes it to
+    // "@username " so the mention resolves server-side (routes.lua's
+    // add_comment matches mentions by exact username, case-insensitively).
+    private var mentionSuggestionsRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(mentionSuggestions) { user in
+                    Button {
+                        applyMention(user)
+                    } label: {
+                        HStack(spacing: 6) {
+                            AvatarView(urlString: user.avatarUrl, fallbackInitial: String((user.displayName ?? user.username).prefix(1)), size: 22)
+                            Text("@\(user.username)").font(.footnote.weight(.medium))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .softCard(radius: Metrics.Radius.sm)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    /// Finds the "@partial" token the cursor is currently completing — the
+    /// trailing run of non-whitespace characters after the last "@" that is
+    /// itself preceded by start-of-string or whitespace (so emails/handles
+    /// mid-word like "user@example.com" don't trigger suggestions).
+    private func activeMentionQuery(in text: String) -> String? {
+        guard let atRange = text.range(of: "@", options: .backwards) else { return nil }
+        let before = text[text.startIndex..<atRange.lowerBound]
+        if let last = before.last, !last.isWhitespace { return nil }
+        let after = text[atRange.upperBound...]
+        guard !after.isEmpty, after.count <= 40, !after.contains(where: { $0.isWhitespace }) else { return nil }
+        return String(after)
+    }
+
+    private func scheduleMentionSearch(for text: String) {
+        mentionSearchTask?.cancel()
+        guard let query = activeMentionQuery(in: text) else {
+            mentionSuggestions = []
+            return
+        }
+        mentionSearchTask = Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            do {
+                let results = try await GalleryAPIClient.shared.searchUsers(query: query)
+                guard !Task.isCancelled else { return }
+                mentionSuggestions = Array(results.prefix(6))
+            } catch {
+                mentionSuggestions = []
+            }
+        }
+    }
+
+    private func applyMention(_ user: GalleryUser) {
+        guard let atRange = commentBody.range(of: "@", options: .backwards) else { return }
+        commentBody.replaceSubrange(atRange.lowerBound..<commentBody.endIndex, with: "@\(user.username) ")
+        mentionSuggestions = []
     }
 
     // `comment.userAvatarPath` is a raw storage path (the backend's
