@@ -35,15 +35,6 @@ This is a punch list for finishing the full replacement.
   ROUTE-ORDERING TRAP comment in `lua/main.lua` above the
   `/api/media/:media_id` registration before adding any of these.
 
-## Known compatibility gaps (ported routes, but not byte-identical)
-
-- **Timestamp format**: Lua returns raw Postgres text
-  (`"2026-07-26 18:48:07.797921"`, no `T` separator or timezone) where Python
-  returns full ISO 8601 (`"2026-07-26T18:48:07.797921"`). Frontend/iOS
-  parsing hasn't broken on this yet, but it should be fixed by formatting
-  timestamps in `lua/src/routes.lua` (or `pg.lua`) to match Python's
-  `isoformat()` output.
-
 ## Once everything above is ported
 
 - Add the newly-ported routes to `PORTED_ROUTES` in `scripts/live_proxy.mjs`

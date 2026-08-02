@@ -35,6 +35,18 @@ function Pg:ensure()
   -- precision; safe to hand straight back into another bigint column or WHERE clause since
   -- Postgres implicitly casts untyped string literals to the target numeric type.
   conn:set_type_deserializer(20, "string")
+  -- All app tables use "timestamp without time zone" (oid 1114) columns.
+  -- pgmoon has no built-in deserializer for it, so it falls through to
+  -- "string" and comes back verbatim in Postgres's text-output format
+  -- ("2026-07-26 18:48:07.797921" -- space separator, no zone). Python's
+  -- asyncpg driver returns a naive datetime for the same column, and
+  -- app/routers/_shared.py's _jsonable() renders it via .isoformat(), which
+  -- uses a "T" separator and (for a naive datetime) no zone suffix. Convert
+  -- to match so both backends emit byte-identical timestamps for the same
+  -- row.
+  conn:set_type_deserializer(1114, "timestamp", function(_, val)
+    return (val:gsub(" ", "T", 1))
+  end)
   self.conn = conn
   return true
 end
