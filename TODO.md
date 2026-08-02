@@ -24,8 +24,6 @@ This is a punch list for finishing the full replacement.
 - **Background AI learning** (training examples feeding back into future
   classification).
 - **Saved-search match notifications.**
-- **Multi-subcategory arrays** on media (Lua currently assumes the
-  single-subcategory shape).
 - **Video thumbnail/quality cache warmup.**
 - **Admin storage dashboard / orphaned-cache-purge endpoints** — these walk
   the filesystem directly and haven't been touched.
@@ -41,7 +39,13 @@ This is a punch list for finishing the full replacement.
 `POST /api/media/bulk-delete` are now ported — see
 `lua/main.lua`/`lua/src/routes.lua`. Any new literal-segment route under
 `/api/media/*` still needs to go above the `/api/media/:media_id` registration
-in `lua/main.lua` — see the ROUTE-ORDERING TRAP comment there.)
+in `lua/main.lua` — see the ROUTE-ORDERING TRAP comment there.
+
+Multi-subcategory arrays (up to 3 per post, `subcategory_ids`/
+`subcategory_names` on upload and edit, `subcategories`/`subcategory_ids`/
+`subcategory_names` on every media response) are also now ported — see the
+"Category/subcategory find-or-create + multi-subcategory support" section in
+`lua/src/routes.lua`, above `M.list_media`.)
 
 ## Once everything above is ported
 

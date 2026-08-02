@@ -618,6 +618,185 @@ local function decode_media_row(row, viewer_can_open_adult, req)
   return with_urls(req, row, viewer_can_open_adult)
 end
 
+-- ---------------------------------------------------------------------------
+-- Category/subcategory find-or-create + multi-subcategory support (up to
+-- MAX_MEDIA_SUBCATEGORIES per post). Mirrors app/db/categories.py's
+-- create_category/create_subcategory/resolve_subcategory_ids/
+-- _write_media_subcategories and app/db/helpers.py's
+-- _attach_media_subcategories/app/db/_shared.py's normalize_subcategory_ids/
+-- _names. Placed here (before M.list_media/M.media_detail) rather than
+-- alongside the rest of the upload-section helpers further down, since both
+-- of those need attach_media_subcategories. media_items.subcategory_id
+-- stays as the "primary" (first) subcategory for any code still reading
+-- that single column directly; the full ordered set lives in
+-- media_item_subcategories.
+-- ---------------------------------------------------------------------------
+
+local function find_or_create_category(name, media_kind, user_id)
+  name = trim(name or ""):sub(1, 80)
+  if name == "" then return nil end
+  local slug = slugify(name)
+  local existing = db.fetchone("SELECT id FROM categories WHERE name=%s OR slug=%s", name, slug)
+  if existing then return db.toint(existing.id, existing.id) end
+  local row = db.fetchone(
+    "INSERT INTO categories (name, slug, media_kind, created_by) VALUES (%s, %s, %s, %s) RETURNING id",
+    name, slug, MEDIA_KINDS[media_kind] and media_kind or "mixed", tostring(user_id)
+  )
+  return row and db.toint(row.id, row.id) or nil
+end
+
+local function find_or_create_subcategory(category_id, name, user_id)
+  name = trim(name or ""):sub(1, 80)
+  if name == "" or not category_id then return nil end
+  local slug = slugify(name)
+  local existing = db.fetchone(
+    "SELECT id FROM subcategories WHERE category_id=%s AND (name=%s OR slug=%s)",
+    tostring(category_id), name, slug
+  )
+  if existing then return db.toint(existing.id, existing.id) end
+  local row = db.fetchone(
+    "INSERT INTO subcategories (category_id, name, slug, created_by) VALUES (%s, %s, %s, %s) RETURNING id",
+    tostring(category_id), name, slug, tostring(user_id)
+  )
+  return row and db.toint(row.id, row.id) or nil
+end
+
+local MAX_MEDIA_SUBCATEGORIES = 3
+
+local function clean_subcategory_name(value)
+  return trim(tostring(value or "")):gsub("%s+", " "):sub(1, 80)
+end
+
+local function normalize_subcategory_ids(values)
+  local ids, seen = {}, {}
+  if type(values) == "table" then
+    for _, raw in ipairs(values) do
+      local id = tonumber(raw)
+      if id and id > 0 and not seen[id] then
+        seen[id] = true
+        ids[#ids + 1] = math.floor(id)
+        if #ids >= MAX_MEDIA_SUBCATEGORIES then break end
+      end
+    end
+  end
+  return ids
+end
+
+local function normalize_subcategory_names(values)
+  local names, seen = {}, {}
+  if type(values) == "table" then
+    for _, raw in ipairs(values) do
+      local cleaned = clean_subcategory_name(raw)
+      if cleaned ~= "" then
+        local key = cleaned:lower()
+        if not seen[key] then
+          seen[key] = true
+          names[#names + 1] = cleaned
+          if #names >= MAX_MEDIA_SUBCATEGORIES then break end
+        end
+      end
+    end
+  end
+  return names
+end
+
+-- Returns (ids_list, nil) on success or (nil, error_message) on failure --
+-- Lua has no exceptions worth structuring control flow around here, unlike
+-- Python's ValueError.
+local function resolve_subcategory_ids(category_id, subcategory_ids, subcategory_names, user_id)
+  category_id = tonumber(category_id) or 0
+  if category_id <= 0 then return nil, "Choose a valid category." end
+  local ids = normalize_subcategory_ids(subcategory_ids)
+  local names = normalize_subcategory_names(subcategory_names)
+
+  if not db.fetchone("SELECT id FROM categories WHERE id=%s", tostring(category_id)) then
+    return nil, "Category does not exist."
+  end
+
+  local validated = {}
+  for _, id in ipairs(ids) do
+    if not db.fetchone("SELECT id FROM subcategories WHERE id=%s AND category_id=%s", tostring(id), tostring(category_id)) then
+      return nil, "Subcategory does not belong to that category."
+    end
+    validated[#validated + 1] = id
+  end
+
+  for _, name in ipairs(names) do
+    if #validated >= MAX_MEDIA_SUBCATEGORIES then break end
+    local new_id = find_or_create_subcategory(category_id, name, user_id)
+    if new_id then
+      local exists = false
+      for _, v in ipairs(validated) do if v == new_id then exists = true; break end end
+      if not exists then validated[#validated + 1] = new_id end
+    end
+  end
+
+  if #validated > MAX_MEDIA_SUBCATEGORIES then
+    local trimmed = {}
+    for i = 1, MAX_MEDIA_SUBCATEGORIES do trimmed[i] = validated[i] end
+    validated = trimmed
+  end
+  return validated
+end
+
+local function write_media_subcategories(media_id, subcategory_ids)
+  local primary = subcategory_ids[1]
+  db.execute("UPDATE media_items SET subcategory_id=%s WHERE id=%s", primary and tostring(primary) or nil, tostring(media_id))
+  db.execute("DELETE FROM media_item_subcategories WHERE media_id=%s", tostring(media_id))
+  for position, subcategory_id in ipairs(subcategory_ids) do
+    db.execute(
+      "INSERT INTO media_item_subcategories (media_id, subcategory_id, position) VALUES (%s, %s, %s)",
+      tostring(media_id), tostring(subcategory_id), tostring(position)
+    )
+  end
+end
+
+-- Batch-attaches subcategories/subcategory_ids/subcategory_names to each row
+-- in `rows` (each must have a numeric/bigint-string `id`), and overrides the
+-- single subcategory_id/subcategory_name/subcategory_slug fields with the
+-- primary (first) entry so single-subcategory API consumers keep working.
+local function attach_media_subcategories(rows)
+  if #rows == 0 then return rows end
+  local id_list = {}
+  for _, row in ipairs(rows) do id_list[#id_list + 1] = tostring(db.toint(row.id, row.id)) end
+
+  local sub_rows = db.fetchall(string.format([[
+    SELECT ms.media_id, ms.position, s.id, s.category_id, s.name, s.slug
+    FROM media_item_subcategories ms
+    JOIN subcategories s ON s.id = ms.subcategory_id
+    WHERE ms.media_id IN (%s)
+    ORDER BY ms.media_id ASC, ms.position ASC
+  ]], table.concat(id_list, ",")))
+
+  local grouped = {}
+  for _, r in ipairs(sub_rows) do
+    local mid = db.toint(r.media_id, r.media_id)
+    grouped[mid] = grouped[mid] or {}
+    grouped[mid][#grouped[mid] + 1] = {
+      id = db.toint(r.id, r.id), category_id = db.toint(r.category_id, r.category_id),
+      name = r.name, slug = r.slug,
+    }
+  end
+
+  for _, row in ipairs(rows) do
+    local subs = grouped[db.toint(row.id, row.id)] or {}
+    row.subcategories = arr(subs)
+    local sub_ids, sub_names = {}, {}
+    for _, s in ipairs(subs) do
+      sub_ids[#sub_ids + 1] = s.id
+      sub_names[#sub_names + 1] = s.name
+    end
+    row.subcategory_ids = arr(sub_ids)
+    row.subcategory_names = arr(sub_names)
+    if #subs > 0 then
+      row.subcategory_id = subs[1].id
+      row.subcategory_name = subs[1].name
+      row.subcategory_slug = subs[1].slug
+    end
+  end
+  return rows
+end
+
 function M.list_media(req)
   local auth = auth_optional(req)
   local viewer_id = auth and tostring(auth.id) or nil
@@ -728,6 +907,7 @@ function M.list_media(req)
 
   local rows, err = db.fetchall(sql, unpack(sql_params))
   if err then return 500, { detail = "Query failed: " .. tostring(err) } end
+  attach_media_subcategories(rows)
   for _, row in ipairs(rows) do decode_media_row(row, viewer_can_open_adult, req) end
   return 200, { media = arr(rows), limit = limit, offset = offset, sort = sort }
 end
@@ -743,7 +923,7 @@ end
 -- get_media()). Kept as a separate literal query rather than factored out of
 -- list_media's already-verified SQL, to avoid risking a regression there.
 local function fetch_media_by_id(media_id, viewer0)
-  return db.fetchone([[
+  local row = db.fetchone([[
     SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.description, m.tags,
            m.media_kind, m.mime_type, m.original_filename, m.storage_path, m.file_size,
            m.views, m.downloads, m.created_at, m.updated_at, m.visibility,
@@ -774,6 +954,8 @@ local function fetch_media_by_id(media_id, viewer0)
     GROUP BY m.id, c.name, c.slug, sc.name, sc.slug, u.username, u.display_name, u.bio,
              u.website_url, u.avatar_path, u.profile_color, u.public_profile, u.id
   ]], viewer0, viewer0, viewer0, viewer0, viewer0, viewer0, tostring(media_id))
+  if row then attach_media_subcategories({ row }) end
+  return row
 end
 
 local function viewer_adult_allowed(viewer_id)
@@ -859,6 +1041,7 @@ function M.media_detail(req)
     row.is_adult = db.tobool(row.is_adult)
     with_urls(req, row, adult_allowed)
   end
+  attach_media_subcategories(similar)
 
   return 200, {
     media = decode_media_row(item, adult_allowed, req),
@@ -1061,35 +1244,6 @@ local function parse_tags(value)
   return tags
 end
 
-local function find_or_create_category(name, media_kind, user_id)
-  name = trim(name or ""):sub(1, 80)
-  if name == "" then return nil end
-  local slug = slugify(name)
-  local existing = db.fetchone("SELECT id FROM categories WHERE name=%s OR slug=%s", name, slug)
-  if existing then return db.toint(existing.id, existing.id) end
-  local row = db.fetchone(
-    "INSERT INTO categories (name, slug, media_kind, created_by) VALUES (%s, %s, %s, %s) RETURNING id",
-    name, slug, MEDIA_KINDS[media_kind] and media_kind or "mixed", tostring(user_id)
-  )
-  return row and db.toint(row.id, row.id) or nil
-end
-
-local function find_or_create_subcategory(category_id, name, user_id)
-  name = trim(name or ""):sub(1, 80)
-  if name == "" or not category_id then return nil end
-  local slug = slugify(name)
-  local existing = db.fetchone(
-    "SELECT id FROM subcategories WHERE category_id=%s AND (name=%s OR slug=%s)",
-    tostring(category_id), name, slug
-  )
-  if existing then return db.toint(existing.id, existing.id) end
-  local row = db.fetchone(
-    "INSERT INTO subcategories (category_id, name, slug, created_by) VALUES (%s, %s, %s, %s) RETURNING id",
-    tostring(category_id), name, slug, tostring(user_id)
-  )
-  return row and db.toint(row.id, row.id) or nil
-end
-
 local ADULT_KEYWORDS = {
   "18plus", "18+", "adult", "nsfw", "not safe for work", "nude", "nudity",
   "explicit", "porn", "porno", "sex", "sexual", "hentai", "ecchi", "lewd",
@@ -1198,10 +1352,33 @@ function M.upload_media(req)
     category_id = find_or_create_category(form.category_name, category_kind, user.id)
     if not category_id then return 400, { detail = "Category is required." } end
   end
-  local subcategory_id = tonumber(form.subcategory_id)
-  if (not subcategory_id or subcategory_id <= 0) and nn(form.subcategory_name) then
-    subcategory_id = find_or_create_subcategory(category_id, form.subcategory_name, user.id)
+  -- Multi-subcategory form fields: subcategory_ids_json/subcategory_names_json
+  -- are JSON-array-encoded strings (multipart forms have no native array
+  -- type), mirroring app/routers/media.py's upload_media() parsing of the
+  -- same field names. Falls back to the single subcategory_id/
+  -- subcategory_name fields for older/simpler callers.
+  local requested_ids = {}
+  if nn(form.subcategory_ids_json) then
+    local ok, decoded = pcall(cjson.decode, form.subcategory_ids_json)
+    if ok and type(decoded) == "table" then requested_ids = decoded end
   end
+  local single_id = tonumber(form.subcategory_id)
+  if single_id and single_id > 0 then table.insert(requested_ids, 1, single_id) end
+  requested_ids = normalize_subcategory_ids(requested_ids)
+
+  local requested_names = {}
+  if nn(form.subcategory_names_json) then
+    local ok, decoded = pcall(cjson.decode, form.subcategory_names_json)
+    if ok and type(decoded) == "table" then requested_names = decoded end
+  end
+  if nn(form.subcategory_name) and trim(form.subcategory_name) ~= "" then
+    table.insert(requested_names, 1, form.subcategory_name)
+  end
+  requested_names = normalize_subcategory_names(requested_names)
+
+  local resolved_subcategory_ids, subcat_err = resolve_subcategory_ids(category_id, requested_ids, requested_names, user.id)
+  if not resolved_subcategory_ids then return 400, { detail = subcat_err } end
+  local subcategory_id = resolved_subcategory_ids[1]
 
   local sha256 = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(upload.content))
   local moderation = moderate_upload(title, description, tags, original_filename, sniffed_mime, is_adult_input)
@@ -1236,12 +1413,7 @@ function M.upload_media(req)
   )
   if not row then return 500, { detail = "Could not save media: " .. tostring(insert_err) } end
   local media_id = db.toint(row.id, row.id)
-  if subcategory_id then
-    db.execute(
-      "INSERT INTO media_item_subcategories (media_id, subcategory_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
-      tostring(media_id), tostring(subcategory_id)
-    )
-  end
+  write_media_subcategories(media_id, resolved_subcategory_ids)
 
   local item = fetch_media_by_id(media_id, tostring(user.id))
   local adult_allowed = viewer_adult_allowed(tostring(user.id))
@@ -1285,12 +1457,16 @@ local function perform_update_media(media_id, owner_id, payload)
 
   local category_id = tonumber(payload.category_id) or 0
   if category_id <= 0 then return 400, "A category is required." end
-  local subcategory_id = nil
-  if nn(payload.subcategory_id) then
-    subcategory_id = tonumber(payload.subcategory_id)
-  elseif nn(payload.subcategory_name) and trim(payload.subcategory_name) ~= "" then
-    subcategory_id = find_or_create_subcategory(category_id, payload.subcategory_name, owner_id)
+  local requested_ids = normalize_subcategory_ids(payload.subcategory_ids)
+  if #requested_ids == 0 and nn(payload.subcategory_id) then
+    requested_ids = normalize_subcategory_ids({ payload.subcategory_id })
   end
+  local requested_names = normalize_subcategory_names(payload.subcategory_names)
+  if #requested_names == 0 and nn(payload.subcategory_name) and trim(payload.subcategory_name) ~= "" then
+    requested_names = normalize_subcategory_names({ payload.subcategory_name })
+  end
+  local resolved_subcategory_ids, subcat_err = resolve_subcategory_ids(category_id, requested_ids, requested_names, owner_id)
+  if not resolved_subcategory_ids then return 400, subcat_err end
 
   local visibility = tostring(payload.visibility or "public"):lower()
   if visibility ~= "public" and visibility ~= "unlisted" and visibility ~= "private" then
@@ -1309,7 +1485,7 @@ local function perform_update_media(media_id, owner_id, payload)
 
   db.execute([[
     UPDATE media_items
-    SET title=%s, description=%s, tags=%s, category_id=%s, subcategory_id=%s,
+    SET title=%s, description=%s, tags=%s, category_id=%s,
         visibility=%s, comments_enabled=%s, downloads_enabled=%s,
         pinned_at=CASE WHEN %s=1 THEN COALESCE(pinned_at, CURRENT_TIMESTAMP) ELSE NULL END,
         is_adult=%s, adult_marked_by_user=%s,
@@ -1319,8 +1495,9 @@ local function perform_update_media(media_id, owner_id, payload)
     WHERE id=%s AND user_id=%s
   ]],
     title, description, cjson.encode(arr(clean_tags)), tostring(category_id),
-    subcategory_id and tostring(subcategory_id) or nil, visibility, comments_enabled, downloads_enabled,
+    visibility, comments_enabled, downloads_enabled,
     pinned, is_adult, is_adult, is_adult, is_adult, is_adult, tostring(media_id), owner_id)
+  write_media_subcategories(media_id, resolved_subcategory_ids)
 
   return nil, fetch_media_by_id(media_id, tostring(owner_id))
 end
@@ -1519,6 +1696,7 @@ function M.similar_media(req)
     row.is_adult = db.tobool(row.is_adult)
     with_urls(req, row, adult_allowed)
   end
+  attach_media_subcategories(rows)
   return 200, { media = arr(rows) }
 end
 
@@ -1579,7 +1757,7 @@ function M.bulk_edit_media(req)
           description = existing.description,
           tags = tags,
           category_id = existing.category_id,
-          subcategory_id = existing.subcategory_id,
+          subcategory_ids = existing.subcategory_ids,
           visibility = existing.visibility,
           comments_enabled = existing.comments_enabled == nil and true or existing.comments_enabled,
           downloads_enabled = existing.downloads_enabled == nil and true or existing.downloads_enabled,
