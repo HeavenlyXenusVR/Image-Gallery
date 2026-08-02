@@ -87,6 +87,8 @@ httpd.route("GET", "/api/media/:media_id/similar", routes.similar_media)
 httpd.route("PATCH", "/api/media/:media_id/controls", routes.set_media_controls)
 httpd.route("POST", "/api/media/:media_id/restore", routes.restore_media)
 httpd.route("POST", "/api/media/:media_id/report", routes.report_media)
+httpd.route("POST", "/api/media/:media_id/ai/train", routes.train_media_ai)
+httpd.route("POST", "/api/media/:media_id/diagnostics/load", routes.media_load_diagnostic)
 httpd.route("DELETE", "/api/comments/:comment_id", routes.delete_comment)
 
 httpd.route("GET", "/api/media/:media_id/thumb", routes.serve_media_thumb)

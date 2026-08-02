@@ -3,12 +3,12 @@
 --
 -- Delivery runs on a copas.addthread background coroutine so a slow/broken
 -- webhook never delays the HTTP response that triggered it (mirrors
--- Python's fire-and-forget asyncio.create_task). The request itself is a
--- plain blocking ssl.https call inside that coroutine -- same "blocks the
--- shared single-threaded event loop for the duration of the call" tradeoff
--- already accepted elsewhere in this port for ffmpeg shell-outs (see
--- media_files.lua's module docstring); acceptable for one webhook POST at
--- this deployment's traffic level.
+-- Python's fire-and-forget asyncio.create_task). The request itself goes
+-- through copas.http (not ssl.https directly) so it yields back to the
+-- shared event loop while waiting on socket I/O instead of blocking every
+-- other in-flight request on this single-threaded server for the duration
+-- of the call -- discovered the hard way via telegram.lua's long-poll doing
+-- exactly that with a blocking call.
 
 local M = {}
 
@@ -30,18 +30,18 @@ end
 
 local function deliver(webhook_url, embeds)
   local ok, err = pcall(function()
-    local https = require("ssl.https")
+    require("copas")
+    local copas_http = require("copas.http")
     local ltn12 = require("ltn12")
     local cjson = require("cjson.safe")
     local body = cjson.encode({ embeds = embeds })
     local response_chunks = {}
-    local _, status = https.request({
+    local _, status = copas_http.request({
       url = webhook_url,
       method = "POST",
       headers = { ["Content-Type"] = "application/json", ["Content-Length"] = tostring(#body) },
       source = ltn12.source.string(body),
       sink = ltn12.sink.table(response_chunks),
-      protocol = "any",
     })
     if status and (status < 200 or status >= 300) then
       error("Discord webhook responded with HTTP " .. tostring(status))

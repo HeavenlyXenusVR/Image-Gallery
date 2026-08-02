@@ -884,7 +884,13 @@ local function gemini_vision_analysis(opts)
     generationConfig = { temperature = 0.15, responseMimeType = "application/json" },
   })
 
-  local https = require("ssl.https")
+  -- copas.http, not ssl.https directly: this call runs inside an HTTP
+  -- request handler on the shared single-threaded copas event loop, and a
+  -- plain ssl.https.request blocks that OS thread (and therefore every
+  -- other in-flight request this server is handling) for the full duration
+  -- of the network call. copas.http yields back to the scheduler while
+  -- waiting on socket I/O instead.
+  local copas_http = require("copas.http")
   local ltn12 = require("ltn12")
   local url = string.format(
     "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent?key=%s",
@@ -892,13 +898,12 @@ local function gemini_vision_analysis(opts)
     opts.api_key:gsub("[^%w%-%.]", function(c) return string.format("%%%02X", c:byte()) end)
   )
   local response_chunks = {}
-  local ok, status = https.request({
+  local ok, status = copas_http.request({
     url = url,
     method = "POST",
     headers = { ["Content-Type"] = "application/json", ["Content-Length"] = tostring(#payload) },
     source = ltn12.source.string(payload),
     sink = ltn12.sink.table(response_chunks),
-    protocol = "any",
     timeout = opts.timeout_seconds,
   })
   local raw = table.concat(response_chunks)

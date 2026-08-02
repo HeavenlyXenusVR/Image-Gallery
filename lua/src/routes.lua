@@ -3263,12 +3263,14 @@ function M.ai_vision_status(req)
     vision.reason = M.settings.ai_api_key ~= "" and nil or "Gemini provider is selected but no Gemini API key is configured."
   elseif provider == "ollama" then
     local base_url = tostring(M.settings.ai_ollama_base_url or "http://127.0.0.1:11434"):gsub("/+$", "")
-    local ok, http = pcall(require, "socket.http")
+    -- copas.http, not socket.http directly -- see telegram.lua's api_call
+    -- comment for why a blocking HTTP call here would stall every other
+    -- in-flight request on this single-threaded server.
+    local ok, http = pcall(require, "copas.http")
     local ok2, result = pcall(function()
       local ltn12 = require("ltn12")
       local chunks = {}
-      http.TIMEOUT = 3
-      local _, code = http.request({ url = base_url .. "/api/tags", sink = ltn12.sink.table(chunks) })
+      local _, code = http.request({ url = base_url .. "/api/tags", sink = ltn12.sink.table(chunks), timeout = 3 })
       if code ~= 200 then error("HTTP " .. tostring(code)) end
       local decoded = cjson.decode(table.concat(chunks)) or {}
       local models = {}
@@ -3339,6 +3341,198 @@ function M.export_ai_training(req)
     ["Content-Type"] = "application/x-ndjson; charset=utf-8",
     ["Content-Disposition"] = 'attachment; filename="gallery-ai-vision-training.jsonl"',
   }
+end
+
+-- ---------------------------------------------------------------------------
+-- AI training-example write path (POST /api/media/:media_id/ai/train).
+-- Mirrors app/db/ai_vision.py's record_ai_vision_training_example() and
+-- app/routers/media.py's train_media_ai(). NOTE: the dedupe_key here is NOT
+-- byte-identical to Python's sha256(json.dumps(payload, sort_keys=True)) --
+-- cjson has no whitespace/key-order mode matching Python's json.dumps
+-- exactly, and this key is only used for this backend's own upsert-by-key
+-- lookups going forward (Python is being retired), so internal consistency
+-- is what matters, not cross-backend hash equality with rows Python wrote
+-- previously (worst case: an occasional duplicate row instead of a perfect
+-- upsert onto a pre-cutover Python-written example).
+-- ---------------------------------------------------------------------------
+
+local function ai_training_dedupe_key(payload)
+  local ordered = table.concat({
+    tostring(payload.user_id), tostring(payload.media_id or ""), tostring(payload.original_filename or ""),
+    tostring(payload.corrected_title or ""), tostring(payload.corrected_category_name or ""),
+    tostring(payload.corrected_subcategory_name or ""), table.concat(payload.corrected_tags or {}, ","),
+    tostring(payload.image_phash or ""), tostring(payload.image_dhash or ""),
+  }, "|")
+  return sodium.sodium_bin2hex(sodium.crypto_hash_sha256(ordered))
+end
+
+-- Mirrors _clean_tags(): dedup, alnum/._- only, max 12, 32 chars each.
+local function clean_ai_tags(values)
+  local iterable = {}
+  if type(values) == "string" then
+    for tok in values:gmatch("[^,#%s]+") do iterable[#iterable + 1] = tok end
+  elseif type(values) == "table" then
+    iterable = values
+  end
+  local clean, seen = {}, {}
+  for _, raw in ipairs(iterable) do
+    local tag = tostring(raw):gsub("^%s+", ""):gsub("%s+$", ""):gsub("[^%w_.%-]+", ""):sub(1, 32)
+    local lowered = tag:lower()
+    if tag ~= "" and not seen[lowered] then
+      seen[lowered] = true
+      clean[#clean + 1] = tag
+      if #clean >= 12 then break end
+    end
+  end
+  return clean
+end
+
+-- Returns (example) on success, or (nil, "forbidden"|"not_found"|error_string).
+local function record_ai_training_example(user_id, media_id, source, corrected, notes)
+  local title = clean_text(nn(corrected.title) or nn(corrected.corrected_title), 160)
+  if title == "" then return nil, "Title is required." end
+  local category_name = clean_text(nn(corrected.category_name) or nn(corrected.corrected_category_name), 80)
+  if category_name == "" then category_name = nil end
+  local subcategory_name = clean_text(nn(corrected.subcategory_name) or nn(corrected.corrected_subcategory_name), 80)
+  if subcategory_name == "" then subcategory_name = nil end
+  local corrected_tags = clean_ai_tags(corrected.tags or corrected.corrected_tags or {})
+  local source_tags = clean_ai_tags(source.tags or source.source_tags or {})
+
+  if media_id then
+    local row = db.fetchone("SELECT id, user_id FROM media_items WHERE id=%s AND deleted_at IS NULL", tostring(media_id))
+    if not row then return nil, "not_found" end
+    if tostring(row.user_id) ~= tostring(user_id) then return nil, "forbidden" end
+  end
+
+  local original_filename = clean_text(source.original_filename, 255)
+  if original_filename == "" then original_filename = nil end
+  local source_title = clean_text(source.title, 160)
+  if source_title == "" then source_title = nil end
+  local source_category_name = clean_text(source.category_name, 80)
+  if source_category_name == "" then source_category_name = nil end
+  local source_subcategory_name = clean_text(source.subcategory_name, 80)
+  if source_subcategory_name == "" then source_subcategory_name = nil end
+  local notes_text = clean_text(notes, 500)
+  if notes_text == "" then notes_text = nil end
+  local image_phash = nn(source.image_phash) or nn(source.source_image_phash)
+  local image_dhash = nn(source.image_dhash) or nn(source.source_image_dhash)
+  local image_width = tonumber(source.image_width)
+  local image_height = tonumber(source.image_height)
+  local training_origin = clean_text(nn(source.training_origin) or nn(source.origin), 80)
+  if training_origin == "" then training_origin = nil end
+  local training_confidence = math.max(0.0, math.min(tonumber(source.training_confidence or corrected.training_confidence) or 0.72, 1.0))
+  local corrected_is_adult = (corrected.is_adult or corrected.corrected_is_adult) and true or false
+
+  local dedupe_key = ai_training_dedupe_key({
+    user_id = user_id, media_id = media_id, original_filename = original_filename,
+    corrected_title = title, corrected_category_name = category_name,
+    corrected_subcategory_name = subcategory_name, corrected_tags = corrected_tags,
+    image_phash = image_phash, image_dhash = image_dhash,
+  })
+
+  local existing = db.fetchone("SELECT id FROM ai_vision_training_examples WHERE dedupe_key=%s LIMIT 1", dedupe_key)
+  local training_id
+  if existing then
+    training_id = db.toint(existing.id, existing.id)
+    db.execute([[
+      UPDATE ai_vision_training_examples
+      SET source_title=COALESCE(%s, source_title),
+          source_category_name=COALESCE(%s, source_category_name),
+          source_subcategory_name=COALESCE(%s, source_subcategory_name),
+          source_tags=%s,
+          corrected_title=%s,
+          corrected_category_name=COALESCE(%s, corrected_category_name),
+          corrected_subcategory_name=COALESCE(%s, corrected_subcategory_name),
+          corrected_tags=%s,
+          corrected_is_adult=%s,
+          notes=COALESCE(%s, notes),
+          original_filename=COALESCE(%s, original_filename),
+          image_phash=COALESCE(%s, image_phash),
+          image_dhash=COALESCE(%s, image_dhash),
+          image_width=COALESCE(%s, image_width),
+          image_height=COALESCE(%s, image_height),
+          training_origin=COALESCE(%s, training_origin),
+          training_confidence=GREATEST(training_confidence, %s)
+      WHERE id=%s
+    ]],
+      source_title, source_category_name, source_subcategory_name, cjson.encode(arr(source_tags)),
+      title, category_name, subcategory_name, cjson.encode(arr(corrected_tags)),
+      corrected_is_adult, notes_text, original_filename, image_phash, image_dhash,
+      image_width and tostring(image_width) or nil, image_height and tostring(image_height) or nil,
+      training_origin, tostring(training_confidence), tostring(training_id)
+    )
+  else
+    local row, err = db.fetchone([[
+      INSERT INTO ai_vision_training_examples
+        (user_id, media_id, original_filename, source_title, source_category_name, source_subcategory_name,
+         source_tags, corrected_title, corrected_category_name, corrected_subcategory_name, corrected_tags,
+         corrected_is_adult, notes, dedupe_key, image_phash, image_dhash, image_width, image_height, training_origin, training_confidence)
+      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+      RETURNING id
+    ]],
+      tostring(user_id), media_id and tostring(media_id) or nil, original_filename, source_title,
+      source_category_name, source_subcategory_name, cjson.encode(arr(source_tags)),
+      title, category_name, subcategory_name, cjson.encode(arr(corrected_tags)),
+      corrected_is_adult, notes_text, dedupe_key, image_phash, image_dhash,
+      image_width and tostring(image_width) or nil, image_height and tostring(image_height) or nil,
+      training_origin, tostring(training_confidence)
+    )
+    if not row then return nil, "Could not save training example: " .. tostring(err) end
+    training_id = db.toint(row.id, row.id)
+  end
+
+  local result = db.fetchone("SELECT * FROM ai_vision_training_examples WHERE id=%s", tostring(training_id))
+  return decode_ai_training_example(result)
+end
+
+function M.train_media_ai(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local media_id = tonumber(req.params.media_id)
+  if not media_id then return 404, { detail = "Media not found." } end
+  local item = fetch_media_by_id(media_id, tostring(user.id))
+  if not item then return 404, { detail = "Media not found." } end
+  local item_tags = {}
+  if item.tags and item.tags ~= cjson.null then
+    local ok, decoded = pcall(cjson.decode, item.tags)
+    if ok and type(decoded) == "table" then item_tags = decoded end
+  end
+
+  local payload = json_body(req)
+  local corrected = {
+    title = payload.title, category_name = payload.category_name,
+    subcategory_name = payload.subcategory_name, tags = payload.tags or {},
+    is_adult = payload.is_adult and true or false,
+  }
+  local source = {
+    original_filename = item.original_filename, title = item.title,
+    category_name = item.category_name, subcategory_name = item.subcategory_name,
+    tags = item_tags,
+  }
+  local example, err = record_ai_training_example(user.id, media_id, source, corrected, payload.notes)
+  if err == "forbidden" then return 403, { detail = "You can only train AI using your own media." } end
+  if err == "not_found" then return 404, { detail = "Media not found." } end
+  if not example then return 400, { detail = tostring(err) } end
+  return 200, { training_example = example }
+end
+
+-- Client-side telemetry only (never blocks/affects the actual media load) --
+-- mirrors app/routers/media.py's report_media_load_diagnostic().
+function M.media_load_diagnostic(req)
+  local media_id = tonumber(req.params.media_id)
+  local auth = auth_optional(req)
+  local payload = json_body(req)
+  local context = tostring(nn(payload.context) or ""):lower():sub(1, 48)
+  local outcome = tostring(nn(payload.outcome) or ""):lower():sub(1, 32)
+  local media_kind = tostring(nn(payload.media_kind) or ""):lower():sub(1, 16)
+  local selected_source = tostring(nn(payload.selected_source) or ""):lower():sub(1, 32)
+  print(string.format(
+    "[image-gallery-lua] media load diagnostic media_id=%s outcome=%s context=%s selected=%s media_kind=%s viewer_id=%s",
+    tostring(media_id), outcome ~= "" and outcome or "unknown", context ~= "" and context or "unknown",
+    selected_source ~= "" and selected_source or "none", media_kind ~= "" and media_kind or "unknown",
+    tostring(auth and auth.id or 0)
+  ))
+  return 200, { ok = true }
 end
 
 -- ---------------------------------------------------------------------------

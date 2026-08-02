@@ -112,6 +112,13 @@ function M.load()
     end)(),
     telegram_owner_chat_id = tonumber(env("GALLERY_TELEGRAM_OWNER_CHAT_ID") or env("TELEGRAM_OWNER_CHAT_ID")),
     telegram_polling_enabled = env_bool("GALLERY_TELEGRAM_POLLING_ENABLED", (env("GALLERY_TELEGRAM_BOT_TOKEN") or env("TELEGRAM_BOT_TOKEN")) ~= nil),
+    -- Deliberately a DIFFERENT env var name than GALLERY_TELEGRAM_POLLING_ENABLED
+    -- (not one .env already sets): a systemd Environment= override of that
+    -- same key was empirically observed NOT to win over EnvironmentFile=
+    -- for this unit despite appearing later in the file (contrary to the
+    -- documented "last one wins" precedence) -- rather than fight that, this
+    -- is a hard kill-switch on a name .env can never touch.
+    telegram_force_disabled = env_bool("GALLERY_LUA_TELEGRAM_FORCE_DISABLE", false),
     ai_training_examples_limit = math.max(0, math.min(1000, env_int("GALLERY_AI_TRAINING_EXAMPLES_LIMIT", 300))),
   }
 end

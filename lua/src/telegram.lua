@@ -32,8 +32,19 @@ local status = {
 local settings, token, allowed_chat_ids
 local offset = nil
 
+-- IMPORTANT: uses copas.http (a copas-coroutine-aware HTTP client vendored
+-- alongside copas itself), NOT ssl.https/socket.http directly. getUpdates
+-- long-polls for up to ~30s at a time -- a plain ssl.https.request call
+-- blocks on the underlying OS socket read for that whole duration, and
+-- since copas is a *single-threaded* cooperative scheduler, that stalls
+-- EVERY other coroutine (every other HTTP request this server is trying to
+-- serve) for the same ~30s. This was discovered the hard way: the live
+-- server became briefly unresponsive on a real request while this was still
+-- using ssl.https. copas.http's request() yields control back to the
+-- scheduler while waiting on socket I/O instead of blocking it, so other
+-- requests keep being served normally during a long-poll wait.
 local function api_call(method, params, timeout_seconds)
-  local https = require("ssl.https")
+  local copas_http = require("copas.http")
   local ltn12 = require("ltn12")
   local url = "https://api.telegram.org/bot" .. token .. "/" .. method
   local body, source
@@ -53,13 +64,12 @@ local function api_call(method, params, timeout_seconds)
     headers["Content-Type"] = "application/x-www-form-urlencoded"
     headers["Content-Length"] = tostring(#body)
   end
-  local ok, code = https.request({
+  local ok, code = copas_http.request({
     url = url,
     method = body and "POST" or "GET",
     headers = headers,
     source = source,
     sink = ltn12.sink.table(response_chunks),
-    protocol = "any",
     timeout = timeout_seconds or 20,
   })
   if not ok then
@@ -399,7 +409,7 @@ function M.start(app_settings)
   settings = app_settings
   token = settings.telegram_bot_token or ""
   allowed_chat_ids = settings.telegram_allowed_chat_ids or {}
-  status.enabled = token ~= "" and settings.telegram_polling_enabled
+  status.enabled = not settings.telegram_force_disabled and token ~= "" and settings.telegram_polling_enabled
   status.allowed_chat_count = #allowed_chat_ids
   if not status.enabled then return end
 
