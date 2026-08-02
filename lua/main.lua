@@ -119,6 +119,10 @@ httpd.route("POST", "/api/collections", routes.create_collection)
 httpd.route("GET", "/api/collections/:collection_id", routes.collection_detail)
 httpd.route("POST", "/api/collections/:collection_id/items", routes.save_collection_item)
 
+httpd.route("GET", "/api/saved-searches", routes.list_saved_searches)
+httpd.route("POST", "/api/saved-searches", routes.create_saved_search)
+httpd.route("DELETE", "/api/saved-searches/:search_id", routes.delete_saved_search)
+
 httpd.route("GET", "/api/stats", routes.admin_stats)
 httpd.route("GET", "/api/admin/reports", routes.admin_list_reports)
 httpd.route("POST", "/api/admin/reports/:report_id/resolve", routes.admin_resolve_report)

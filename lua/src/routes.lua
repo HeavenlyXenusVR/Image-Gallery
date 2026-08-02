@@ -510,6 +510,46 @@ end
 
 local VALID_SORTS = { new = true, old = true, popular = true, views = true, downloads = true }
 
+-- Moved here (before M.list_media/M.upload_media) rather than kept next to
+-- the rest of the collections-section helpers further down, since both
+-- collections AND saved-searches (further below) AND M.upload_media's
+-- saved-search-match notification hook need this -- Lua locals are only
+-- visible to code appearing after their declaration in the same scope.
+local SMART_FILTER_KEYS = {
+  media_kind = true, category_id = true, subcategory_id = true, q = true, uploader = true,
+  min_size = true, max_size = true, date_from = true, date_to = true, adult = true, sort = true,
+}
+local DATE_RE = "^%d%d%d%d%-%d%d%-%d%d$"
+
+-- Mirrors _sanitize_smart_collection_filter(): validates/coerces a saved
+-- smart-collection filter the same way GET /api/media's own query params
+-- would be, so a bad stored value can't reach list_media unvalidated.
+local function sanitize_smart_filter(filter_json)
+  local cleaned = {}
+  for key, value in pairs(filter_json or {}) do
+    if SMART_FILTER_KEYS[key] and value ~= nil and value ~= "" and value ~= cjson.null then
+      if key == "media_kind" then
+        if value == "image" or value == "video" then cleaned[key] = value end
+      elseif key == "category_id" or key == "subcategory_id" then
+        local n = tonumber(value)
+        if n then cleaned[key] = math.floor(n) end
+      elseif key == "min_size" or key == "max_size" then
+        local n = tonumber(value)
+        if n then cleaned[key] = math.max(0, math.floor(n)) end
+      elseif key == "date_from" or key == "date_to" then
+        if tostring(value):match(DATE_RE) then cleaned[key] = value end
+      elseif key == "adult" then
+        if value == "only" or value == "hide" then cleaned[key] = value end
+      elseif key == "sort" then
+        if VALID_SORTS[value] then cleaned[key] = value end
+      elseif key == "q" or key == "uploader" then
+        cleaned[key] = tostring(value):sub(1, 80)
+      end
+    end
+  end
+  return cleaned
+end
+
 local function bounded_limit(v, default, max_limit)
   local n = tonumber(v) or default
   return math.max(1, math.min(n, max_limit or M.settings.media_page_limit))
@@ -1284,6 +1324,14 @@ end
 -- Mirrors app/routers/media.py's _notify_discord_upload/_notify_discord_upload_async.
 -- Fire-and-forget (see discord_webhook.lua): a slow/broken webhook must
 -- never delay or fail the upload response.
+-- Forward-declared: the actual function is assigned further down (in the
+-- saved-searches section, after create_notification/is_blocked_either_way
+-- exist) since Lua locals are only visible to code after their declaration
+-- -- this `local` here just reserves the upvalue so M.upload_media below can
+-- close over it; by the time any request actually runs, the whole module
+-- has finished loading and the assignment further down has already happened.
+local notify_matching_saved_searches
+
 local function notify_discord_upload(req, uploader, item)
   local ok, err = pcall(function()
     local webhook_url = uploader.user_settings and uploader.user_settings.discord_webhook_url
@@ -1419,6 +1467,9 @@ function M.upload_media(req)
   local adult_allowed = viewer_adult_allowed(tostring(user.id))
   local enriched = decode_media_row(item, adult_allowed, req)
   notify_discord_upload(req, user, enriched)
+  if visibility == "public" then
+    notify_matching_saved_searches(user.id, enriched)
+  end
   return 200, { media = enriched, possible_duplicates = {} }
 end
 
@@ -2000,7 +2051,7 @@ end
 
 local NOTIFICATION_KINDS = {
   follow = true, like = true, comment = true, message = true, mention = true,
-  friend_request = true, friend_accept = true, report = true,
+  friend_request = true, friend_accept = true, report = true, saved_search = true,
 }
 
 -- Mirrors app/db/notifications.py's create_notification(): silently skips
@@ -2030,6 +2081,127 @@ local function is_blocked_either_way(user_a, user_b)
     tostring(user_a), tostring(user_b), tostring(user_b), tostring(user_a)
   )
   return row ~= nil
+end
+
+-- ---------------------------------------------------------------------------
+-- Saved searches: persisted /api/media filters that notify their owner when
+-- new matching public media is uploaded. Mirrors app/routers/saved_searches.py
+-- + app/db/feed_collections.py's create/list/delete_saved_search,
+-- find_saved_searches_matching, touch_saved_search_notified, and
+-- _media_matches_saved_search_filter. Reuses the same
+-- sanitize_smart_filter/SMART_FILTER_KEYS used by smart collections, since a
+-- saved search's filter_json is the exact same validated shape.
+-- NOT ported: Python's is_muted() check before notifying (muting isn't a
+-- ported feature at all yet) -- only the block check applies here.
+-- ---------------------------------------------------------------------------
+
+local function decode_saved_search(row)
+  if not row then return nil end
+  row.id = db.toint(row.id, row.id)
+  row.user_id = db.toint(row.user_id, row.user_id)
+  if row.filter_json and row.filter_json ~= cjson.null then
+    local ok, decoded = pcall(cjson.decode, row.filter_json)
+    row.filter_json = (ok and type(decoded) == "table") and decoded or {}
+  else
+    row.filter_json = {}
+  end
+  return row
+end
+
+function M.list_saved_searches(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local rows = db.fetchall("SELECT * FROM saved_searches WHERE user_id=%s ORDER BY created_at DESC", user.id)
+  for _, row in ipairs(rows) do decode_saved_search(row) end
+  return 200, { saved_searches = arr(rows) }
+end
+
+function M.create_saved_search(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local payload = json_body(req)
+  local name = trim(nn(payload.name) or ""):gsub("%s+", " "):sub(1, 80)
+  if name == "" then return 400, { detail = "Name is required." } end
+  local cleaned = sanitize_smart_filter(payload.filter_json)
+
+  local row, err = db.fetchone(
+    "INSERT INTO saved_searches (user_id, name, filter_json) VALUES (%s, %s, %s) RETURNING id",
+    user.id, name, cjson.encode(cleaned)
+  )
+  if not row then return 500, { detail = "Could not save search: " .. tostring(err) } end
+  local search = db.fetchone("SELECT * FROM saved_searches WHERE id=%s", tostring(db.toint(row.id, row.id)))
+  return 200, { saved_search = decode_saved_search(search) }
+end
+
+function M.delete_saved_search(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local search_id = tonumber(req.params.search_id)
+  if not search_id then return 404, { detail = "Saved search not found." } end
+  local existing = db.fetchone("SELECT id FROM saved_searches WHERE id=%s AND user_id=%s", tostring(search_id), user.id)
+  if not existing then return 404, { detail = "Saved search not found." } end
+  db.execute("DELETE FROM saved_searches WHERE id=%s AND user_id=%s", tostring(search_id), user.id)
+  return 200, { deleted = true }
+end
+
+-- Mirrors _media_matches_saved_search_filter(): evaluates a saved-search
+-- filter against a single freshly-uploaded item in Lua rather than SQL, same
+-- rationale as Python (runs once per upload against a handful of saved
+-- searches, not per page view).
+local function media_matches_saved_search_filter(media, filter_json)
+  if filter_json.media_kind and media.media_kind ~= filter_json.media_kind then return false end
+  if filter_json.category_id and tostring(media.category_id) ~= tostring(filter_json.category_id) then return false end
+  if filter_json.subcategory_id then
+    local match = false
+    local wanted = tostring(filter_json.subcategory_id)
+    if media.subcategory_id and tostring(media.subcategory_id) == wanted then match = true end
+    if not match and type(media.subcategories) == "table" then
+      for _, sc in ipairs(media.subcategories) do
+        if sc.id and tostring(sc.id) == wanted then match = true; break end
+      end
+    end
+    if not match then return false end
+  end
+  if filter_json.adult == "only" and not media.is_adult then return false end
+  if filter_json.adult == "hide" and media.is_adult then return false end
+  if filter_json.min_size ~= nil and (tonumber(media.file_size) or 0) < tonumber(filter_json.min_size) then return false end
+  if filter_json.max_size ~= nil and (tonumber(media.file_size) or 0) > tonumber(filter_json.max_size) then return false end
+  if filter_json.uploader and nn(filter_json.uploader) then
+    local needle = tostring(filter_json.uploader):lower()
+    local haystack = ((media.username or "") .. " " .. (media.display_name or "")):lower()
+    if not haystack:find(needle, 1, true) then return false end
+  end
+  if filter_json.q and nn(filter_json.q) then
+    local needle = tostring(filter_json.q):lower()
+    local tag_text = ""
+    if type(media.tags) == "table" then tag_text = table.concat(media.tags, " ") end
+    local haystack = ((media.title or "") .. " " .. (media.description or "") .. " " .. tag_text):lower()
+    if not haystack:find(needle, 1, true) then return false end
+  end
+  return true
+end
+
+-- Assigns the local forward-declared near notify_discord_upload, above
+-- M.upload_media -- see that declaration's comment for why.
+notify_matching_saved_searches = function(uploader_id, item)
+  local ok, err = pcall(function()
+    local rows = db.fetchall("SELECT * FROM saved_searches WHERE user_id != %s", tostring(uploader_id))
+    for _, row in ipairs(rows) do
+      decode_saved_search(row)
+      if media_matches_saved_search_filter(item, row.filter_json) then
+        if not is_blocked_either_way(row.user_id, uploader_id) then
+          create_notification(
+            row.user_id, uploader_id, "saved_search", item.id,
+            string.format('New match for "%s": %s', tostring(row.name), tostring(item.title))
+          )
+          db.execute("UPDATE saved_searches SET last_notified_at=CURRENT_TIMESTAMP WHERE id=%s", tostring(row.id))
+        end
+      end
+    end
+  end)
+  if not ok then
+    print("[image-gallery-lua] saved-search match notification failed for uploader " .. tostring(uploader_id) .. ": " .. tostring(err))
+  end
 end
 
 -- Mirrors app/routers/_shared.py's _with_user_urls(): fills in avatar_url +
@@ -2182,41 +2354,6 @@ end
 -- half of app/db/feed_collections.py (following_feed/liked_media/saved
 -- searches are a different router's territory and NOT covered here).
 -- ---------------------------------------------------------------------------
-
-local SMART_FILTER_KEYS = {
-  media_kind = true, category_id = true, subcategory_id = true, q = true, uploader = true,
-  min_size = true, max_size = true, date_from = true, date_to = true, adult = true, sort = true,
-}
-local DATE_RE = "^%d%d%d%d%-%d%d%-%d%d$"
-
--- Mirrors _sanitize_smart_collection_filter(): validates/coerces a saved
--- smart-collection filter the same way GET /api/media's own query params
--- would be, so a bad stored value can't reach list_media unvalidated.
-local function sanitize_smart_filter(filter_json)
-  local cleaned = {}
-  for key, value in pairs(filter_json or {}) do
-    if SMART_FILTER_KEYS[key] and value ~= nil and value ~= "" and value ~= cjson.null then
-      if key == "media_kind" then
-        if value == "image" or value == "video" then cleaned[key] = value end
-      elseif key == "category_id" or key == "subcategory_id" then
-        local n = tonumber(value)
-        if n then cleaned[key] = math.floor(n) end
-      elseif key == "min_size" or key == "max_size" then
-        local n = tonumber(value)
-        if n then cleaned[key] = math.max(0, math.floor(n)) end
-      elseif key == "date_from" or key == "date_to" then
-        if tostring(value):match(DATE_RE) then cleaned[key] = value end
-      elseif key == "adult" then
-        if value == "only" or value == "hide" then cleaned[key] = value end
-      elseif key == "sort" then
-        if VALID_SORTS[value] then cleaned[key] = value end
-      elseif key == "q" or key == "uploader" then
-        cleaned[key] = tostring(value):sub(1, 80)
-      end
-    end
-  end
-  return cleaned
-end
 
 local function clean_text(value, max_len)
   local cleaned = trim(nn(value) or ""):gsub("%s+", " ")

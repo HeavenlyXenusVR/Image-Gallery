@@ -23,8 +23,15 @@ This is a punch list for finishing the full replacement.
 - **Possible-duplicate detection** via perceptual hashing.
 - **Background AI learning** (training examples feeding back into future
   classification).
-- **Saved-search match notifications.**
-- **Video thumbnail/quality cache warmup.**
+- **Video quality-variant transcoding** (`?quality=720p` on
+  `GET /api/media/:media_id/file`, see `app/routers/media_streaming.py`'s
+  `_video_variant_response`/`_ensure_video_quality_cache`/
+  `_db_backed_transcode_and_cache`) — a full ffmpeg-subprocess transcode
+  pipeline with a size-limit skip, active-transcode dedup, and a disk cache;
+  bigger than a simple route port. "Video thumbnail ... warmup" turned out to
+  be a non-issue once this exists: thumbnails already self-cache lazily on
+  first request (see `serve_media_thumb`), so there's nothing to separately
+  warm there.
 - **`POST /api/media/analyze`, `POST /api/media/:media_id/ai/train`,
   `POST /api/media/:media_id/diagnostics/load`** — the two `ai/` ones need
   the LLM pipeline above; diagnostics/load is just client-side telemetry
@@ -54,7 +61,14 @@ a user id can't match a cache filename keyed by media id anyway). The Lua
 version builds the referenced set from actual live `media_items` ids
 instead, which is what `_thumb_cache`/`_video_cache` filenames are really
 keyed by, so orphan detection actually works. See the comment above
-`walk_cache_dir` in `lua/src/routes.lua`.)
+`walk_cache_dir` in `lua/src/routes.lua`.
+
+Saved searches (`GET/POST /api/saved-searches`, `DELETE
+/api/saved-searches/:search_id`, plus the on-upload match-and-notify hook)
+are also now ported — see the "Saved searches" section in
+`lua/src/routes.lua`, after `is_blocked_either_way`. Not ported: Python's
+`is_muted()` check before notifying, since muting isn't a ported feature at
+all yet — only the block check applies here.)
 
 ## Once everything above is ported
 
