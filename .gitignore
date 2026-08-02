@@ -23,3 +23,4 @@ app/*.backup-*
 app/static/*.backup-*
 index.html.backup-*
 404.html.backup-*
+.claude/settings.local.json
