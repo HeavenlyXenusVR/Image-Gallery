@@ -107,6 +107,16 @@ httpd.route("POST", "/api/collections", routes.create_collection)
 httpd.route("GET", "/api/collections/:collection_id", routes.collection_detail)
 httpd.route("POST", "/api/collections/:collection_id/items", routes.save_collection_item)
 
+httpd.route("GET", "/api/stats", routes.admin_stats)
+httpd.route("GET", "/api/admin/reports", routes.admin_list_reports)
+httpd.route("POST", "/api/admin/reports/:report_id/resolve", routes.admin_resolve_report)
+httpd.route("POST", "/api/admin/users/:user_id/ban", routes.admin_ban_user)
+httpd.route("POST", "/api/admin/users/:user_id/unban", routes.admin_unban_user)
+httpd.route("GET", "/api/admin/audit-log", routes.admin_audit_log)
+httpd.route("GET", "/api/admin/flagged-media", routes.admin_flagged_media)
+httpd.route("POST", "/api/admin/flagged-media/:media_id/resolve", routes.admin_resolve_flagged_media)
+httpd.route("PATCH", "/api/admin/site-settings", routes.admin_update_site_settings)
+
 local ok, err = db.ping()
 if ok then
   print(string.format("[image-gallery-lua] Postgres reachable (server time: %s)", tostring(err)))

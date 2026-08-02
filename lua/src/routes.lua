@@ -1881,6 +1881,270 @@ function M.save_collection_item(req)
 end
 
 -- ---------------------------------------------------------------------------
+-- Site-owner admin/moderation. Mirrors app/routers/admin.py +
+-- app/db/admin.py. NOT PORTED as part of this pass: the storage dashboard /
+-- purge-orphans endpoints (app/routers/admin.py's storage_dashboard /
+-- purge_storage_orphans) -- those filesystem-walk the on-disk thumb/video
+-- cache dirs, which is lower value while the dataset is DB-blob-backed (see
+-- media_files.lua's docstring); left for a follow-up.
+-- ---------------------------------------------------------------------------
+
+-- Depends()-equivalent for _require_site_owner(): returns (owner_user) or
+-- (nil, status, body) on failure.
+local function require_site_owner(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return nil, status, body end
+  if not is_site_owner(user) then
+    return nil, 403, { detail = "Only the verified site owner can use this action." }
+  end
+  return user
+end
+
+local function write_audit_log(actor_id, action, target_type, target_id, detail)
+  detail = detail and tostring(detail):sub(1, 500) or nil
+  if detail == "" then detail = nil end
+  db.execute(
+    "INSERT INTO moderation_audit_log (actor_id, action, target_type, target_id, detail) VALUES (%s, %s, %s, %s, %s)",
+    actor_id and tostring(actor_id) or nil, tostring(action):sub(1, 60), tostring(target_type):sub(1, 30),
+    target_id and tostring(target_id) or nil, detail
+  )
+end
+
+function M.admin_stats(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local users_row = db.fetchone("SELECT COUNT(*) AS n FROM users")
+  local categories_row = db.fetchone("SELECT COUNT(*) AS n FROM categories")
+  local media_row = db.fetchone("SELECT COUNT(*) AS n, COALESCE(SUM(file_size), 0) AS bytes FROM media_items")
+  local likes_row = db.fetchone("SELECT COUNT(*) AS n FROM media_likes")
+  return 200, {
+    stats = {
+      users = db.toint(users_row and users_row.n, 0),
+      categories = db.toint(categories_row and categories_row.n, 0),
+      media = db.toint(media_row and media_row.n, 0),
+      bytes = db.toint(media_row and media_row.bytes, 0),
+      likes = db.toint(likes_row and likes_row.n, 0),
+    },
+  }
+end
+
+local REPORT_STATUSES = { open = true, reviewed = true, dismissed = true }
+
+function M.admin_list_reports(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local q = req.query or {}
+  local report_status = REPORT_STATUSES[q.status or ""] and q.status or nil
+  local limit = math.max(1, math.min(tonumber(q.limit) or 50, 200))
+  local offset = math.max(0, tonumber(q.offset) or 0)
+  local where = report_status and "WHERE r.status=%s" or ""
+  local sql = string.format(
+    [[
+      SELECT r.id, r.media_id, r.user_id, r.reason, r.details, r.status, r.created_at,
+             m.title AS media_title, m.media_kind, m.mime_type,
+             m.deleted_at AS media_deleted_at, m.user_id AS media_owner_id,
+             ru.username AS reporter_username, ru.display_name AS reporter_display_name,
+             mu.username AS media_owner_username, mu.display_name AS media_owner_display_name
+      FROM media_reports r
+      JOIN media_items m ON m.id = r.media_id
+      JOIN users ru ON ru.id = r.user_id
+      JOIN users mu ON mu.id = m.user_id
+      %s
+      ORDER BY r.created_at DESC
+      LIMIT %%s OFFSET %%s
+    ]],
+    where
+  )
+  local rows
+  if report_status then
+    rows = db.fetchall(sql, report_status, tostring(limit), tostring(offset))
+  else
+    rows = db.fetchall(sql, tostring(limit), tostring(offset))
+  end
+  local origin = request_origin(req)
+  for _, row in ipairs(rows) do
+    row.id = db.toint(row.id, row.id)
+    row.media_id = db.toint(row.media_id, row.media_id)
+    row.user_id = db.toint(row.user_id, row.user_id)
+    row.media_owner_id = row.media_owner_id and db.toint(row.media_owner_id, row.media_owner_id) or nil
+    row.media_thumb_url = row.media_id and row.media_id > 0 and append_query(origin .. "/api/media/" .. row.media_id .. "/thumb", "w", "640") or nil
+  end
+  return 200, { reports = arr(rows), limit = limit, offset = offset }
+end
+
+function M.admin_resolve_report(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local report_id = tonumber(req.params.report_id)
+  if not report_id then return 404, { detail = "Report not found." } end
+  local payload = json_body(req)
+  local new_status = nn(payload.status)
+  if new_status ~= "reviewed" and new_status ~= "dismissed" then
+    return 400, { detail = "status must be reviewed or dismissed." }
+  end
+  db.execute("UPDATE media_reports SET status=%s WHERE id=%s", new_status, tostring(report_id))
+  local report = db.fetchone("SELECT * FROM media_reports WHERE id=%s", tostring(report_id))
+  if not report then return 404, { detail = "Report not found." } end
+  report.id = db.toint(report.id, report.id)
+  report.media_id = db.toint(report.media_id, report.media_id)
+  report.user_id = db.toint(report.user_id, report.user_id)
+  write_audit_log(owner.id, "report_" .. new_status, "report", report_id, "media_id=" .. tostring(report.media_id))
+  if payload.delete_media then
+    db.execute(
+      "UPDATE media_items SET deleted_at=CURRENT_TIMESTAMP, visibility='private' WHERE id=%s AND deleted_at IS NULL",
+      tostring(report.media_id)
+    )
+    write_audit_log(owner.id, "delete_media", "media", report.media_id, nil)
+  end
+  return 200, { report = report }
+end
+
+function M.admin_ban_user(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local user_id = tonumber(req.params.user_id)
+  if not user_id then return 404, { detail = "User not found." } end
+  if tostring(user_id) == tostring(owner.id) then
+    return 400, { detail = "You cannot ban your own account." }
+  end
+  local payload = json_body(req)
+  local reason = trim(nn(payload.reason) or ""):sub(1, 300)
+  if reason == "" then reason = nil end
+  local until_value = nn(payload["until"])
+
+  local result = db.execute(
+    "UPDATE users SET banned_at=CURRENT_TIMESTAMP, banned_until=%s, ban_reason=%s, banned_by=%s WHERE id=%s",
+    until_value, reason, owner.id, tostring(user_id)
+  )
+  local user = get_user(tostring(user_id))
+  if not user then return 404, { detail = "User not found." } end
+  write_audit_log(owner.id, "ban", "user", user_id, reason)
+  user.site_owner = is_site_owner(user)
+  return 200, { user = user }
+end
+
+function M.admin_unban_user(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local user_id = tonumber(req.params.user_id)
+  if not user_id then return 404, { detail = "User not found." } end
+  db.execute(
+    "UPDATE users SET banned_at=NULL, banned_until=NULL, ban_reason=NULL, banned_by=NULL WHERE id=%s",
+    tostring(user_id)
+  )
+  local user = get_user(tostring(user_id))
+  if not user then return 404, { detail = "User not found." } end
+  write_audit_log(owner.id, "unban", "user", user_id, nil)
+  user.site_owner = is_site_owner(user)
+  return 200, { user = user }
+end
+
+function M.admin_audit_log(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local limit = math.max(1, math.min(tonumber(req.query.limit) or 50, 200))
+  local offset = math.max(0, tonumber(req.query.offset) or 0)
+  local rows = db.fetchall(
+    [[
+      SELECT a.*, u.username AS actor_username, COALESCE(u.display_name, u.username) AS actor_display_name
+      FROM moderation_audit_log a
+      LEFT JOIN users u ON u.id = a.actor_id
+      ORDER BY a.created_at DESC
+      LIMIT %s OFFSET %s
+    ]],
+    tostring(limit), tostring(offset)
+  )
+  for _, row in ipairs(rows) do
+    row.id = db.toint(row.id, row.id)
+    row.actor_id = row.actor_id and db.toint(row.actor_id, row.actor_id) or nil
+    row.target_id = row.target_id and db.toint(row.target_id, row.target_id) or nil
+  end
+  return 200, { entries = arr(rows) }
+end
+
+function M.admin_flagged_media(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local limit = math.max(1, math.min(tonumber(req.query.limit) or 50, 200))
+  local offset = math.max(0, tonumber(req.query.offset) or 0)
+  local rows = db.fetchall(
+    [[
+      SELECT m.*, u.username AS owner_username, COALESCE(u.display_name, u.username) AS owner_display_name
+      FROM media_items m
+      JOIN users u ON u.id = m.user_id
+      WHERE m.moderation_status='pending_review' AND m.deleted_at IS NULL
+      ORDER BY m.created_at DESC
+      LIMIT %s OFFSET %s
+    ]],
+    tostring(limit), tostring(offset)
+  )
+  local origin = request_origin(req)
+  for _, row in ipairs(rows) do
+    numify_media(row)
+    row.thumb_url = append_query(origin .. "/api/media/" .. row.id .. "/thumb", "w", "640")
+  end
+  return 200, { media = arr(rows) }
+end
+
+function M.admin_resolve_flagged_media(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local media_id = tonumber(req.params.media_id)
+  if not media_id then return 404, { detail = "Flagged media not found." } end
+  local payload = json_body(req)
+  local decision = nn(payload.decision)
+  if decision ~= "clear" and decision ~= "adult" then
+    return 400, { detail = "decision must be clear or adult." }
+  end
+  db.execute(
+    "UPDATE media_items SET moderation_status=%s, is_adult=%s, moderated_at=CURRENT_TIMESTAMP WHERE id=%s AND moderation_status='pending_review'",
+    decision, decision == "adult", tostring(media_id)
+  )
+  local item = db.fetchone("SELECT * FROM media_items WHERE id=%s", tostring(media_id))
+  if not item then return 404, { detail = "Flagged media not found." } end
+  numify_media(item)
+  write_audit_log(owner.id, "flagged_media_" .. decision, "media", media_id, nil)
+  return 200, { media = item }
+end
+
+local SITE_SETTINGS_FIELDS = {
+  "announcement_message", "announcement_level", "announcement_active",
+  "maintenance_mode", "maintenance_message",
+}
+local SITE_SETTINGS_BOOL_FIELDS = { announcement_active = true, maintenance_mode = true }
+
+local function fetch_site_settings()
+  local row = db.fetchone("SELECT * FROM site_settings WHERE id=1")
+  return row or {}
+end
+
+function M.admin_update_site_settings(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local payload = json_body(req)
+  local sets, params, touched = {}, {}, {}
+  for _, key in ipairs(SITE_SETTINGS_FIELDS) do
+    local value = payload[key]
+    if value ~= nil and value ~= cjson.null then
+      sets[#sets + 1] = key .. "=%s"
+      if SITE_SETTINGS_BOOL_FIELDS[key] then
+        params[#params + 1] = db.tobool(value)
+      else
+        params[#params + 1] = tostring(value):sub(1, 500)
+      end
+      touched[#touched + 1] = key
+    end
+  end
+  if #sets > 0 then
+    sets[#sets + 1] = "updated_by=%s"
+    params[#params + 1] = tostring(owner.id)
+    db.execute("UPDATE site_settings SET " .. table.concat(sets, ", ") .. " WHERE id=1", unpack(params))
+    write_audit_log(owner.id, "site_settings_update", "site_settings", nil, table.concat(touched, ", "))
+  end
+  return 200, { settings = fetch_site_settings() }
+end
+
+-- ---------------------------------------------------------------------------
 -- Media byte-serving: thumb / file / preview / download / avatar.
 -- Mirrors app/routers/media_streaming.py. See media_files.lua's module
 -- docstring for the storage-model correction versus this task's original
