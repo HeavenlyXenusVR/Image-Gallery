@@ -2849,6 +2849,549 @@ function M.save_collection_item(req)
 end
 
 -- ---------------------------------------------------------------------------
+-- Public profiles, follows, friend requests/friends, user search, blocks.
+-- Mirrors app/routers/social.py + app/db/social.py (recovered from git
+-- history: 9986ab5^:app/routers/social.py and app/db/social.py). Previously
+-- missing entirely from the Lua rewrite -- discovered live-404ing on
+-- /api/users/search, /api/users/:username(/profile), followers/following/
+-- friends, friend-request/block, breaking profile pages, search, and
+-- follow/friend flows for both the web app and iOS.
+-- ---------------------------------------------------------------------------
+
+-- Mirrors app/db/social.py's friend_status(): "self" | "friends" |
+-- "pending_out" | "pending_in" | "none".
+local function friend_status(viewer_id, user_id)
+  if not viewer_id then return "none" end
+  if tostring(viewer_id) == tostring(user_id) then return "self" end
+  local row = db.fetchone(
+    [[
+      SELECT requester_id, addressee_id, status
+      FROM friend_requests
+      WHERE (requester_id=%s AND addressee_id=%s) OR (requester_id=%s AND addressee_id=%s)
+      ORDER BY CASE status
+        WHEN 'accepted' THEN 1 WHEN 'pending' THEN 2 WHEN 'declined' THEN 3 WHEN 'cancelled' THEN 4 ELSE 5
+      END, created_at DESC
+      LIMIT 1
+    ]],
+    tostring(viewer_id), tostring(user_id), tostring(user_id), tostring(viewer_id)
+  )
+  if not row or row.status == "declined" or row.status == "cancelled" then return "none" end
+  if row.status == "accepted" then return "friends" end
+  return tostring(row.requester_id) == tostring(viewer_id) and "pending_out" or "pending_in"
+end
+
+function M.search_users(req)
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  local viewer0 = tostring(viewer_id or 0)
+  local q = trim(nn(req.query.q) or ""):gsub("%s+", " "):sub(1, 80)
+  local limit = bounded_limit(req.query.limit, 30, 60)
+  local needle = "%" .. q:gsub("([%%_])", "\\%1") .. "%"
+  local rows = db.fetchall(
+    [[
+      SELECT u.id, u.username,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.display_name ELSE u.username END AS display_name,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.bio ELSE NULL END AS bio,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.profile_headline ELSE NULL END AS profile_headline,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
+             u.profile_color, u.public_profile, u.show_liked_count, u.show_collections,
+             u.show_recent_uploads, u.show_friends, u.adult_content_consent, u.email_verified_at,
+             u.last_seen_at,
+             COUNT(DISTINCT m.id) AS media_count,
+             COUNT(DISTINCT f.follower_id) AS follower_count,
+             MAX(CASE WHEN mine.follower_id IS NULL THEN 0 ELSE 1 END) AS followed_by_me
+      FROM users u
+      LEFT JOIN media_items m ON m.user_id=u.id AND m.deleted_at IS NULL AND m.visibility='public'
+      LEFT JOIN user_follows f ON f.followed_id=u.id
+      LEFT JOIN user_follows mine ON mine.followed_id=u.id AND mine.follower_id::text=%s
+      WHERE %s = ''
+         OR u.username ILIKE %s
+         OR (CASE WHEN u.public_profile OR u.id::text=%s THEN u.display_name ELSE NULL END) ILIKE %s
+         OR (CASE WHEN u.public_profile OR u.id::text=%s THEN u.bio ELSE NULL END) ILIKE %s
+         OR (CASE WHEN u.public_profile OR u.id::text=%s THEN u.profile_headline ELSE NULL END) ILIKE %s
+      GROUP BY u.id
+      ORDER BY (u.username=%s) DESC, follower_count DESC, media_count DESC, u.created_at DESC
+      LIMIT %s
+    ]],
+    viewer0, viewer0, viewer0, viewer0, viewer0, q, needle, viewer0, needle, viewer0, needle, viewer0, needle,
+    q, tostring(limit)
+  )
+  for _, row in ipairs(rows) do
+    decode_user(row)
+    row.media_count = db.toint(row.media_count, 0)
+    row.follower_count = db.toint(row.follower_count, 0)
+    row.followed_by_me = db.tobool(row.followed_by_me)
+    row.friend_status = viewer_id and friend_status(viewer_id, row.id) or "none"
+    with_user_urls(req, row)
+  end
+  return 200, { users = arr(rows), limit = limit }
+end
+
+-- NOT routes.lua's normalize_username() (that one lowercases, for
+-- register/login only -- see its own comment). Mirrors app/db/_shared.py's
+-- normalize_username(), which only trims: usernames are matched exactly as
+-- stored, case-sensitively. Lua-registered accounts are always lowercase
+-- already (register() lowercases at insert time), but accounts created
+-- before that -- or migrated from the old MySQL DB -- can have mixed-case
+-- usernames, so forcibly lowercasing the URL param here would 404 real
+-- profiles like the site owner's own "HeavenlyXenusVR".
+local function trimmed_username(u)
+  return trim(u or ""):sub(1, 40)
+end
+
+local function get_public_profile(req, username, viewer_id)
+  local viewer0 = tostring(viewer_id or 0)
+  local row = db.fetchone(
+    [[
+      SELECT u.id, u.username,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.display_name ELSE u.username END AS display_name,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.bio ELSE NULL END AS bio,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.profile_headline ELSE NULL END AS profile_headline,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.featured_tags ELSE NULL END AS featured_tags,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.website_url ELSE NULL END AS website_url,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.location_label ELSE NULL END AS location_label,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.user_settings ELSE NULL END AS user_settings,
+             u.avatar_file_id, u.profile_color, u.public_profile, u.show_liked_count,
+             u.show_collections, u.show_recent_uploads, u.show_friends, u.created_at, u.last_seen_at,
+             COUNT(DISTINCT m.id) AS media_count,
+             COALESCE(SUM(CASE WHEN m.deleted_at IS NULL AND m.visibility='public' THEN m.downloads ELSE 0 END), 0) AS download_count,
+             COUNT(DISTINCT (ml.user_id, ml.media_id)) AS like_count,
+             COUNT(DISTINCT f1.follower_id) AS follower_count,
+             COUNT(DISTINCT f2.followed_id) AS following_count,
+             COUNT(DISTINCT CASE WHEN fr.status='accepted' AND (fr.requester_id=u.id OR fr.addressee_id=u.id) THEN fr.id END) AS friend_count,
+             MAX(CASE WHEN f3.follower_id::text=%s THEN 1 ELSE 0 END) AS followed_by_me,
+             (now() - u.last_seen_at) <= interval '180 seconds' AS is_online
+      FROM users u
+      LEFT JOIN media_items m ON m.user_id=u.id AND m.deleted_at IS NULL AND (m.visibility='public' OR m.user_id::text=%s)
+      LEFT JOIN media_likes ml ON ml.media_id=m.id
+      LEFT JOIN user_follows f1 ON f1.followed_id=u.id
+      LEFT JOIN user_follows f2 ON f2.follower_id=u.id
+      LEFT JOIN user_follows f3 ON f3.followed_id=u.id AND f3.follower_id::text=%s
+      LEFT JOIN friend_requests fr ON fr.status='accepted' AND (fr.requester_id=u.id OR fr.addressee_id=u.id)
+      WHERE u.username=%s
+      GROUP BY u.id
+    ]],
+    viewer0, viewer0, viewer0, viewer0, viewer0, viewer0, viewer0, viewer0, viewer0, viewer0, viewer0,
+    trimmed_username(username)
+  )
+  if not row then return nil end
+  decode_user(row)
+  row.media_count = db.toint(row.media_count, 0)
+  row.download_count = db.toint(row.download_count, 0)
+  row.like_count = db.toint(row.like_count, 0)
+  row.follower_count = db.toint(row.follower_count, 0)
+  row.following_count = db.toint(row.following_count, 0)
+  row.friend_count = db.toint(row.friend_count, 0)
+  row.followed_by_me = db.tobool(row.followed_by_me)
+  row.is_online = db.tobool(row.is_online)
+  row.friend_status = viewer_id and friend_status(viewer_id, row.id) or "none"
+  return row
+end
+
+function M.public_profile(req)
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  local profile = get_public_profile(req, req.params.username, viewer_id)
+  if not profile then return 404, { detail = "User not found." } end
+  if viewer_id and is_blocked_either_way(viewer_id, profile.id) then
+    return 404, { detail = "User not found." }
+  end
+  return 200, { user = with_user_urls(req, profile) }
+end
+
+local function list_profile_media(req, target_id, viewer_id, viewer_can_open_adult, limit)
+  local viewer0 = tostring(viewer_id or 0)
+  local rows = db.fetchall(
+    [[
+      SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.description, m.tags,
+             m.media_kind, m.mime_type, m.original_filename, m.storage_path, m.file_size,
+             m.views, m.downloads, m.created_at, m.updated_at, m.visibility,
+             m.comments_enabled, m.downloads_enabled, m.pinned_at, m.is_adult,
+             m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status,
+             c.name AS category_name, c.slug AS category_slug,
+             sc.name AS subcategory_name, sc.slug AS subcategory_slug,
+             u.username, u.display_name, u.profile_color, u.public_profile,
+             COUNT(DISTINCT l.user_id) AS like_count,
+             COUNT(DISTINCT cm.id) AS comment_count,
+             MAX(CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END) AS bookmarked_by_me,
+             MAX(CASE WHEN l2.user_id IS NULL THEN 0 ELSE 1 END) AS liked_by_me
+      FROM media_items m
+      JOIN categories c ON c.id = m.category_id
+      LEFT JOIN subcategories sc ON sc.id = m.subcategory_id
+      JOIN users u ON u.id = m.user_id
+      LEFT JOIN media_likes l ON l.media_id = m.id
+      LEFT JOIN media_likes l2 ON l2.media_id = m.id AND l2.user_id::text = %s
+      LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id::text = %s
+      LEFT JOIN media_comments cm ON cm.media_id = m.id
+      WHERE m.user_id=%s AND m.deleted_at IS NULL AND (m.visibility='public' OR m.user_id::text=%s)
+      GROUP BY m.id, c.name, c.slug, sc.name, sc.slug, u.username, u.display_name, u.profile_color, u.public_profile
+      ORDER BY m.pinned_at DESC NULLS LAST, m.created_at DESC
+      LIMIT %s
+    ]],
+    viewer0, viewer0, tostring(target_id), viewer0, tostring(limit)
+  )
+  attach_media_subcategories(rows)
+  for _, row in ipairs(rows) do decode_media_row(row, viewer_can_open_adult, req) end
+  return rows
+end
+
+local function list_profile_collections(req, target_id, viewer_id, adult_allowed, limit)
+  local v = tostring(viewer_id or 0)
+  local rows = db.fetchall(
+    COLLECTION_SELECT .. [[
+      WHERE mc.user_id=%s AND (mc.is_public OR mc.user_id=%s)
+      GROUP BY mc.id, u.id
+      ORDER BY mc.updated_at DESC, mc.created_at DESC
+      LIMIT %s
+    ]],
+    v, v, tostring(target_id), v, tostring(limit)
+  )
+  for _, row in ipairs(rows) do
+    decode_collection(row)
+    with_collection_urls(req, row, adult_allowed)
+  end
+  return rows
+end
+
+local function list_profile_friends(user_id, viewer_id, limit)
+  -- Must tostring() here (not just `viewer_id or "0"`): callers pass a mix
+  -- of already-string ids (from auth_optional()) and raw numbers (from
+  -- decode_user()'s current_user()/get_public_profile() results, e.g.
+  -- my_friends() passing user.id twice) -- a bare Lua number bound against
+  -- this query's "::text=%s" comparisons makes Postgres error with
+  -- "operator does not exist: text = integer", which db.fetchall()
+  -- swallows and returns as an empty list, not a visible error.
+  local viewer0 = tostring(viewer_id or 0)
+  local rows = db.fetchall(
+    [[
+      SELECT u.id, u.username,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.display_name ELSE u.username END AS display_name,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.bio ELSE NULL END AS bio,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
+             u.profile_color, u.public_profile, u.last_seen_at, fr.responded_at AS friended_at
+      FROM friend_requests fr
+      JOIN users u ON u.id = CASE WHEN fr.requester_id::text=%s THEN fr.addressee_id ELSE fr.requester_id END
+      WHERE fr.status='accepted' AND (fr.requester_id::text=%s OR fr.addressee_id::text=%s)
+      ORDER BY fr.responded_at DESC, fr.created_at DESC
+      LIMIT %s
+    ]],
+    viewer0, viewer0, viewer0, tostring(user_id), tostring(user_id), tostring(user_id), tostring(limit)
+  )
+  for _, row in ipairs(rows) do decode_user(row) end
+  return rows
+end
+
+function M.profile_page(req)
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  local profile = get_public_profile(req, req.params.username, viewer_id)
+  if not profile then return 404, { detail = "User not found." } end
+  if viewer_id and is_blocked_either_way(viewer_id, profile.id) then
+    return 404, { detail = "User not found." }
+  end
+  local adult_allowed = viewer_adult_allowed(viewer_id)
+  local is_owner = viewer_id and tostring(viewer_id) == tostring(profile.id)
+  local settings = profile.user_settings or {}
+  local show_uploads = is_owner or (settings.profile_show_uploads ~= nil and settings.profile_show_uploads or profile.show_recent_uploads)
+  local show_collections = is_owner or (settings.profile_show_collections ~= nil and settings.profile_show_collections or profile.show_collections)
+  local show_friends = is_owner or (settings.profile_show_friends ~= nil and settings.profile_show_friends or profile.show_friends)
+  local media = show_uploads and list_profile_media(req, profile.id, viewer_id, adult_allowed, 36) or {}
+  local collections = show_collections and list_profile_collections(req, profile.id, viewer_id, adult_allowed, 12) or {}
+  local friends = show_friends and list_profile_friends(profile.id, viewer_id, 18) or {}
+  return 200, {
+    user = with_user_urls(req, profile),
+    media = arr(media),
+    collections = arr(collections),
+    friends = arr(friends),
+  }
+end
+
+function M.follow_user(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local followed_id = tonumber(req.params.user_id)
+  if not followed_id then return 404, { detail = "User not found." } end
+  local payload = json_body(req)
+  local following = db.tobool(payload.following)
+  if tostring(user.id) == tostring(followed_id) then
+    return 400, { detail = "You cannot follow yourself." }
+  end
+  if following and is_blocked_either_way(user.id, followed_id) then
+    return 403, { detail = "You cannot follow this user." }
+  end
+  local exists = db.fetchone("SELECT id FROM users WHERE id=%s", tostring(followed_id))
+  if not exists then return 404, { detail = "User not found." } end
+  if following then
+    db.execute("INSERT INTO user_follows (follower_id, followed_id) VALUES (%s, %s) ON CONFLICT (follower_id, followed_id) DO NOTHING", tostring(user.id), tostring(followed_id))
+  else
+    db.execute("DELETE FROM user_follows WHERE follower_id=%s AND followed_id=%s", tostring(user.id), tostring(followed_id))
+  end
+  local count_row = db.fetchone("SELECT COUNT(*) AS n FROM user_follows WHERE followed_id=%s", tostring(followed_id))
+  if following then create_notification(followed_id, user.id, "follow") end
+  return 200, { followed_id = followed_id, following = following, follower_count = db.toint(count_row and count_row.n, 0) }
+end
+
+function M.send_friend_request(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local addressee_id = tonumber(req.params.user_id)
+  if not addressee_id then return 404, { detail = "User not found." } end
+  if tostring(user.id) == tostring(addressee_id) then
+    return 400, { detail = "You cannot friend yourself." }
+  end
+  if is_blocked_either_way(user.id, addressee_id) then
+    return 403, { detail = "You cannot send a friend request to this user." }
+  end
+  local exists = db.fetchone("SELECT id FROM users WHERE id=%s", tostring(addressee_id))
+  if not exists then return 400, { detail = "User not found." } end
+
+  local existing = db.fetchone(
+    [[
+      SELECT * FROM friend_requests
+      WHERE (requester_id=%s AND addressee_id=%s) OR (requester_id=%s AND addressee_id=%s)
+      ORDER BY CASE status
+        WHEN 'accepted' THEN 1 WHEN 'pending' THEN 2 WHEN 'declined' THEN 3 WHEN 'cancelled' THEN 4 ELSE 5
+      END, created_at DESC
+      LIMIT 1
+    ]],
+    tostring(user.id), tostring(addressee_id), tostring(addressee_id), tostring(user.id)
+  )
+  local result_status, request_row
+  if existing and existing.status == "accepted" then
+    result_status, request_row = "friends", existing
+  elseif existing and existing.status == "pending" then
+    if tostring(existing.requester_id) == tostring(addressee_id) then
+      db.execute("UPDATE friend_requests SET status='accepted', responded_at=CURRENT_TIMESTAMP WHERE id=%s", tostring(existing.id))
+      existing.status = "accepted"
+      result_status, request_row = "friends", existing
+    else
+      result_status, request_row = "pending_out", existing
+    end
+  elseif existing then
+    db.execute(
+      "UPDATE friend_requests SET requester_id=%s, addressee_id=%s, status='pending', created_at=CURRENT_TIMESTAMP, responded_at=NULL WHERE id=%s",
+      tostring(user.id), tostring(addressee_id), tostring(existing.id)
+    )
+    result_status = "pending_out"
+    request_row = db.fetchone("SELECT * FROM friend_requests WHERE id=%s", tostring(existing.id))
+  else
+    local inserted = db.fetchone(
+      "INSERT INTO friend_requests (requester_id, addressee_id) VALUES (%s, %s) RETURNING id",
+      tostring(user.id), tostring(addressee_id)
+    )
+    result_status = "pending_out"
+    request_row = db.fetchone("SELECT * FROM friend_requests WHERE id=%s", tostring(inserted.id))
+  end
+  if request_row then
+    request_row.id = db.toint(request_row.id, request_row.id)
+    request_row.requester_id = db.toint(request_row.requester_id, request_row.requester_id)
+    request_row.addressee_id = db.toint(request_row.addressee_id, request_row.addressee_id)
+  end
+  create_notification(addressee_id, user.id, "friend_request")
+  return 200, { status = result_status, request = request_row }
+end
+
+local function decode_friend_request_row(row)
+  row.id = db.toint(row.id, row.id)
+  row.requester_id = db.toint(row.requester_id, row.requester_id)
+  row.addressee_id = db.toint(row.addressee_id, row.addressee_id)
+  row.user_id = db.toint(row.user_id, row.user_id)
+  row.public_profile = db.tobool(row.public_profile)
+  row.is_online = db.tobool(row.is_online)
+  local user = {
+    id = row.user_id, username = row.username, display_name = row.display_name,
+    bio = row.bio, avatar_path = row.avatar_path, profile_color = row.profile_color,
+    public_profile = row.public_profile, last_seen_at = row.last_seen_at,
+  }
+  row.user = user
+  return row
+end
+
+function M.friend_requests_list(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local function fetch(own_col, other_col)
+    local rows = db.fetchall(
+      string.format(
+        [[
+          SELECT fr.*, u.id AS user_id, u.username, u.display_name, u.bio, u.avatar_path,
+                 u.profile_color, u.public_profile, u.last_seen_at
+          FROM friend_requests fr
+          JOIN users u ON u.id=fr.%s
+          WHERE fr.%s=%%s AND fr.status='pending'
+          ORDER BY fr.created_at DESC
+          LIMIT 100
+        ]],
+        other_col, own_col
+      ),
+      tostring(user.id)
+    )
+    for _, row in ipairs(rows) do
+      decode_friend_request_row(row)
+      with_user_urls(req, row.user)
+    end
+    return rows
+  end
+  return 200, {
+    incoming = arr(fetch("addressee_id", "requester_id")),
+    outgoing = arr(fetch("requester_id", "addressee_id")),
+  }
+end
+
+function M.respond_friend_request(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local request_id = tonumber(req.params.request_id)
+  if not request_id then return 404, { detail = "Friend request not found." } end
+  local payload = json_body(req)
+  local action = nn(payload.action)
+  local next_status = ({ accept = "accepted", decline = "declined", cancel = "cancelled" })[action or ""]
+  if not next_status then return 400, { detail = "Action must be accept, decline, or cancel." } end
+
+  local row
+  if action == "cancel" then
+    row = db.fetchone("SELECT * FROM friend_requests WHERE id=%s AND requester_id=%s AND status='pending'", tostring(request_id), tostring(user.id))
+  else
+    row = db.fetchone("SELECT * FROM friend_requests WHERE id=%s AND addressee_id=%s AND status='pending'", tostring(request_id), tostring(user.id))
+  end
+  if not row then return 404, { detail = "Friend request not found." } end
+  db.execute("UPDATE friend_requests SET status=%s, responded_at=CURRENT_TIMESTAMP WHERE id=%s", next_status, tostring(request_id))
+  row.status = next_status
+  row.id = db.toint(row.id, row.id)
+  row.requester_id = db.toint(row.requester_id, row.requester_id)
+  row.addressee_id = db.toint(row.addressee_id, row.addressee_id)
+  if next_status == "accepted" then
+    create_notification(row.requester_id, user.id, "friend_accept")
+  end
+  return 200, { request = row }
+end
+
+function M.my_friends(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local friends = list_profile_friends(user.id, user.id, 80)
+  for _, row in ipairs(friends) do with_user_urls(req, row) end
+  return 200, { friends = arr(friends) }
+end
+
+function M.user_followers(req)
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  local user_id = tonumber(req.params.user_id)
+  if not user_id then return 404, { detail = "User not found." } end
+  local viewer0 = tostring(viewer_id or 0)
+  local rows = db.fetchall(
+    [[
+      SELECT u.id, u.username,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.display_name ELSE u.username END AS display_name,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.bio ELSE NULL END AS bio,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
+             u.profile_color, u.public_profile, u.last_seen_at
+      FROM user_follows f
+      JOIN users u ON u.id = f.follower_id
+      WHERE f.followed_id=%s
+      ORDER BY f.created_at DESC
+      LIMIT 200
+    ]],
+    viewer0, viewer0, viewer0, tostring(user_id)
+  )
+  for _, row in ipairs(rows) do
+    decode_user(row)
+    with_user_urls(req, row)
+  end
+  return 200, { users = arr(rows) }
+end
+
+function M.user_following(req)
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  local user_id = tonumber(req.params.user_id)
+  if not user_id then return 404, { detail = "User not found." } end
+  local viewer0 = tostring(viewer_id or 0)
+  local rows = db.fetchall(
+    [[
+      SELECT u.id, u.username,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.display_name ELSE u.username END AS display_name,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.bio ELSE NULL END AS bio,
+             CASE WHEN u.public_profile OR u.id::text=%s THEN u.avatar_path ELSE NULL END AS avatar_path,
+             u.profile_color, u.public_profile, u.last_seen_at
+      FROM user_follows f
+      JOIN users u ON u.id = f.followed_id
+      WHERE f.follower_id=%s
+      ORDER BY f.created_at DESC
+      LIMIT 200
+    ]],
+    viewer0, viewer0, viewer0, tostring(user_id)
+  )
+  for _, row in ipairs(rows) do
+    decode_user(row)
+    with_user_urls(req, row)
+  end
+  return 200, { users = arr(rows) }
+end
+
+function M.user_friends(req)
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  local user_id = tonumber(req.params.user_id)
+  if not user_id then return 404, { detail = "User not found." } end
+  local friends = list_profile_friends(user_id, viewer_id, 80)
+  for _, row in ipairs(friends) do with_user_urls(req, row) end
+  return 200, { friends = arr(friends) }
+end
+
+function M.block_user(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local target_id = tonumber(req.params.user_id)
+  if not target_id then return 404, { detail = "User not found." } end
+  local payload = json_body(req)
+  local kind = nn(payload.kind)
+  if kind ~= "block" and kind ~= "mute" then return 400, { detail = "kind must be block or mute." } end
+  if tostring(user.id) == tostring(target_id) then
+    return 400, { detail = "You cannot block or mute yourself." }
+  end
+  local exists = db.fetchone("SELECT id FROM users WHERE id=%s", tostring(target_id))
+  if not exists then return 400, { detail = "User not found." } end
+  local active = db.tobool(payload.active)
+  if active then
+    db.execute(
+      "INSERT INTO user_blocks (blocker_id, blocked_id, kind) VALUES (%s, %s, %s) ON CONFLICT (blocker_id, blocked_id, kind) DO NOTHING",
+      tostring(user.id), tostring(target_id), kind
+    )
+  else
+    db.execute("DELETE FROM user_blocks WHERE blocker_id=%s AND blocked_id=%s AND kind=%s", tostring(user.id), tostring(target_id), kind)
+  end
+  return 200, { blocked_id = target_id, kind = kind, active = active }
+end
+
+function M.my_blocks(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local rows = db.fetchall(
+    [[
+      SELECT ub.kind, ub.created_at, u.id, u.username, u.display_name, u.avatar_path, u.profile_color
+      FROM user_blocks ub
+      JOIN users u ON u.id = ub.blocked_id
+      WHERE ub.blocker_id=%s
+      ORDER BY ub.created_at DESC
+    ]],
+    tostring(user.id)
+  )
+  local blocks = {}
+  for _, row in ipairs(rows) do
+    local kind = row.kind
+    local created_at = row.created_at
+    row.kind, row.created_at = nil, nil
+    decode_user(row)
+    with_user_urls(req, row)
+    blocks[#blocks + 1] = { kind = kind, created_at = created_at, user = row }
+  end
+  return 200, { blocks = arr(blocks) }
+end
+
+-- ---------------------------------------------------------------------------
 -- Site-owner admin/moderation. Mirrors app/routers/admin.py +
 -- app/db/admin.py. NOT PORTED as part of this pass: the storage dashboard /
 -- purge-orphans endpoints (app/routers/admin.py's storage_dashboard /

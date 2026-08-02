@@ -99,6 +99,27 @@ httpd.route("GET", "/api/media/:media_id/preview", routes.serve_media_preview)
 httpd.route("GET", "/api/media/:media_id/download", routes.download_media)
 httpd.route("GET", "/api/users/:user_id/avatar", routes.serve_user_avatar)
 
+-- Public profiles, follows, friend requests/friends, search, blocks -- see
+-- routes.lua's "Public profiles, follows, friend requests..." section
+-- header for why these were missing (never ported) and the git-history
+-- recovery this pass is based on. "/search" MUST be registered before
+-- "/api/users/:username" (same first-match-wins ordering trap noted
+-- elsewhere in this file), and "/api/users/:username/profile" before the
+-- bare "/api/users/:username" for the same reason.
+httpd.route("GET", "/api/users/search", routes.search_users)
+httpd.route("GET", "/api/users/:username/profile", routes.profile_page)
+httpd.route("GET", "/api/users/:username", routes.public_profile)
+httpd.route("POST", "/api/users/:user_id/follow", routes.follow_user)
+httpd.route("POST", "/api/users/:user_id/friend-request", routes.send_friend_request)
+httpd.route("GET", "/api/friends/requests", routes.friend_requests_list)
+httpd.route("POST", "/api/friends/requests/:request_id", routes.respond_friend_request)
+httpd.route("GET", "/api/me/friends", routes.my_friends)
+httpd.route("GET", "/api/users/:user_id/followers", routes.user_followers)
+httpd.route("GET", "/api/users/:user_id/following", routes.user_following)
+httpd.route("GET", "/api/users/:user_id/friends", routes.user_friends)
+httpd.route("POST", "/api/users/:user_id/block", routes.block_user)
+httpd.route("GET", "/api/me/blocks", routes.my_blocks)
+
 httpd.route("GET", "/api/me/2fa/status", routes.totp_status)
 httpd.route("POST", "/api/me/2fa/enroll", routes.totp_enroll)
 httpd.route("POST", "/api/me/2fa/confirm", routes.totp_confirm)

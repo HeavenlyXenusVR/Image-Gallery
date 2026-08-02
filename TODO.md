@@ -13,6 +13,28 @@ used to bridge Lua/Python (`scripts/live_proxy.mjs`) is also gone. The
 Telegram control-panel bot is now served exclusively by
 `lua/src/telegram.lua`.
 
+**Critical gap found and fixed, 2026-08-02**: `/api/users/search`,
+`/api/users/:username`(`/profile`), followers/following/friends,
+follow/friend-request/respond, and block were never ported to Lua at all —
+confirmed live-404ing in production, breaking profile pages, user search,
+and follow/friend/block flows for both the web app and iOS. Recovered the
+original logic from git history (`9986ab5^:app/routers/social.py` +
+`app/db/social.py`) and ported all of it to `lua/src/routes.lua` (new
+"Public profiles, follows, friend requests..." section) + registered in
+`lua/main.lua`. Verified live end-to-end with two throwaway test accounts
+(created, exercised follow/friend-request/accept/block/unfollow, deleted
+after — no residue). Found and fixed one real bug during that testing:
+`list_profile_friends()`'s viewer-id parameter wasn't always `tostring()`'d
+before binding against a `::text=%s` comparison — harmless when the caller
+already had a string id, but `my_friends()` passed a raw Lua number twice,
+which made Postgres error ("operator does not exist: text = integer") on
+a query `db.fetchall()` silently swallows into an empty list rather than
+surfacing. Also fixed a related profile-lookup bug: incorrectly reused
+routes.lua's login/register `normalize_username()` (which lowercases) for
+profile-by-username lookups, which are supposed to be case-sensitive exact
+matches per the original Python — broke looking up the site owner's own
+grandfathered mixed-case username, "HeavenlyXenusVR".
+
 **Frontend, 2026-08-02**: the React SPA (`frontend/`, `node_modules/`,
 `static/react/`) is NOT going away — it's a real client-routed app (feed,
 media detail, messages, studio, upload, ...), not a SwarmPanel-style
