@@ -6,13 +6,13 @@ export default defineConfig({
   base: "/static/react/",
   plugins: [react()],
   build: {
-    outDir: "../app/static/react",
+    outDir: "../static/react",
     emptyOutDir: true,
     sourcemap: true,
   },
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:8788",
+      "/api": "http://127.0.0.1:8789",
     },
   },
 });

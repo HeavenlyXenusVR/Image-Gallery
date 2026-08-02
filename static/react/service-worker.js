@@ -1,8 +1,9 @@
 // Minimal, conservative PWA service worker.
 //
 // Scope is intentionally the whole site ("/"), served from the root so it can control
-// navigations to client-routed pages like /media/123 and /users/alice (see
-// app/routers/pages.py's /service-worker.js route for why it isn't under /static/react/).
+// navigations to client-routed pages like /media/123 and /users/alice -- a service
+// worker's scope can never exceed the directory it's served from, so this file must be
+// served at the site root, not under /static/react/.
 //
 // It never touches API requests or cross-origin requests (media/API can live on a
 // different tunnel/CDN origin than the page) — it only helps the app shell and its

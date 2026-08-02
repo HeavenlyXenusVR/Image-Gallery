@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const reactIndex = readFileSync(resolve("app/static/react/index.html"), "utf8");
+const reactIndex = readFileSync(resolve("static/react/index.html"), "utf8");
 const scriptMatch = reactIndex.match(/src="\/static\/react\/assets\/([^"]+\.js)"/);
 const styleMatch = reactIndex.match(/href="\/static\/react\/assets\/([^"]+\.css)"/);
 
@@ -17,12 +17,12 @@ const shell = `<!doctype html>
     <meta name="theme-color" content="#101318" />
     <meta name="description" content="Image Gallery media dashboard for browsing, uploading, collecting, and managing media." />
     <link rel="icon" href="/Image-Gallery/favicon.ico" />
-    <link rel="stylesheet" crossorigin href="/Image-Gallery/app/static/react/assets/${styleMatch[1]}" />
+    <link rel="stylesheet" crossorigin href="/Image-Gallery/static/react/assets/${styleMatch[1]}" />
     <title>Image Gallery</title>
   </head>
   <body>
     <div id="root"></div>
-    <script type="module" crossorigin src="/Image-Gallery/app/static/react/assets/${scriptMatch[1]}"></script>
+    <script type="module" crossorigin src="/Image-Gallery/static/react/assets/${scriptMatch[1]}"></script>
   </body>
 </html>
 `;

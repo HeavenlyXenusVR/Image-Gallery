@@ -14,7 +14,6 @@ function runtimeBasename() {
     if (first) return `/${first}`;
   }
   if (path.startsWith("/static/react")) return "/static/react";
-  if (path.startsWith("/app/static/react")) return "/app/static/react";
   return "";
 }
 
