@@ -1136,10 +1136,14 @@ function M.bookmark_media(req)
   return 200, { media = decode_media_row(updated, adult_allowed, req) }
 end
 
--- NOTE: unlike Python's add_comment/react_to_media, this does not yet create
--- notification rows or parse @mentions (see app/routers/media.py lines
--- ~1184-1195) -- left for a follow-up pass; comments/reactions themselves
--- are fully functional.
+-- Forward-declared: assigned further down (in the messaging section) once
+-- NOTIFICATION_KINDS/user_blocks-table logic exists -- same pattern as
+-- notify_matching_saved_searches above.
+local create_notification, is_blocked_either_way
+
+-- Mirrors app/routers/media.py's add_comment(): notifies the post owner and
+-- parses @mentions (excluding self and blocked users) same as Python.
+local MENTION_RE = "@([%w_%.%-]+)"
 function M.add_comment(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
@@ -1167,6 +1171,38 @@ function M.add_comment(req)
   row.media_id = db.toint(row.media_id, row.media_id)
   row.user_id = db.toint(row.user_id, row.user_id)
   if row.parent_comment_id then row.parent_comment_id = db.toint(row.parent_comment_id, row.parent_comment_id) end
+
+  local kind = parent_id and "reply" or "comment"
+  create_notification(item.user_id, user.id, kind, media_id, text)
+
+  local mentions, seen_mention = {}, {}
+  for _, name in (" " .. text):gmatch("([^%w_])@([%w_%.%-]+)") do
+    local lowered = name:lower()
+    if #name >= 3 and #name <= 40 and not seen_mention[lowered] then
+      seen_mention[lowered] = true
+      mentions[#mentions + 1] = lowered
+      if #mentions >= 10 then break end
+    end
+  end
+  if #mentions > 0 then
+    local placeholders = {}
+    for i = 1, #mentions do placeholders[i] = "%s" end
+    local resolved = db.fetchall(
+      "SELECT id, username FROM users WHERE LOWER(username) IN (" .. table.concat(placeholders, ", ") .. ")",
+      unpack(mentions)
+    )
+    local notified = {}
+    for _, u in ipairs(resolved) do
+      local mentioned_id = db.toint(u.id, u.id)
+      if mentioned_id ~= user.id and mentioned_id ~= db.toint(item.user_id, item.user_id) and not notified[mentioned_id] then
+        notified[mentioned_id] = true
+        if not is_blocked_either_way(user.id, mentioned_id) then
+          create_notification(mentioned_id, user.id, "mention", media_id, text)
+        end
+      end
+    end
+  end
+
   return 200, { comment = row }
 end
 
@@ -1200,7 +1236,11 @@ function M.react_to_media_route(req)
   local counts = {}
   for _, r in ipairs(reaction_rows) do counts[r.emoji] = db.toint(r.n, 0) end
   local r = db.fetchone("SELECT emoji FROM media_reactions WHERE media_id=%s AND user_id=%s", tostring(media_id), user.id)
-  return 200, { reactions = { counts = counts, my_reaction = r and r.emoji or nil } }
+  local my_reaction = r and r.emoji or nil
+  if tostring(item.user_id) ~= tostring(user.id) and my_reaction then
+    create_notification(item.user_id, user.id, "reaction", media_id, my_reaction)
+  end
+  return 200, { reactions = { counts = counts, my_reaction = my_reaction } }
 end
 
 -- ---------------------------------------------------------------------------
@@ -2221,16 +2261,19 @@ function M.notifications_list(req)
   return 200, { notifications = arr(rows), unread_count = db.toint(unread_row and unread_row.n, 0) }
 end
 
+-- Mirrors app/db/notifications.py's NOTIFICATION_KINDS exactly -- note "like"
+-- and "report" are NOT valid kinds in Python (likes don't notify at all;
+-- reports go through write_audit_log, not the notifications table).
 local NOTIFICATION_KINDS = {
-  follow = true, like = true, comment = true, message = true, mention = true,
-  friend_request = true, friend_accept = true, report = true, saved_search = true,
+  follow = true, friend_request = true, friend_accept = true, comment = true,
+  message = true, mention = true, reply = true, reaction = true, saved_search = true,
 }
 
 -- Mirrors app/db/notifications.py's create_notification(): silently skips
 -- self-notifications and unknown kinds rather than erroring, since callers
 -- (like send_direct_message below) don't want a notification-table hiccup
 -- to fail the actual action.
-local function create_notification(recipient_id, actor_id, kind, media_id, preview)
+create_notification = function(recipient_id, actor_id, kind, media_id, preview)
   if not NOTIFICATION_KINDS[kind] then return end
   if actor_id and tostring(actor_id) == tostring(recipient_id) then return end
   preview = preview and trim(preview):sub(1, 160) or nil
@@ -2242,7 +2285,7 @@ local function create_notification(recipient_id, actor_id, kind, media_id, previ
 end
 
 -- Mirrors app/db/social.py's is_blocked_either_way().
-local function is_blocked_either_way(user_a, user_b)
+is_blocked_either_way = function(user_a, user_b)
   if not user_a or not user_b then return false end
   local row = db.fetchone(
     [[
