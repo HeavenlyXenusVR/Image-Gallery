@@ -35,6 +35,10 @@ local M = {}
 M.routes = {} -- { {method=, pattern=, keys={}, handler=} }
 M.ws_routes = {} -- { {pattern=, handler=} }, GET+Upgrade:websocket only, exact-path match
 M.cors = { allowed_origins = {}, origin_suffix_matcher = nil }
+-- Optional fallback(method, path) -> status, body, headers | nil, called only
+-- when no registered route matches. Returning nil keeps the normal JSON 404
+-- (see static.lua's SPA fallback, the only current user of this hook).
+M.fallback_handler = nil
 
 local function split_path_pattern(pattern)
   local keys = {}
@@ -293,6 +297,14 @@ local function handle_connection(sock)
 
     local handler, params = match_route(method, path)
     if not handler then
+      if M.fallback_handler then
+        local fb_status, fb_body, fb_headers = M.fallback_handler(method, path)
+        if fb_status then
+          for k, v in pairs(fb_headers or {}) do resp_headers[k] = v end
+          send_response(sock, fb_status, STATUS_TEXT[fb_status] or "OK", resp_headers, fb_body)
+          return
+        end
+      end
       resp_headers["Content-Type"] = "application/json"
       send_response(sock, 404, "Not Found", resp_headers, cjson.encode({ detail = "Not found" }))
       return

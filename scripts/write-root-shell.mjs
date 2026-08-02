@@ -1,28 +1,32 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const reactIndex = readFileSync(resolve("static/react/index.html"), "utf8");
-const scriptMatch = reactIndex.match(/src="\/static\/react\/assets\/([^"]+\.js)"/);
-const styleMatch = reactIndex.match(/href="\/static\/react\/assets\/([^"]+\.css)"/);
-
-if (!scriptMatch || !styleMatch) {
-  throw new Error("Unable to find built React assets.");
-}
-
+// GitHub Pages is static-only hosting and can't run the Lua backend, which
+// now serves the built React SPA directly at gallery.xenusanimations.studio
+// (see lua/src/static.lua) -- there's no separate frontend build to publish
+// here anymore, same as the SwarmPanel-strictly-Lua rewrite. This just
+// writes a meta-refresh redirect so old bookmarks/links to the GitHub Pages
+// URL still land somewhere useful instead of a bare 404.
 const shell = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#101318" />
-    <meta name="description" content="Image Gallery media dashboard for browsing, uploading, collecting, and managing media." />
-    <link rel="icon" href="/Image-Gallery/favicon.ico" />
-    <link rel="stylesheet" crossorigin href="/Image-Gallery/static/react/assets/${styleMatch[1]}" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="refresh" content="0; url=https://gallery.xenusanimations.studio/" />
     <title>Image Gallery</title>
+    <link rel="canonical" href="https://gallery.xenusanimations.studio/" />
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" crossorigin src="/Image-Gallery/static/react/assets/${scriptMatch[1]}"></script>
+    <!--
+      GitHub Pages is static-only hosting and can't run the Lua backend that
+      now renders Image Gallery directly (see the Lua rewrite -- there is no
+      separate frontend build to publish here anymore). This page exists
+      only so old bookmarks/links to the GitHub Pages URL still land
+      somewhere useful instead of a bare 404.
+    -->
+    <p>Image Gallery has moved. Redirecting to
+      <a href="https://gallery.xenusanimations.studio/">https://gallery.xenusanimations.studio/</a>...
+    </p>
   </body>
 </html>
 `;

@@ -7,6 +7,7 @@ local httpd = require("httpd")
 local db = require("db")
 local config = require("config")
 local routes = require("routes")
+local static = require("static")
 
 local settings = config.load()
 routes.settings = settings
@@ -144,6 +145,14 @@ httpd.route("PATCH", "/api/admin/site-settings", routes.admin_update_site_settin
 httpd.route("GET", "/api/ai/vision/status", routes.ai_vision_status)
 httpd.route("GET", "/api/ai/vision/training/export", routes.export_ai_training)
 httpd.route("GET", "/api/ai/vision/training", routes.list_ai_training)
+
+-- Serves the built React SPA directly at this backend's own hostname
+-- (gallery.xenusanimations.studio), the same way SwarmPanel's Lua backend
+-- now renders SwarmPanel directly -- see src/static.lua. Registered after
+-- every /api/* route so nothing here can shadow the ordering-sensitive
+-- :media_id-shaped API routes above.
+static.register()
+httpd.fallback_handler = static.fallback
 
 local ok, err = db.ping()
 if ok then
