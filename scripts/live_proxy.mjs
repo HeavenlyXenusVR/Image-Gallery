@@ -62,6 +62,8 @@ const PORTED_ROUTES = [
   "PATCH /api/media/:media_id/controls",
   "POST /api/media/:media_id/restore",
   "POST /api/media/:media_id/report",
+  "POST /api/media/:media_id/ai/train",
+  "POST /api/media/:media_id/diagnostics/load",
   "DELETE /api/comments/:comment_id",
   "GET /api/media/:media_id/thumb",
   "GET /api/media/:media_id/file",
