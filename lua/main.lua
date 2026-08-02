@@ -10,6 +10,7 @@ local routes = require("routes")
 local static = require("static")
 local pages_auth = require("pages_auth")
 local pages_admin = require("pages_admin")
+local pages_totp = require("pages_totp")
 
 local settings = config.load()
 routes.settings = settings
@@ -191,6 +192,13 @@ httpd.route("POST", "/admin/actions/ban", pages_admin.action_ban)
 httpd.route("POST", "/admin/actions/unban", pages_admin.action_unban)
 httpd.route("POST", "/admin/actions/purge-orphans", pages_admin.action_purge_orphans)
 httpd.route("POST", "/admin/actions/site-settings", pages_admin.action_site_settings)
+
+-- Server-rendered 2FA enrollment -- see pages_totp.lua's header comment.
+-- Any logged-in user (not site-owner-only).
+httpd.route("GET", "/settings/2fa", pages_totp.settings_page)
+httpd.route("POST", "/settings/2fa/start", pages_totp.start_enrollment)
+httpd.route("POST", "/settings/2fa/confirm", pages_totp.confirm_enrollment)
+httpd.route("POST", "/settings/2fa/disable", pages_totp.disable_totp)
 
 -- Serves the built React SPA directly at this backend's own hostname
 -- (gallery.xenusanimations.studio), the same way SwarmPanel's Lua backend

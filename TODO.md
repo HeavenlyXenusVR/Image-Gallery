@@ -85,6 +85,26 @@ step. What did move to Lua, as a deliberately narrow slice:
   (redirect + flash message + unchanged values confirmed via the JSON
   endpoint). Non-owner and logged-out access correctly return 403 / redirect
   to /login.
+- `/settings/2fa` is now a server-rendered TOTP enrollment/disable page
+  (`lua/src/pages_totp.lua`), open to any logged-in user (not site-owner-
+  only) via a new `routes.require_login_for_page` export. Reuses
+  `routes.totp_enroll/confirm/disable` directly. **Deliberately renders no
+  QR code image** — see the file's header comment: piping the otpauth://
+  URI (which embeds the raw TOTP secret) through a third-party QR-image
+  service would leak that secret externally, and hand-rolling a QR
+  encoder isn't something worth shipping unverified in an environment
+  with no scanner to confirm it actually scans. Shows the base32 secret
+  grouped for manual entry instead, plus the otpauth:// URI as a tappable
+  link (most authenticator apps register that scheme). Fixed one bug
+  found while testing the wrong-code retry path: the first draft
+  re-called `routes.totp_enroll()` to redisplay the pending secret on a
+  failed confirm, but that function unconditionally generates and stores
+  a brand-new secret every call — silently invalidating the one the user
+  had just scanned. Now reads the still-pending secret straight from the
+  DB instead. Verified live end-to-end with a throwaway account: wrong
+  code correctly rejected without invalidating the secret, correct code
+  enables 2FA and shows recovery codes, status page reflects the enabled
+  state, wrong disable-password rejected, correct password disables.
 
 ## Not ported (both are background-only, no HTTP/user-facing surface)
 

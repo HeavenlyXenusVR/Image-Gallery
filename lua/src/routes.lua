@@ -189,6 +189,14 @@ local function current_user(req)
   return user, auth, nil, nil
 end
 
+-- Exported for pages_totp.lua's server-rendered 2FA settings page -- same
+-- cookie-or-bearer login check as current_user(), just reshaped to
+-- (user, status, body) since callers here don't need the raw auth payload.
+function M.require_login_for_page(req)
+  local user, auth, status, body = current_user(req)
+  return user, status, body
+end
+
 local function auth_optional(req)
   return gauth.require_auth(req.headers, parse_cookies(req), M.settings.session_secret, M.settings.api_token_ttl_seconds)
 end
