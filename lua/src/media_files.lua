@@ -287,4 +287,112 @@ function M.video_placeholder_svg(width)
   )
 end
 
+-- ---------------------------------------------------------------------------
+-- Perceptual image fingerprinting (average hash + difference hash), for the
+-- possible-duplicate-upload warning. Mirrors app/ai_metadata.py's
+-- _image_fingerprint/_average_hash/_difference_hash, but via ffmpeg instead
+-- of PIL (same rationale as the thumbnail rendering above -- no PIL
+-- equivalent in Lua). NOT bit-for-bit identical to Python's hashes (ffmpeg's
+-- lanczos scale + its own EXIF-orientation handling differ slightly from
+-- PIL's resize()+ImageOps.exif_transpose()), which only matters if directly
+-- comparing a Python-computed hash against a Lua-computed one -- this
+-- feature only ever compares hashes computed by the same backend that's
+-- currently live, and the comparison is already fuzzy (Hamming-distance
+-- threshold), so close-enough is fine for an advisory "maybe a duplicate"
+-- warning.
+local bit = require("bit")
+
+local function ffprobe_bin()
+  return os.getenv("GALLERY_FFPROBE_BIN") or "ffprobe"
+end
+
+-- Grabs a `w`x`h` grayscale raw frame (1 byte/pixel, row-major) via ffmpeg.
+-- Returns the raw byte string, or nil on failure.
+local function raw_gray_frame(src_path, w, h)
+  local dst = os.tmpname() .. ".raw"
+  local cmd = string.format(
+    "%s -y -hide_banner -loglevel error -i %s -vf %s -f rawvideo -pix_fmt gray -frames:v 1 %s </dev/null >/dev/null 2>&1",
+    ffmpeg_bin(),
+    shell_quote(src_path),
+    shell_quote(string.format("scale=%d:%d:flags=lanczos", w, h)),
+    shell_quote(dst)
+  )
+  local ok = os.execute(cmd)
+  local success = (ok == 0 or ok == true)
+  if not success or not file_exists(dst) then
+    os.remove(dst)
+    return nil
+  end
+  local f = io.open(dst, "rb")
+  local bytes = f:read("*a")
+  f:close()
+  os.remove(dst)
+  if #bytes ~= w * h then return nil end
+  return bytes
+end
+
+-- Packs 64 0/1 bits (MSB-first) into a 16-hex-char string, matching Python's
+-- f"{bits:016x}" for a 64-bit integer -- built as two 32-bit halves since
+-- Lua 5.1/LuaJIT's `bit` library (and plain Lua number arithmetic) only
+-- reliably handles 32 bits at a time.
+local function pack_bits_hex(get_bit)
+  local hi, lo = 0, 0
+  for i = 0, 63 do
+    local b = get_bit(i) and 1 or 0
+    if i < 32 then
+      hi = bit.bor(bit.lshift(hi, 1), b)
+    else
+      lo = bit.bor(bit.lshift(lo, 1), b)
+    end
+  end
+  return bit.tohex(hi) .. bit.tohex(lo)
+end
+
+-- Returns {image_phash, image_dhash, image_width, image_height} or nil.
+-- Mirrors _image_fingerprint_for_upload()'s "images only, need the bytes"
+-- gate -- callers should only invoke this for in-memory image uploads.
+function M.image_fingerprint(content)
+  local src = write_temp_file(content, "")
+
+  local width, height
+  local probe = io.popen(string.format(
+    "%s -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x %s 2>/dev/null",
+    ffprobe_bin(), shell_quote(src)
+  ))
+  if probe then
+    local line = probe:read("*l")
+    probe:close()
+    if line then width, height = line:match("^(%d+)x(%d+)$") end
+  end
+
+  local phash_pixels = raw_gray_frame(src, 8, 8)
+  local dhash_pixels = raw_gray_frame(src, 9, 8)
+  os.remove(src)
+  if not phash_pixels and not dhash_pixels then return nil end
+
+  local image_phash, image_dhash
+  if phash_pixels then
+    local sum = 0
+    for i = 1, #phash_pixels do sum = sum + phash_pixels:byte(i) end
+    local avg = sum / #phash_pixels
+    image_phash = pack_bits_hex(function(i) return phash_pixels:byte(i + 1) >= avg end)
+  end
+  if dhash_pixels then
+    -- 9-wide x 8-tall: bit(row, col) = pixel(row, col) > pixel(row, col+1),
+    -- for col in 0..7 (8 comparisons per row, 9 samples per row).
+    image_dhash = pack_bits_hex(function(i)
+      local row, col = math.floor(i / 8), i % 8
+      local offset = row * 9 + col
+      return dhash_pixels:byte(offset + 1) > dhash_pixels:byte(offset + 2)
+    end)
+  end
+
+  return {
+    image_phash = image_phash,
+    image_dhash = image_dhash,
+    image_width = width and tonumber(width) or nil,
+    image_height = height and tonumber(height) or nil,
+  }
+end
+
 return M

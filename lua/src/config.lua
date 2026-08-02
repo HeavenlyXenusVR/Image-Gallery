@@ -77,6 +77,8 @@ function M.load()
     media_page_limit = math.max(1, math.min(200, env_int("GALLERY_MEDIA_PAGE_LIMIT", 100))),
     max_tags_per_upload = math.max(1, math.min(50, env_int("GALLERY_MAX_TAGS_PER_UPLOAD", 12))),
     max_tag_length = math.max(8, math.min(80, env_int("GALLERY_MAX_TAG_LENGTH", 32))),
+    visual_phash_max_distance = env_int("GALLERY_VISUAL_PHASH_MAX_DISTANCE", 10),
+    visual_dhash_max_distance = env_int("GALLERY_VISUAL_DHASH_MAX_DISTANCE", 14),
 
     host = env("GALLERY_HTTP_HOST", "0.0.0.0"),
     port = env_int("GALLERY_HTTP_PORT", 8788),

@@ -1321,6 +1321,83 @@ local function form_bool(value, default)
   return value == "true" or value == "1" or value == "on"
 end
 
+-- ---------------------------------------------------------------------------
+-- Possible-duplicate-upload warning via perceptual image hashing. Mirrors
+-- app/routers/media.py's _find_possible_duplicates() + app/ai_metadata.py's
+-- _hex_hamming_distance() -- the actual hash computation lives in
+-- media_files.image_fingerprint() (ffmpeg-based, see that file's comment for
+-- why it isn't bit-identical to Python's PIL-based hashes; irrelevant here
+-- since candidates are always hashed by this same backend).
+-- ---------------------------------------------------------------------------
+
+local bit = require("bit")
+
+-- Compares two equal-length hex hash strings 8 hex chars (32 bits) at a
+-- time, since `bit` only handles 32-bit values. Returns nil if either hash
+-- is missing/malformed.
+local function hex_hamming_distance(a, b)
+  a = tostring(a or ""):lower()
+  b = tostring(b or ""):lower()
+  if a == "" or b == "" or #a ~= #b or #a % 8 ~= 0 then return nil end
+  local dist = 0
+  for i = 1, #a, 8 do
+    local ha, hb = tonumber(a:sub(i, i + 7), 16), tonumber(b:sub(i, i + 7), 16)
+    if not ha or not hb then return nil end
+    local x = bit.bxor(ha, hb)
+    while x ~= 0 do
+      dist = dist + bit.band(x, 1)
+      x = bit.rshift(x, 1)
+    end
+  end
+  return dist
+end
+
+-- Scoped to the uploader's own media (not the whole gallery) to keep the
+-- comparison pool small and the result meaningful -- catching accidental
+-- re-uploads, not flagging every repost. Advisory only; never blocks the
+-- upload itself.
+local function find_possible_duplicates(req, user_id, fingerprint, limit)
+  limit = limit or 3
+  if not fingerprint then return {} end
+  local current_phash, current_dhash = nn(fingerprint.image_phash), nn(fingerprint.image_dhash)
+  if not current_phash and not current_dhash then return {} end
+
+  local candidates = db.fetchall([[
+    SELECT id, title, image_phash, image_dhash
+    FROM media_items
+    WHERE user_id=%s AND deleted_at IS NULL AND media_kind='image'
+      AND (image_phash IS NOT NULL OR image_dhash IS NOT NULL)
+    ORDER BY created_at DESC
+    LIMIT 1500
+  ]], tostring(user_id))
+
+  local scored = {}
+  for _, candidate in ipairs(candidates) do
+    local pdist = current_phash and hex_hamming_distance(current_phash, candidate.image_phash) or nil
+    local ddist = current_dhash and hex_hamming_distance(current_dhash, candidate.image_dhash) or nil
+    if pdist and pdist > M.settings.visual_phash_max_distance then pdist = nil end
+    if ddist and ddist > M.settings.visual_dhash_max_distance then ddist = nil end
+    if pdist or ddist then
+      local best = pdist and ddist and math.min(pdist, ddist) or (pdist or ddist)
+      scored[#scored + 1] = { distance = best, candidate = candidate }
+    end
+  end
+  table.sort(scored, function(a, b) return a.distance < b.distance end)
+
+  local origin = request_origin(req)
+  local results = {}
+  for i = 1, math.min(limit, #scored) do
+    local entry = scored[i]
+    results[#results + 1] = {
+      id = db.toint(entry.candidate.id, entry.candidate.id),
+      title = entry.candidate.title,
+      thumb_url = append_query(origin .. "/api/media/" .. entry.candidate.id .. "/thumb", "w", "640"),
+      distance = entry.distance,
+    }
+  end
+  return results
+end
+
 -- Mirrors app/routers/media.py's _notify_discord_upload/_notify_discord_upload_async.
 -- Fire-and-forget (see discord_webhook.lua): a slow/broken webhook must
 -- never delay or fail the upload response.
@@ -1431,6 +1508,9 @@ function M.upload_media(req)
   local sha256 = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(upload.content))
   local moderation = moderate_upload(title, description, tags, original_filename, sniffed_mime, is_adult_input)
 
+  local fingerprint = media_kind == "image" and media_files.image_fingerprint(upload.content) or nil
+  local possible_duplicates = find_possible_duplicates(req, user.id, fingerprint)
+
   local media_file, save_err = media_files.save_media_file({
     user_id = user.id,
     content = upload.content,
@@ -1448,8 +1528,9 @@ function M.upload_media(req)
       INSERT INTO media_items
         (user_id, category_id, subcategory_id, title, description, tags, media_kind, mime_type, original_filename,
          storage_path, file_size, media_file_id, content_sha256, visibility, comments_enabled, downloads_enabled,
-         is_adult, adult_marked_by_user, adult_marked_by_ai, moderation_status, moderation_score, moderation_reason, moderated_at)
-      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
+         is_adult, adult_marked_by_user, adult_marked_by_ai, moderation_status, moderation_score, moderation_reason, moderated_at,
+         image_phash, image_dhash, image_width, image_height)
+      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s,%s,%s)
       RETURNING id
     ]],
     tostring(user.id), tostring(category_id), subcategory_id and tostring(subcategory_id) or nil,
@@ -1457,7 +1538,10 @@ function M.upload_media(req)
     "db://media/" .. tostring(media_file.id), tostring(#upload.content), tostring(media_file.id), sha256,
     visibility, comments_enabled, downloads_enabled,
     moderation.is_adult, moderation.adult_marked_by_user, moderation.adult_marked_by_ai,
-    moderation.moderation_status, tostring(moderation.moderation_score), moderation.moderation_reason
+    moderation.moderation_status, tostring(moderation.moderation_score), moderation.moderation_reason,
+    fingerprint and fingerprint.image_phash or nil, fingerprint and fingerprint.image_dhash or nil,
+    fingerprint and fingerprint.image_width and tostring(fingerprint.image_width) or nil,
+    fingerprint and fingerprint.image_height and tostring(fingerprint.image_height) or nil
   )
   if not row then return 500, { detail = "Could not save media: " .. tostring(insert_err) } end
   local media_id = db.toint(row.id, row.id)
@@ -1470,7 +1554,7 @@ function M.upload_media(req)
   if visibility == "public" then
     notify_matching_saved_searches(user.id, enriched)
   end
-  return 200, { media = enriched, possible_duplicates = {} }
+  return 200, { media = enriched, possible_duplicates = arr(possible_duplicates) }
 end
 
 -- ---------------------------------------------------------------------------

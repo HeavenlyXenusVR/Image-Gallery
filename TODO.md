@@ -20,7 +20,6 @@ This is a punch list for finishing the full replacement.
 - **Telegram bot integration** (`app/telegram.py` + gallery-specific command
   handlers) — long-running polling background service, not an HTTP route at
   all. Needs its own standalone Lua process/service, not just a route port.
-- **Possible-duplicate detection** via perceptual hashing.
 - **Background AI learning** (training examples feeding back into future
   classification).
 - **Video quality-variant transcoding** (`?quality=720p` on
@@ -68,7 +67,18 @@ Saved searches (`GET/POST /api/saved-searches`, `DELETE
 are also now ported — see the "Saved searches" section in
 `lua/src/routes.lua`, after `is_blocked_either_way`. Not ported: Python's
 `is_muted()` check before notifying, since muting isn't a ported feature at
-all yet — only the block check applies here.)
+all yet — only the block check applies here.
+
+Possible-duplicate-upload detection (perceptual average-hash + difference-
+hash comparison against the uploader's own recent images, surfaced as
+`possible_duplicates` in the upload response) is also now ported —
+`lua/src/media_files.lua`'s `image_fingerprint()` computes the hashes via
+ffmpeg (no PIL equivalent in Lua) instead of Python's PIL-based
+`_average_hash`/`_difference_hash`. Not bit-identical to Python's hashes
+(different resize filter/EXIF handling), which doesn't matter here since a
+backend only ever compares hashes it computed itself. See the comment above
+`image_fingerprint` in `lua/src/media_files.lua` and `find_possible_duplicates`
+in `lua/src/routes.lua`.)
 
 ## Once everything above is ported
 
