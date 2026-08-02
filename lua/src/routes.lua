@@ -2,10 +2,26 @@
 -- in main.lua. Each handler receives httpd.lua's `req` table and returns
 -- (status, body_table_or_string, extra_headers).
 --
--- Scope note: this is a first pass covering health/auth/categories/core
--- media browsing only -- see the final report's itemized todo list for
--- everything not yet ported (uploads, comments/likes/social, collections,
--- messaging, moderation/admin, AI vision, Telegram/Discord integrations).
+-- Scope note (last updated 2026-08-01): health/auth/categories/media
+-- browsing+upload/social(likes,comments,bookmarks,reactions)/collections/
+-- direct messages/site-owner admin+moderation/Discord upload webhooks/AI
+-- vision status+training-export are all ported. Still NOT ported:
+--   * The LLM-calling AI classification/analysis pipeline itself
+--     (app/ai_metadata.py, ~2150 lines: OpenAI/Gemini/Ollama prompt
+--     construction + heuristic fallback) that powers auto_ai on upload and
+--     POST /api/media/analyze -- upload_media() below always requires an
+--     explicit title/category instead of falling back to AI analysis.
+--   * Telegram bot integration (app/telegram.py + whatever gallery-specific
+--     command handlers are wired to it) -- a long-running polling
+--     background service, architecturally distinct from this file's
+--     request/response handlers.
+--   * Possible-duplicate perceptual-hash detection, background AI
+--     learning, saved-search match notifications, multi-subcategory arrays,
+--     and video thumb/quality cache warmup (see upload_media()'s own
+--     header comment).
+--   * Admin storage dashboard / orphan-cache-purge endpoints (filesystem
+--     walk of the on-disk thumb/video cache dirs; see the admin section's
+--     header comment).
 
 local cjson = require("cjson.safe")
 local db = require("db")
