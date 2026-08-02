@@ -963,6 +963,247 @@ function M.react_to_media_route(req)
 end
 
 -- ---------------------------------------------------------------------------
+-- Media upload (POST /api/media) -- multipart form upload -> DB blob storage
+-- (media_files.save_media_file) -> media_items row. Mirrors
+-- app/routers/media.py's upload_media() + app/db/media.py's add_media().
+--
+-- NOT YET PORTED as part of this pass (left for a follow-up): AI auto-
+-- classification/autofill (Python's auto_ai path), possible-duplicate
+-- perceptual-hash detection, Discord upload notifications, background AI
+-- learning, saved-search match notifications, publish_at scheduling, and
+-- the multi-subcategory array (subcategory_ids_json) -- this accepts a
+-- single subcategory via subcategory_id/subcategory_name, matching what
+-- list_media/media_detail already expose (m.subcategory_id). Video thumb/
+-- quality cache warmup is also not queued here; serve_media_thumb already
+-- renders+caches lazily on first request instead.
+-- ---------------------------------------------------------------------------
+
+local sodium = require("luasodium")
+
+local SAFE_EXTENSIONS = {
+  [".jpg"] = true, [".jpeg"] = true, [".png"] = true, [".webp"] = true, [".gif"] = true,
+  [".avif"] = true, [".bmp"] = true, [".mp4"] = true, [".webm"] = true, [".mov"] = true,
+  [".m4v"] = true, [".ogg"] = true, [".flv"] = true, [".mkv"] = true,
+}
+local MIME_TO_EXT = {
+  ["image/jpeg"] = ".jpg", ["image/png"] = ".png", ["image/webp"] = ".webp", ["image/gif"] = ".gif",
+  ["image/avif"] = ".avif", ["image/bmp"] = ".bmp", ["video/mp4"] = ".mp4", ["video/webm"] = ".webm",
+  ["video/quicktime"] = ".mov", ["video/x-m4v"] = ".m4v", ["video/ogg"] = ".ogg",
+  ["video/x-flv"] = ".flv", ["video/x-matroska"] = ".mkv",
+}
+
+-- Mirrors app/routers/_shared.py's _sniff_magic(): content-based mime/kind
+-- detection so an upload can't lie about its type via a spoofed extension or
+-- declared Content-Type. Returns nil, nil on unrecognized bytes.
+local function sniff_magic(content)
+  local head = content:sub(1, 128)
+  if head:sub(1, 4) == "RIFF" and head:sub(9, 12) == "WEBP" then return "image/webp", "image" end
+  if #head >= 12 and head:sub(5, 8) == "ftyp" then
+    local brands = head:sub(9, 32):lower()
+    if brands:find("avif", 1, true) or brands:find("avis", 1, true) then return "image/avif", "image" end
+    return "video/mp4", "video"
+  end
+  if head:sub(1, 4) == "\x1aE\xdf\xa3" then
+    local mime = content:sub(1, 256):lower():find("matroska", 1, true) and "video/x-matroska" or "video/webm"
+    return mime, "video"
+  end
+  if head:sub(1, 3) == "\xff\xd8\xff" then return "image/jpeg", "image" end
+  if head:sub(1, 8) == "\x89PNG\r\n\x1a\n" then return "image/png", "image" end
+  if head:sub(1, 6) == "GIF87a" or head:sub(1, 6) == "GIF89a" then return "image/gif", "image" end
+  if head:sub(1, 4) == "OggS" then return "video/ogg", "video" end
+  if head:sub(1, 4) == "FLV\x01" then return "video/x-flv", "video" end
+  return nil, nil
+end
+
+local function safe_extension(filename, mime_type)
+  local ext = (filename or ""):match("(%.[^./\\]+)$")
+  ext = ext and ext:lower() or ""
+  if not SAFE_EXTENSIONS[ext] then ext = MIME_TO_EXT[mime_type] or "" end
+  if not SAFE_EXTENSIONS[ext] then return nil end
+  return ext == ".jpe" and ".jpg" or ext
+end
+
+-- Mirrors _normalize_upload_tag()/_parse_tags().
+local function normalize_upload_tag(value)
+  local cleaned = tostring(value or ""):match("^%s*(.-)%s*$"):gsub("^#+", ""):gsub("%s+", "-")
+  cleaned = cleaned:gsub("[^%w_.%-]+", "")
+  return cleaned:sub(1, M.settings.max_tag_length)
+end
+
+local function parse_tags(value)
+  local tags, seen = {}, {}
+  for raw in (value or ""):gmatch("[^,#\n\r\t]+") do
+    local tag = normalize_upload_tag(raw)
+    local lowered = tag:lower()
+    if tag ~= "" and not seen[lowered] then
+      seen[lowered] = true
+      tags[#tags + 1] = tag
+      if #tags >= M.settings.max_tags_per_upload then break end
+    end
+  end
+  return tags
+end
+
+local function find_or_create_category(name, media_kind, user_id)
+  name = trim(name or ""):sub(1, 80)
+  if name == "" then return nil end
+  local slug = slugify(name)
+  local existing = db.fetchone("SELECT id FROM categories WHERE name=%s OR slug=%s", name, slug)
+  if existing then return db.toint(existing.id, existing.id) end
+  local row = db.fetchone(
+    "INSERT INTO categories (name, slug, media_kind, created_by) VALUES (%s, %s, %s, %s) RETURNING id",
+    name, slug, MEDIA_KINDS[media_kind] and media_kind or "mixed", tostring(user_id)
+  )
+  return row and db.toint(row.id, row.id) or nil
+end
+
+local function find_or_create_subcategory(category_id, name, user_id)
+  name = trim(name or ""):sub(1, 80)
+  if name == "" or not category_id then return nil end
+  local slug = slugify(name)
+  local existing = db.fetchone(
+    "SELECT id FROM subcategories WHERE category_id=%s AND (name=%s OR slug=%s)",
+    tostring(category_id), name, slug
+  )
+  if existing then return db.toint(existing.id, existing.id) end
+  local row = db.fetchone(
+    "INSERT INTO subcategories (category_id, name, slug, created_by) VALUES (%s, %s, %s, %s) RETURNING id",
+    tostring(category_id), name, slug, tostring(user_id)
+  )
+  return row and db.toint(row.id, row.id) or nil
+end
+
+local ADULT_KEYWORDS = {
+  "18plus", "18+", "adult", "nsfw", "not safe for work", "nude", "nudity",
+  "explicit", "porn", "porno", "sex", "sexual", "hentai", "ecchi", "lewd",
+  "erotic", "fetish", "onlyfans", "camgirl", "cam boy", "xxx",
+}
+
+-- Mirrors app/routers/media.py's _moderate_upload(). human_confirmed is
+-- always treated as true here (status goes straight to "adult" rather than
+-- "pending_review") since this pass has no AI-vision path that could flag
+-- adult content the uploader themselves didn't check the box for.
+local function moderate_upload(title, description, tags, filename, mime_type, user_marked_adult)
+  local combined = table.concat({ title, description or "", table.concat(tags, " "), filename, mime_type }, " "):lower()
+  local hits = {}
+  for _, word in ipairs(ADULT_KEYWORDS) do
+    if combined:find(word, 1, true) then hits[#hits + 1] = word end
+  end
+  local adult_by_ai = #hits > 0
+  local is_adult = user_marked_adult or adult_by_ai
+  local reason_parts = {}
+  if user_marked_adult then reason_parts[#reason_parts + 1] = "Uploader marked this post as 18+." end
+  if adult_by_ai then reason_parts[#reason_parts + 1] = "Automatic moderation matched: " .. table.concat(hits, ", ") .. "." end
+  local reason = #reason_parts > 0 and table.concat(reason_parts, " "):sub(1, 300) or nil
+  return {
+    is_adult = is_adult,
+    adult_marked_by_user = user_marked_adult,
+    adult_marked_by_ai = adult_by_ai,
+    moderation_status = is_adult and "adult" or "clear",
+    moderation_score = adult_by_ai and 0.96 or (user_marked_adult and 0.75 or 0),
+    moderation_reason = reason,
+  }
+end
+
+local function form_bool(value, default)
+  if value == nil then return default end
+  return value == "true" or value == "1" or value == "on"
+end
+
+function M.upload_media(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+
+  local form = req.form or {}
+  local upload = (req.files or {}).file
+  if not upload or not upload.content or upload.content == "" then
+    return 400, { detail = "Upload is empty." }
+  end
+  if #upload.content > M.settings.max_upload_bytes then
+    return 413, { detail = string.format("Uploads must be %dMB or smaller.", math.floor(M.settings.max_upload_bytes / (1024 * 1024))) }
+  end
+
+  local rl_status, rl_body = ratelimit.check("upload:" .. user.id, M.settings.upload_rate_limit_per_hour, 3600)
+  if rl_status then return rl_status, rl_body end
+
+  local sniffed_mime, media_kind = sniff_magic(upload.content)
+  if not sniffed_mime then return 400, { detail = "Unsupported or invalid file bytes." } end
+  local original_filename = ((upload.filename or "upload"):match("([^/\\]+)$") or "upload"):sub(1, 255)
+  if not safe_extension(original_filename, sniffed_mime) then
+    return 400, { detail = "Unsupported file extension." }
+  end
+
+  local title = trim(nn(form.title) or ""):sub(1, 160)
+  if title == "" then return 400, { detail = "Title is required." } end
+  local description_raw = trim(nn(form.description) or "")
+  local description = description_raw ~= "" and description_raw:sub(1, 2000) or nil
+  local tags = parse_tags(form.tags)
+  local visibility = (nn(form.visibility) or "public"):lower()
+  if visibility ~= "public" and visibility ~= "unlisted" and visibility ~= "private" then
+    return 400, { detail = "Visibility must be public, unlisted, or private." }
+  end
+  local comments_enabled = form_bool(form.comments_enabled, true)
+  local downloads_enabled = form_bool(form.downloads_enabled, true)
+  local is_adult_input = form_bool(form.is_adult, false)
+
+  local category_id = tonumber(form.category_id)
+  if not category_id or category_id <= 0 then
+    local category_kind = nn(form.category_kind) or (media_kind == "video" and "video" or "image")
+    category_id = find_or_create_category(form.category_name, category_kind, user.id)
+    if not category_id then return 400, { detail = "Category is required." } end
+  end
+  local subcategory_id = tonumber(form.subcategory_id)
+  if (not subcategory_id or subcategory_id <= 0) and nn(form.subcategory_name) then
+    subcategory_id = find_or_create_subcategory(category_id, form.subcategory_name, user.id)
+  end
+
+  local sha256 = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(upload.content))
+  local moderation = moderate_upload(title, description, tags, original_filename, sniffed_mime, is_adult_input)
+
+  local media_file, save_err = media_files.save_media_file({
+    user_id = user.id,
+    content = upload.content,
+    sha256 = sha256,
+    mime_type = sniffed_mime,
+    original_filename = original_filename,
+    media_kind = media_kind,
+    file_size = #upload.content,
+    chunk_bytes = M.settings.db_blob_chunk_bytes,
+  })
+  if not media_file then return 500, { detail = "Could not store uploaded file: " .. tostring(save_err) } end
+
+  local row, insert_err = db.fetchone(
+    [[
+      INSERT INTO media_items
+        (user_id, category_id, subcategory_id, title, description, tags, media_kind, mime_type, original_filename,
+         storage_path, file_size, media_file_id, content_sha256, visibility, comments_enabled, downloads_enabled,
+         is_adult, adult_marked_by_user, adult_marked_by_ai, moderation_status, moderation_score, moderation_reason, moderated_at)
+      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
+      RETURNING id
+    ]],
+    tostring(user.id), tostring(category_id), subcategory_id and tostring(subcategory_id) or nil,
+    title, description, cjson.encode(arr(tags)), media_kind, sniffed_mime, original_filename,
+    "db://media/" .. tostring(media_file.id), tostring(#upload.content), tostring(media_file.id), sha256,
+    visibility, comments_enabled, downloads_enabled,
+    moderation.is_adult, moderation.adult_marked_by_user, moderation.adult_marked_by_ai,
+    moderation.moderation_status, tostring(moderation.moderation_score), moderation.moderation_reason
+  )
+  if not row then return 500, { detail = "Could not save media: " .. tostring(insert_err) } end
+  local media_id = db.toint(row.id, row.id)
+  if subcategory_id then
+    db.execute(
+      "INSERT INTO media_item_subcategories (media_id, subcategory_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+      tostring(media_id), tostring(subcategory_id)
+    )
+  end
+
+  local item = fetch_media_by_id(media_id, tostring(user.id))
+  local adult_allowed = viewer_adult_allowed(tostring(user.id))
+  return 200, { media = decode_media_row(item, adult_allowed, req), possible_duplicates = {} }
+end
+
+
+-- ---------------------------------------------------------------------------
 -- TOTP two-factor auth: enroll / confirm / disable / status, and real
 -- verification wired into /api/auth/2fa/verify (replacing the previous
 -- always-reject stub). Mirrors app/db/totp.py + app/totp.py exactly (same

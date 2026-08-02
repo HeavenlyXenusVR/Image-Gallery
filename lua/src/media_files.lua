@@ -94,6 +94,85 @@ function M.get_avatar_file(user_id)
 end
 
 -- ---------------------------------------------------------------------------
+-- DB blob writes (mirrors save_media_file() in app/db/media_storage.py)
+-- ---------------------------------------------------------------------------
+
+-- Precomputed byte->hex-pair table so encoding a multi-MB chunk is one
+-- gsub() call instead of a manual per-byte string.format loop.
+local HEX_BYTE = {}
+for i = 0, 255 do HEX_BYTE[string.char(i)] = string.format("%02x", i) end
+
+-- Postgres bytea values must travel as a plain-ASCII hex-format literal
+-- (`\x4865...`) inside the single SQL string db.lua builds via
+-- escape_literal -- raw binary (including NUL bytes) can't safely ride
+-- inside a %-formatted SQL string otherwise. pgmoon's escape_literal only
+-- quotes/escapes the resulting ASCII text, so this must happen first.
+local function bytea_literal(bytes)
+  return "\\x" .. (bytes:gsub(".", HEX_BYTE))
+end
+
+local DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024
+
+-- Chunked insert mirroring save_media_file(): dedups by sha256 first: if a
+-- media_files row already has this content, returns it with duplicate=true
+-- instead of storing the bytes again. `content` must be the full blob
+-- already in memory (see the multipart-parsing note in httpd.lua for why
+-- this port doesn't stream multi-GB uploads to disk the way Python does).
+function M.save_media_file(opts)
+  local existing = db.fetchone(
+    "SELECT id, sha256, mime_type, original_filename, media_kind, file_size, created_by, created_at FROM media_files WHERE sha256=%s",
+    opts.sha256
+  )
+  if existing then
+    existing.id = db.toint(existing.id, existing.id)
+    existing.file_size = db.toint(existing.file_size, existing.file_size)
+    existing.duplicate = true
+    return existing
+  end
+
+  local content = opts.content or ""
+  local total_size = opts.file_size or #content
+  local chunk_bytes = math.max(1024 * 1024, math.min(opts.chunk_bytes or DEFAULT_CHUNK_BYTES, 16 * 1024 * 1024))
+
+  local row, err = db.fetchone(
+    "INSERT INTO media_files (sha256, mime_type, original_filename, media_kind, file_size, content, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+    opts.sha256, opts.mime_type:sub(1, 120), opts.original_filename:sub(1, 255), opts.media_kind, tostring(total_size), "", tostring(opts.user_id)
+  )
+  if not row then return nil, err end
+  local media_file_id = db.toint(row.id, row.id)
+
+  local ok, insert_err = pcall(function()
+    local chunk_index = 0
+    local offset = 0
+    while offset < #content do
+      local chunk = content:sub(offset + 1, offset + chunk_bytes)
+      local ok2, chunk_err = db.execute(
+        "INSERT INTO media_file_chunks (file_id, chunk_index, content) VALUES (%s,%s,%s)",
+        tostring(media_file_id), tostring(chunk_index), bytea_literal(chunk)
+      )
+      if not ok2 then error(chunk_err or "chunk insert failed") end
+      chunk_index = chunk_index + 1
+      offset = offset + chunk_bytes
+    end
+  end)
+  if not ok then
+    db.execute("DELETE FROM media_files WHERE id=%s", tostring(media_file_id))
+    return nil, insert_err
+  end
+
+  local final = db.fetchone(
+    "SELECT id, sha256, mime_type, original_filename, media_kind, file_size, created_by, created_at FROM media_files WHERE id=%s",
+    tostring(media_file_id)
+  )
+  if final then
+    final.id = db.toint(final.id, final.id)
+    final.file_size = db.toint(final.file_size, final.file_size)
+    final.duplicate = false
+  end
+  return final
+end
+
+-- ---------------------------------------------------------------------------
 -- Legacy on-disk fallback (mirrors _legacy_upload_path in app/routers/_shared.py)
 -- ---------------------------------------------------------------------------
 

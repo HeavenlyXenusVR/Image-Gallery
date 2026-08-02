@@ -72,6 +72,8 @@ function M.load()
     uploads_dir = env("GALLERY_UPLOADS_DIR", "../uploads"):gsub("/+$", ""),
     storage_backend = env("GALLERY_STORAGE_BACKEND", "database"),
     max_upload_bytes = env_int("GALLERY_MAX_UPLOAD_BYTES", 3 * 1024 * 1024 * 1024),
+    upload_rate_limit_per_hour = math.max(1, env_int("GALLERY_UPLOAD_RATE_LIMIT_PER_HOUR", 60)),
+    db_blob_chunk_bytes = math.max(1024 * 1024, math.min(env_int("GALLERY_DB_BLOB_CHUNK_BYTES", 8 * 1024 * 1024), 16 * 1024 * 1024)),
     media_page_limit = math.max(1, math.min(200, env_int("GALLERY_MEDIA_PAGE_LIMIT", 100))),
     max_tags_per_upload = math.max(1, math.min(50, env_int("GALLERY_MAX_TAGS_PER_UPLOAD", 12))),
     max_tag_length = math.max(8, math.min(80, env_int("GALLERY_MAX_TAG_LENGTH", 32))),

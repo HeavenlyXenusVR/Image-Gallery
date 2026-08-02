@@ -60,6 +60,7 @@ httpd.route("GET", "/api/categories", routes.list_categories)
 httpd.route("POST", "/api/categories", routes.create_category)
 
 httpd.route("GET", "/api/media", routes.list_media)
+httpd.route("POST", "/api/media", routes.upload_media)
 -- ROUTE-ORDERING TRAP for future passes: httpd.lua's match_route() returns
 -- the FIRST registered route whose pattern matches, with no most-specific-
 -- wins logic. "/api/media/:media_id" below matches ANY single path segment

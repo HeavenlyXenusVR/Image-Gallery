@@ -83,6 +83,46 @@ local function match_route(method, path)
   return nil
 end
 
+-- Minimal multipart/form-data parser for file uploads (mirrors what FastAPI's
+-- UploadFile/Form(...) parsing gives app/routers/media.py's upload_media).
+-- Whole body is already in memory by the time this runs (see the
+-- content-length read in handle_connection below) -- same tradeoff already
+-- accepted elsewhere in this port (e.g. media_files.lua's ffmpeg shell-out)
+-- rather than streaming multi-GB uploads to a temp file the way Python's
+-- _read_validated_upload_streamed does; fine for this deployment's traffic
+-- level, revisit if very large uploads become common.
+local function parse_multipart(body, boundary)
+  local form, files = {}, {}
+  local delim = "--" .. boundary
+  local pos = 1
+  local parts = {}
+  while true do
+    local s, e = body:find(delim, pos, true)
+    if not s then break end
+    local next_s = body:find(delim, e + 1, true)
+    if not next_s then break end
+    parts[#parts + 1] = body:sub(e + 1, next_s - 1)
+    pos = next_s
+  end
+  for _, part in ipairs(parts) do
+    part = part:gsub("^\r\n", "")
+    local header_end = part:find("\r\n\r\n", 1, true)
+    if header_end then
+      local header_block = part:sub(1, header_end - 1)
+      local content = part:sub(header_end + 4):gsub("\r\n$", "")
+      local name = header_block:match('name="([^"]*)"')
+      local filename = header_block:match('filename="([^"]*)"')
+      local content_type = header_block:match("[Cc]ontent%-[Tt]ype:%s*([^\r\n]+)")
+      if name and filename ~= nil then
+        files[name] = { filename = filename, content_type = content_type, content = content }
+      elseif name then
+        form[name] = content
+      end
+    end
+  end
+  return form, files
+end
+
 local function url_decode(s)
   s = s:gsub("+", " ")
   s = s:gsub("%%(%x%x)", function(h) return string.char(tonumber(h, 16)) end)
@@ -277,10 +317,19 @@ local function handle_connection(sock)
       headers = headers,
       raw_body = body,
       client_ip = client_ip,
+      form = {},
+      files = {},
     }
-    if body ~= "" and (headers["content-type"] or ""):match("application/json") then
+    local content_type = headers["content-type"] or ""
+    if body ~= "" and content_type:match("application/json") then
       local decoded = cjson.decode(body)
       req.json = decoded or {}
+    elseif body ~= "" and content_type:match("multipart/form%-data") then
+      local boundary = content_type:match('boundary="?([^";]+)"?')
+      if boundary then
+        req.form, req.files = parse_multipart(body, boundary)
+      end
+      req.json = {}
     else
       req.json = {}
     end
