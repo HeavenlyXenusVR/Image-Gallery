@@ -29,11 +29,19 @@ This is a punch list for finishing the full replacement.
 - **Video thumbnail/quality cache warmup.**
 - **Admin storage dashboard / orphaned-cache-purge endpoints** — these walk
   the filesystem directly and haven't been touched.
-- **`/api/media/trending`, `/api/media/random`, `/api/media/bulk`** and any
-  other literal-segment routes under `/api/media/*` in
-  `app/routers/media.py` not already in the ported list — see the
-  ROUTE-ORDERING TRAP comment in `lua/main.lua` above the
-  `/api/media/:media_id` registration before adding any of these.
+- **`POST /api/media/analyze`, `POST /api/media/:media_id/ai/train`,
+  `POST /api/media/:media_id/diagnostics/load`** — the two `ai/` ones need
+  the LLM pipeline above; diagnostics/load is just client-side telemetry
+  logging and is low priority.
+
+(`PATCH /api/media/:media_id`, `PATCH /api/media/:media_id/controls`,
+`DELETE /api/media/:media_id`, `POST /api/media/:media_id/restore`,
+`POST /api/media/:media_id/report`, `DELETE /api/comments/:comment_id`,
+`GET /api/media/:media_id/similar`, `POST /api/media/bulk`, and
+`POST /api/media/bulk-delete` are now ported — see
+`lua/main.lua`/`lua/src/routes.lua`. Any new literal-segment route under
+`/api/media/*` still needs to go above the `/api/media/:media_id` registration
+in `lua/main.lua` — see the ROUTE-ORDERING TRAP comment there.)
 
 ## Once everything above is ported
 

@@ -1250,6 +1250,396 @@ function M.upload_media(req)
   return 200, { media = enriched, possible_duplicates = {} }
 end
 
+-- ---------------------------------------------------------------------------
+-- Media edit/delete/moderation follow-ups: edit, controls-only patch,
+-- soft-delete/restore, report, comment delete, similar-media, and bulk
+-- edit/delete. Mirrors app/routers/media.py's edit_media/set_media_controls/
+-- delete_media/restore_media/report_media/delete_comment/similar_media/
+-- bulk_edit_media/bulk_delete_media + the corresponding app/db/media.py
+-- functions. NOT ported: the AI-auto-train-on-edit side effect (requires the
+-- LLM pipeline, see TODO.md) and multi-subcategory arrays (single
+-- subcategory_id/subcategory_name only, matching the rest of this file).
+-- ---------------------------------------------------------------------------
+
+-- Shared by M.update_media and M.bulk_edit_media. Returns (nil, item) on
+-- success or (status, error_message) on failure -- mirrors update_media()'s
+-- ValueError/PermissionError/None-return cases as explicit return values
+-- since Lua has no exceptions worth structuring control flow around here.
+local function perform_update_media(media_id, owner_id, payload)
+  local title = trim(nn(payload.title) or ""):gsub("%s+", " "):sub(1, 160)
+  if title == "" then return 400, "Title is required." end
+  local description = trim(nn(payload.description) or ""):gsub("%s+", " "):sub(1, 2000)
+
+  local clean_tags, seen = {}, {}
+  if type(payload.tags) == "table" then
+    for _, raw in ipairs(payload.tags) do
+      local tag = tostring(raw):gsub("[^%w_.%-]+", ""):sub(1, 32)
+      local lowered = tag:lower()
+      if tag ~= "" and not seen[lowered] then
+        seen[lowered] = true
+        clean_tags[#clean_tags + 1] = tag
+        if #clean_tags >= 12 then break end
+      end
+    end
+  end
+
+  local category_id = tonumber(payload.category_id) or 0
+  if category_id <= 0 then return 400, "A category is required." end
+  local subcategory_id = nil
+  if nn(payload.subcategory_id) then
+    subcategory_id = tonumber(payload.subcategory_id)
+  elseif nn(payload.subcategory_name) and trim(payload.subcategory_name) ~= "" then
+    subcategory_id = find_or_create_subcategory(category_id, payload.subcategory_name, owner_id)
+  end
+
+  local visibility = tostring(payload.visibility or "public"):lower()
+  if visibility ~= "public" and visibility ~= "unlisted" and visibility ~= "private" then
+    return 400, "Visibility must be public, unlisted, or private."
+  end
+  local is_adult = payload.is_adult and true or false
+  local comments_enabled = true
+  if payload.comments_enabled ~= nil then comments_enabled = payload.comments_enabled and true or false end
+  local downloads_enabled = true
+  if payload.downloads_enabled ~= nil then downloads_enabled = payload.downloads_enabled and true or false end
+  local pinned = payload.pinned and "1" or "0"
+
+  local row = db.fetchone("SELECT user_id FROM media_items WHERE id=%s AND deleted_at IS NULL", tostring(media_id))
+  if not row then return 404, "Media not found." end
+  if tostring(row.user_id) ~= tostring(owner_id) then return 403, "Only the uploader can edit this post." end
+
+  db.execute([[
+    UPDATE media_items
+    SET title=%s, description=%s, tags=%s, category_id=%s, subcategory_id=%s,
+        visibility=%s, comments_enabled=%s, downloads_enabled=%s,
+        pinned_at=CASE WHEN %s=1 THEN COALESCE(pinned_at, CURRENT_TIMESTAMP) ELSE NULL END,
+        is_adult=%s, adult_marked_by_user=%s,
+        moderation_status=CASE WHEN %s THEN 'adult' ELSE moderation_status END,
+        moderation_reason=CASE WHEN %s THEN 'Uploader marked this post as 18+.' ELSE moderation_reason END,
+        moderated_at=CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE moderated_at END
+    WHERE id=%s AND user_id=%s
+  ]],
+    title, description, cjson.encode(arr(clean_tags)), tostring(category_id),
+    subcategory_id and tostring(subcategory_id) or nil, visibility, comments_enabled, downloads_enabled,
+    pinned, is_adult, is_adult, is_adult, is_adult, is_adult, tostring(media_id), owner_id)
+
+  return nil, fetch_media_by_id(media_id, tostring(owner_id))
+end
+
+function M.update_media(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local media_id = tonumber(req.params.media_id)
+  if not media_id then return 404, { detail = "Media not found." } end
+  local payload = json_body(req)
+
+  local err_status, result = perform_update_media(media_id, user.id, payload)
+  if err_status then return err_status, { detail = result } end
+  local adult_allowed = viewer_adult_allowed(tostring(user.id))
+  return 200, { media = decode_media_row(result, adult_allowed, req) }
+end
+
+function M.set_media_controls(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local media_id = tonumber(req.params.media_id)
+  if not media_id then return 404, { detail = "Media not found." } end
+  local payload = json_body(req)
+
+  local updates, params = {}, {}
+  if nn(payload.visibility) then
+    local v = tostring(payload.visibility):lower()
+    if v ~= "public" and v ~= "unlisted" and v ~= "private" then
+      return 400, { detail = "Visibility must be public, unlisted, or private." }
+    end
+    updates[#updates + 1] = "visibility=%s"; params[#params + 1] = v
+  end
+  if payload.comments_enabled ~= nil then
+    updates[#updates + 1] = "comments_enabled=%s"; params[#params + 1] = payload.comments_enabled and true or false
+  end
+  if payload.downloads_enabled ~= nil then
+    updates[#updates + 1] = "downloads_enabled=%s"; params[#params + 1] = payload.downloads_enabled and true or false
+  end
+  if payload.pinned ~= nil then
+    updates[#updates + 1] = "pinned_at=CASE WHEN %s=1 THEN COALESCE(pinned_at, CURRENT_TIMESTAMP) ELSE NULL END"
+    params[#params + 1] = payload.pinned and "1" or "0"
+  end
+
+  local row = db.fetchone("SELECT user_id FROM media_items WHERE id=%s AND deleted_at IS NULL", tostring(media_id))
+  if not row then return 404, { detail = "Media not found." } end
+  if tostring(row.user_id) ~= tostring(user.id) then return 403, { detail = "Only the uploader can change post controls." } end
+
+  if #updates > 0 then
+    params[#params + 1] = tostring(media_id)
+    params[#params + 1] = user.id
+    db.execute("UPDATE media_items SET " .. table.concat(updates, ", ") .. " WHERE id=%s AND user_id=%s", unpack(params))
+  end
+
+  local updated = fetch_media_by_id(media_id, tostring(user.id))
+  local adult_allowed = viewer_adult_allowed(tostring(user.id))
+  return 200, { media = decode_media_row(updated, adult_allowed, req) }
+end
+
+-- Shared by M.delete_media and M.bulk_delete_media. Returns the pre-delete
+-- item row on success, nil if not found or not owned by owner_id.
+local function perform_delete_media(media_id, owner_id)
+  local item = fetch_media_by_id(media_id, tostring(owner_id))
+  if not item or tostring(item.user_id) ~= tostring(owner_id) then return nil end
+  db.execute(
+    "UPDATE media_items SET deleted_at=CURRENT_TIMESTAMP, visibility='private' WHERE id=%s AND user_id=%s AND deleted_at IS NULL",
+    tostring(media_id), owner_id)
+  return item
+end
+
+function M.delete_media(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local media_id = tonumber(req.params.media_id)
+  if not media_id then return 404, { detail = "Media not found." } end
+  local item = perform_delete_media(media_id, user.id)
+  if not item then return 404, { detail = "Media not found." } end
+  return 200, { deleted = true }
+end
+
+function M.restore_media(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local media_id = tonumber(req.params.media_id)
+  if not media_id then return 404, { detail = "Media not found." } end
+
+  local row = db.fetchone("SELECT user_id FROM media_items WHERE id=%s", tostring(media_id))
+  if not row then return 404, { detail = "Media not found." } end
+  if tostring(row.user_id) ~= tostring(user.id) then return 403, { detail = "Only the uploader can restore this post." } end
+  db.execute("UPDATE media_items SET deleted_at=NULL, visibility='private' WHERE id=%s AND user_id=%s", tostring(media_id), user.id)
+
+  local updated = fetch_media_by_id(media_id, tostring(user.id))
+  local adult_allowed = viewer_adult_allowed(tostring(user.id))
+  return 200, { media = decode_media_row(updated, adult_allowed, req) }
+end
+
+function M.report_media(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local media_id = tonumber(req.params.media_id)
+  if not media_id then return 404, { detail = "Media not found." } end
+  local payload = json_body(req)
+  local reason = trim(nn(payload.reason) or ""):gsub("%s+", " "):sub(1, 80)
+  if reason == "" then return 400, { detail = "A reason is required." } end
+  local details = trim(nn(payload.details) or ""):gsub("%s+", " "):sub(1, 500)
+  if details == "" then details = nil end
+
+  local item = fetch_media_by_id(media_id, tostring(user.id))
+  local vstatus, vbody = ensure_media_visible(item, tostring(user.id))
+  if vstatus then return vstatus, vbody end
+
+  db.execute([[
+    INSERT INTO media_reports (media_id, user_id, reason, details)
+    VALUES (%s, %s, %s, %s)
+    ON CONFLICT (media_id, user_id) DO UPDATE SET reason=EXCLUDED.reason, details=EXCLUDED.details, status='open', created_at=CURRENT_TIMESTAMP
+  ]], tostring(media_id), user.id, reason, details)
+
+  local report = db.fetchone("SELECT * FROM media_reports WHERE media_id=%s AND user_id=%s", tostring(media_id), user.id)
+  if report then
+    report.id = db.toint(report.id, report.id)
+    report.media_id = db.toint(report.media_id, report.media_id)
+    report.user_id = db.toint(report.user_id, report.user_id)
+  end
+  return 200, { report = report }
+end
+
+function M.delete_comment(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local comment_id = tonumber(req.params.comment_id)
+  if not comment_id then return 404, { detail = "Comment not found." } end
+
+  local row = db.fetchone([[
+    SELECT cm.id, cm.user_id AS comment_user_id, m.user_id AS media_user_id
+    FROM media_comments cm JOIN media_items m ON m.id=cm.media_id
+    WHERE cm.id=%s
+  ]], tostring(comment_id))
+  if not row then return 404, { detail = "Comment not found." } end
+  if tostring(row.comment_user_id) ~= tostring(user.id) and tostring(row.media_user_id) ~= tostring(user.id) then
+    return 403, { detail = "Only the commenter or post owner can delete this comment." }
+  end
+  db.execute("DELETE FROM media_comments WHERE id=%s", tostring(comment_id))
+  return 200, { deleted = true }
+end
+
+function M.similar_media(req)
+  local media_id = tonumber(req.params.media_id)
+  if not media_id then return 404, { detail = "Media not found." } end
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  local adult_allowed = viewer_adult_allowed(viewer_id)
+
+  local source = fetch_media_by_id(media_id, viewer_id or "0")
+  if not source or nn(source.deleted_at) then return 200, { media = {} } end
+
+  local tags = {}
+  if source.tags and source.tags ~= cjson.null then
+    local ok, decoded = pcall(cjson.decode, source.tags)
+    if ok and type(decoded) == "table" then tags = decoded end
+  end
+  local tag_conditions, tag_params = {}, {}
+  for i = 1, math.min(#tags, 8) do
+    tag_conditions[#tag_conditions + 1] = "(m.tags::jsonb @> jsonb_build_array(%s::text))::int"
+    tag_params[#tag_params + 1] = tostring(tags[i])
+  end
+  local tag_score_sql = #tag_conditions > 0 and table.concat(tag_conditions, " + ") or "0"
+  local adult_clause = viewer_id and "" or "AND m.is_adult=false"
+
+  local sql = string.format([[
+    SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.media_kind, m.mime_type,
+           m.original_filename, m.storage_path, m.is_adult, m.created_at, m.views,
+           (%s + (m.category_id=%%s)::int) AS relevance
+    FROM media_items m
+    WHERE m.id != %%s AND m.deleted_at IS NULL AND m.visibility='public'
+          AND (m.publish_at IS NULL OR m.publish_at <= now())
+          %s
+          AND (m.category_id=%%s OR %s > 0)
+    ORDER BY relevance DESC, m.created_at DESC
+    LIMIT %%s
+  ]], tag_score_sql, adult_clause, tag_score_sql)
+
+  local sql_params = {}
+  for _, p in ipairs(tag_params) do sql_params[#sql_params + 1] = p end
+  sql_params[#sql_params + 1] = tostring(source.category_id)
+  sql_params[#sql_params + 1] = tostring(media_id)
+  sql_params[#sql_params + 1] = tostring(source.category_id)
+  for _, p in ipairs(tag_params) do sql_params[#sql_params + 1] = p end
+  sql_params[#sql_params + 1] = "12"
+
+  local rows, err = db.fetchall(sql, unpack(sql_params))
+  if err then return 500, { detail = "Query failed: " .. tostring(err) } end
+  for _, row in ipairs(rows) do
+    row.id = db.toint(row.id, row.id)
+    row.user_id = db.toint(row.user_id, row.user_id)
+    row.category_id = db.toint(row.category_id, row.category_id)
+    row.views = db.toint(row.views, 0)
+    row.is_adult = db.tobool(row.is_adult)
+    with_urls(req, row, adult_allowed)
+  end
+  return 200, { media = arr(rows) }
+end
+
+local BULK_PATCH_FIELDS = {
+  visibility = true, comments_enabled = true, downloads_enabled = true, pinned = true, is_adult = true,
+}
+
+function M.bulk_edit_media(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local payload = json_body(req)
+  local owner_flag = is_site_owner(user)
+
+  local ids, seen = {}, {}
+  if type(payload.ids) == "table" then
+    for _, raw in ipairs(payload.ids) do
+      local id = tonumber(raw)
+      if id and id > 0 and not seen[id] then
+        seen[id] = true
+        ids[#ids + 1] = id
+        if #ids >= 200 then break end
+      end
+    end
+  end
+
+  local patch = type(payload.patch) == "table" and payload.patch or {}
+  local add_tag = nn(patch.add_tag) and normalize_upload_tag(patch.add_tag) or ""
+  local overrides = {}
+  for k, v in pairs(patch) do
+    if BULK_PATCH_FIELDS[k] then overrides[k] = v end
+  end
+
+  local results = {}
+  for _, media_id in ipairs(ids) do
+    local existing = fetch_media_by_id(media_id, tostring(user.id))
+    if not existing or nn(existing.deleted_at) then
+      results[#results + 1] = { id = media_id, ok = false, error = "Not found." }
+    else
+      local owner_id = db.toint(existing.user_id, existing.user_id)
+      if owner_id ~= user.id and not owner_flag then
+        results[#results + 1] = { id = media_id, ok = false, error = "Forbidden." }
+      else
+        local tags = {}
+        if existing.tags and existing.tags ~= cjson.null then
+          local ok, decoded = pcall(cjson.decode, existing.tags)
+          if ok and type(decoded) == "table" then tags = decoded end
+        end
+        if add_tag ~= "" then
+          local already = false
+          for _, t in ipairs(tags) do if t == add_tag then already = true; break end end
+          if not already then
+            tags[#tags + 1] = add_tag
+            while #tags > M.settings.max_tags_per_upload do table.remove(tags, 1) end
+          end
+        end
+        local merged = {
+          title = existing.title,
+          description = existing.description,
+          tags = tags,
+          category_id = existing.category_id,
+          subcategory_id = existing.subcategory_id,
+          visibility = existing.visibility,
+          comments_enabled = existing.comments_enabled == nil and true or existing.comments_enabled,
+          downloads_enabled = existing.downloads_enabled == nil and true or existing.downloads_enabled,
+          pinned = nn(existing.pinned_at) ~= nil,
+          is_adult = existing.is_adult,
+        }
+        for k, v in pairs(overrides) do merged[k] = v end
+        local err_status, result = perform_update_media(media_id, owner_id, merged)
+        if err_status then
+          results[#results + 1] = { id = media_id, ok = false, error = result }
+        else
+          results[#results + 1] = { id = media_id, ok = true }
+        end
+      end
+    end
+  end
+  return 200, { results = arr(results) }
+end
+
+function M.bulk_delete_media(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local payload = json_body(req)
+  local owner_flag = is_site_owner(user)
+
+  local ids, seen = {}, {}
+  if type(payload.ids) == "table" then
+    for _, raw in ipairs(payload.ids) do
+      local id = tonumber(raw)
+      if id and id > 0 and not seen[id] then
+        seen[id] = true
+        ids[#ids + 1] = id
+        if #ids >= 200 then break end
+      end
+    end
+  end
+
+  local results = {}
+  for _, media_id in ipairs(ids) do
+    local item = fetch_media_by_id(media_id, tostring(user.id))
+    if not item or nn(item.deleted_at) then
+      results[#results + 1] = { id = media_id, ok = false, error = "Not found." }
+    else
+      local owner_id = db.toint(item.user_id, item.user_id)
+      if owner_id == user.id then
+        local deleted = perform_delete_media(media_id, owner_id)
+        results[#results + 1] = { id = media_id, ok = deleted ~= nil }
+      elseif owner_flag then
+        db.execute(
+          "UPDATE media_items SET deleted_at=CURRENT_TIMESTAMP, visibility='private' WHERE id=%s AND deleted_at IS NULL",
+          tostring(media_id))
+        results[#results + 1] = { id = media_id, ok = true }
+      else
+        results[#results + 1] = { id = media_id, ok = false, error = "Forbidden." }
+      end
+    end
+  end
+  return 200, { results = arr(results) }
+end
+
 
 -- ---------------------------------------------------------------------------
 -- TOTP two-factor auth: enroll / confirm / disable / status, and real

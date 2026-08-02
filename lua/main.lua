@@ -61,20 +61,32 @@ httpd.route("POST", "/api/categories", routes.create_category)
 
 httpd.route("GET", "/api/media", routes.list_media)
 httpd.route("POST", "/api/media", routes.upload_media)
+-- "/bulk" and "/bulk-delete" MUST be registered before "/api/media/:media_id"
+-- below (same first-match-wins ordering trap noted further down) since they
+-- are literal 2nd-segment paths under /api/media/*, same shape as :media_id.
+httpd.route("POST", "/api/media/bulk", routes.bulk_edit_media)
+httpd.route("POST", "/api/media/bulk-delete", routes.bulk_delete_media)
 -- ROUTE-ORDERING TRAP for future passes: httpd.lua's match_route() returns
 -- the FIRST registered route whose pattern matches, with no most-specific-
 -- wins logic. "/api/media/:media_id" below matches ANY single path segment
--- after "/api/media/", including literal ones like "trending", "random",
--- "analyze", or "bulk" (all real Python routes -- see app/routers/media.py
--- -- not yet ported here). Any such literal-segment route added later MUST
--- be registered BEFORE this line, or it will never be reached (silently
--- "handled" by media_detail's tonumber(...) failing and returning a 404
--- instead of the real handler running).
+-- after "/api/media/", including literal ones like "analyze" (real Python
+-- route -- see app/routers/media.py -- not yet ported here, part of the LLM
+-- classification pipeline in TODO.md). Any such literal-segment route added
+-- later MUST be registered BEFORE this line, or it will never be reached
+-- (silently "handled" by media_detail's tonumber(...) failing and returning
+-- a 404 instead of the real handler running).
 httpd.route("GET", "/api/media/:media_id", routes.media_detail)
+httpd.route("PATCH", "/api/media/:media_id", routes.update_media)
+httpd.route("DELETE", "/api/media/:media_id", routes.delete_media)
 httpd.route("POST", "/api/media/:media_id/like", routes.like_media)
 httpd.route("POST", "/api/media/:media_id/bookmark", routes.bookmark_media)
 httpd.route("POST", "/api/media/:media_id/comments", routes.add_comment)
 httpd.route("POST", "/api/media/:media_id/react", routes.react_to_media_route)
+httpd.route("GET", "/api/media/:media_id/similar", routes.similar_media)
+httpd.route("PATCH", "/api/media/:media_id/controls", routes.set_media_controls)
+httpd.route("POST", "/api/media/:media_id/restore", routes.restore_media)
+httpd.route("POST", "/api/media/:media_id/report", routes.report_media)
+httpd.route("DELETE", "/api/comments/:comment_id", routes.delete_comment)
 
 httpd.route("GET", "/api/media/:media_id/thumb", routes.serve_media_thumb)
 httpd.route("GET", "/api/media/:media_id/file", routes.serve_media_file)
