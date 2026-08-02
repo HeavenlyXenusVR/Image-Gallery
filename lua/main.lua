@@ -100,6 +100,13 @@ httpd.route("GET", "/api/messages/threads", routes.message_threads)
 httpd.route("GET", "/api/messages/:user_id", routes.direct_messages)
 httpd.route("POST", "/api/messages/:user_id", routes.send_direct_message)
 
+-- "/suggestions" MUST be registered before "/api/collections/:collection_id".
+httpd.route("GET", "/api/collections/suggestions", routes.collection_suggestions)
+httpd.route("GET", "/api/collections", routes.list_collections)
+httpd.route("POST", "/api/collections", routes.create_collection)
+httpd.route("GET", "/api/collections/:collection_id", routes.collection_detail)
+httpd.route("POST", "/api/collections/:collection_id/items", routes.save_collection_item)
+
 local ok, err = db.ping()
 if ok then
   print(string.format("[image-gallery-lua] Postgres reachable (server time: %s)", tostring(err)))

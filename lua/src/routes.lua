@@ -1562,6 +1562,325 @@ function M.send_direct_message(req)
 end
 
 -- ---------------------------------------------------------------------------
+-- Collections. Mirrors app/routers/collections.py + the collection-related
+-- half of app/db/feed_collections.py (following_feed/liked_media/saved
+-- searches are a different router's territory and NOT covered here).
+-- ---------------------------------------------------------------------------
+
+local SMART_FILTER_KEYS = {
+  media_kind = true, category_id = true, subcategory_id = true, q = true, uploader = true,
+  min_size = true, max_size = true, date_from = true, date_to = true, adult = true, sort = true,
+}
+local DATE_RE = "^%d%d%d%d%-%d%d%-%d%d$"
+
+-- Mirrors _sanitize_smart_collection_filter(): validates/coerces a saved
+-- smart-collection filter the same way GET /api/media's own query params
+-- would be, so a bad stored value can't reach list_media unvalidated.
+local function sanitize_smart_filter(filter_json)
+  local cleaned = {}
+  for key, value in pairs(filter_json or {}) do
+    if SMART_FILTER_KEYS[key] and value ~= nil and value ~= "" and value ~= cjson.null then
+      if key == "media_kind" then
+        if value == "image" or value == "video" then cleaned[key] = value end
+      elseif key == "category_id" or key == "subcategory_id" then
+        local n = tonumber(value)
+        if n then cleaned[key] = math.floor(n) end
+      elseif key == "min_size" or key == "max_size" then
+        local n = tonumber(value)
+        if n then cleaned[key] = math.max(0, math.floor(n)) end
+      elseif key == "date_from" or key == "date_to" then
+        if tostring(value):match(DATE_RE) then cleaned[key] = value end
+      elseif key == "adult" then
+        if value == "only" or value == "hide" then cleaned[key] = value end
+      elseif key == "sort" then
+        if VALID_SORTS[value] then cleaned[key] = value end
+      elseif key == "q" or key == "uploader" then
+        cleaned[key] = tostring(value):sub(1, 80)
+      end
+    end
+  end
+  return cleaned
+end
+
+local function clean_text(value, max_len)
+  local cleaned = trim(nn(value) or ""):gsub("%s+", " ")
+  return cleaned:sub(1, max_len)
+end
+
+local function decode_collection(row)
+  if not row then return nil end
+  row.id = db.toint(row.id, row.id)
+  row.user_id = db.toint(row.user_id, row.user_id)
+  row.item_count = db.toint(row.item_count, 0)
+  row.cover_media_id = row.cover_media_id and db.toint(row.cover_media_id, row.cover_media_id) or nil
+  row.is_public = db.tobool(row.is_public)
+  row.is_smart = db.tobool(row.is_smart)
+  row.cover_is_adult = db.tobool(row.cover_is_adult)
+  if row.is_smart and nn(row.filter_json) then
+    local ok, decoded = pcall(cjson.decode, row.filter_json)
+    row.filter = (ok and type(decoded) == "table") and decoded or {}
+  else
+    row.filter = {}
+  end
+  return row
+end
+
+-- Mirrors _with_collection_urls(): fills in cover_url (pointing at this
+-- backend's own /api/media/:id/file) or locks the cover out entirely for an
+-- unlocked-adult viewer, plus user_avatar_url.
+local function with_collection_urls(req, collection, adult_allowed)
+  if not collection then return nil end
+  local origin = request_origin(req)
+  if collection.cover_path and (adult_allowed or not collection.cover_is_adult) then
+    if collection.cover_media_id then
+      collection.cover_url = origin .. "/api/media/" .. collection.cover_media_id .. "/file"
+    else
+      collection.cover_url = nil
+    end
+  elseif collection.cover_is_adult then
+    collection.cover_path = nil
+    collection.cover_url = nil
+    collection.cover_locked = true
+  end
+  if collection.user_avatar_path and collection.user_avatar_path ~= cjson.null then
+    collection.user_avatar_url = origin .. "/api/users/" .. (collection.user_id or collection.id) .. "/avatar"
+  end
+  return collection
+end
+
+local COLLECTION_SELECT = [[
+  SELECT mc.*, u.username, u.display_name, u.avatar_path AS user_avatar_path,
+         COUNT(mi.id) AS item_count,
+         MAX(mi.storage_path) AS cover_path,
+         MAX(mi.media_kind) AS cover_media_kind,
+         MAX(mi.id) AS cover_media_id,
+         MAX(CASE WHEN mi.is_adult THEN 1 ELSE 0 END) AS cover_is_adult
+  FROM media_collections mc
+  JOIN users u ON u.id = mc.user_id
+  LEFT JOIN media_collection_items mci ON mci.collection_id = mc.id
+  LEFT JOIN media_items mi ON mi.id = mci.media_id AND mi.deleted_at IS NULL
+    AND (mi.visibility='public' OR mi.user_id=%s OR mc.user_id=%s)
+]]
+
+local function fetch_collection(collection_id, viewer_id)
+  local v = tostring(viewer_id or 0)
+  return db.fetchone(
+    COLLECTION_SELECT .. " WHERE mc.id=%s AND (mc.is_public OR mc.user_id=%s) GROUP BY mc.id, u.id",
+    v, v, tostring(collection_id), v
+  )
+end
+
+function M.collection_suggestions(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local existing = db.fetchall(
+    COLLECTION_SELECT .. " WHERE mc.user_id=%s GROUP BY mc.id, u.id",
+    user.id, user.id, user.id
+  )
+  local covered = {}
+  for _, row in ipairs(existing) do
+    if db.tobool(row.is_smart) and nn(row.filter_json) then
+      local ok, decoded = pcall(cjson.decode, row.filter_json)
+      if ok and type(decoded) == "table" and decoded.q then
+        covered[tostring(decoded.q):lower()] = true
+      end
+    end
+  end
+
+  local rows = db.fetchall(
+    "SELECT id, tags FROM media_items WHERE user_id=%s AND deleted_at IS NULL AND tags IS NOT NULL ORDER BY created_at DESC LIMIT 1000",
+    user.id
+  )
+  local counts, sample = {}, {}
+  for _, row in ipairs(rows) do
+    if row.tags and row.tags ~= cjson.null then
+      local ok, tags = pcall(cjson.decode, row.tags)
+      if ok and type(tags) == "table" then
+        for _, tag in ipairs(tags) do
+          local normalized = trim(tostring(tag)):lower():sub(1, 32)
+          if normalized ~= "" then
+            counts[normalized] = (counts[normalized] or 0) + 1
+            if not sample[normalized] then sample[normalized] = db.toint(row.id, row.id) end
+          end
+        end
+      end
+    end
+  end
+  local order = {}
+  for tag, count in pairs(counts) do
+    if count >= 4 and not covered[tag] then order[#order + 1] = tag end
+  end
+  table.sort(order, function(a, b)
+    if counts[a] ~= counts[b] then return counts[a] > counts[b] end
+    return a < b
+  end)
+  local suggestions = {}
+  for i = 1, math.min(8, #order) do
+    local tag = order[i]
+    suggestions[i] = {
+      tag = tag, count = counts[tag],
+      thumb_url = append_query(request_origin(req) .. "/api/media/" .. sample[tag] .. "/thumb", "w", "640"),
+    }
+  end
+  return 200, { suggestions = arr(suggestions) }
+end
+
+function M.list_collections(req)
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  local adult_allowed = viewer_adult_allowed(viewer_id)
+  local mine = req.query.mine == "true" or req.query.mine == "1"
+  if mine and not viewer_id then return 401, { detail = "Login required" } end
+  local v = viewer_id or "0"
+  local where = mine and "mc.user_id=%s" or "(mc.is_public OR mc.user_id=%s)"
+  local rows = db.fetchall(
+    COLLECTION_SELECT .. " WHERE " .. where .. " GROUP BY mc.id, u.id ORDER BY mc.updated_at DESC, mc.created_at DESC LIMIT 100",
+    v, v, v
+  )
+  for _, row in ipairs(rows) do
+    decode_collection(row)
+    with_collection_urls(req, row, adult_allowed)
+  end
+  return 200, { collections = arr(rows) }
+end
+
+function M.create_collection(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local payload = json_body(req)
+  local name = clean_text(payload.name, 100)
+  if name == "" then return 400, { detail = "Name is required." } end
+  local description_text = clean_text(payload.description, 500)
+  local description = description_text ~= "" and description_text or nil
+  local is_public = payload.is_public == nil or db.tobool(payload.is_public)
+  local is_smart = db.tobool(payload.is_smart)
+  local stored_filter = nil
+  if is_smart then
+    stored_filter = cjson.encode(sanitize_smart_filter(payload.filter_json)):sub(1, 8000)
+  end
+
+  local row = db.fetchone(
+    "INSERT INTO media_collections (user_id, name, description, is_public, is_smart, filter_json) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+    user.id, name, description, is_public, is_smart, stored_filter
+  )
+  if not row then return 500, { detail = "Could not create collection." } end
+  local collection = fetch_collection(db.toint(row.id, row.id), user.id)
+  local adult_allowed = viewer_adult_allowed(tostring(user.id))
+  return 200, { collection = with_collection_urls(req, decode_collection(collection), adult_allowed) }
+end
+
+function M.collection_detail(req)
+  local collection_id = tonumber(req.params.collection_id)
+  if not collection_id then return 404, { detail = "Collection not found." } end
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  local adult_allowed = viewer_adult_allowed(viewer_id)
+
+  local collection = fetch_collection(collection_id, viewer_id)
+  if not collection then return 404, { detail = "Collection not found." } end
+  decode_collection(collection)
+
+  local media_rows = {}
+  if collection.is_smart then
+    local filter = collection.filter or {}
+    local fake_req = {
+      headers = req.headers,
+      query = {
+        media_kind = filter.media_kind, category_id = filter.category_id and tostring(filter.category_id) or nil,
+        subcategory_id = filter.subcategory_id and tostring(filter.subcategory_id) or nil,
+        q = filter.q, uploader = filter.uploader,
+        min_size = filter.min_size and tostring(filter.min_size) or nil,
+        max_size = filter.max_size and tostring(filter.max_size) or nil,
+        date_from = filter.date_from, date_to = filter.date_to, adult = filter.adult,
+        sort = filter.sort or "new", limit = "120",
+      },
+    }
+    local _, list_body = M.list_media(fake_req)
+    media_rows = (list_body and list_body.media) or {}
+  else
+    local v = viewer_id or "0"
+    media_rows = db.fetchall(
+      [[
+        SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.description, m.tags,
+               m.media_kind, m.mime_type, m.original_filename, m.storage_path, m.file_size,
+               m.views, m.downloads, m.created_at, m.updated_at, m.visibility,
+               m.comments_enabled, m.downloads_enabled, m.pinned_at, m.is_adult,
+               m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status,
+               c.name AS category_name, c.slug AS category_slug,
+               sc.name AS subcategory_name, sc.slug AS subcategory_slug,
+               u.username,
+               CASE WHEN u.public_profile OR u.id::text=%s THEN u.display_name ELSE u.username END AS display_name,
+               CASE WHEN u.public_profile OR u.id::text=%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
+               u.profile_color, u.public_profile,
+               COUNT(DISTINCT l.user_id) AS like_count,
+               COUNT(DISTINCT cm.id) AS comment_count,
+               MAX(CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END) AS bookmarked_by_me,
+               MAX(CASE WHEN l2.user_id IS NULL THEN 0 ELSE 1 END) AS liked_by_me
+        FROM media_collection_items mci
+        JOIN media_items m ON m.id = mci.media_id
+        JOIN categories c ON c.id = m.category_id
+        LEFT JOIN subcategories sc ON sc.id = m.subcategory_id
+        JOIN users u ON u.id = m.user_id
+        LEFT JOIN media_likes l ON l.media_id = m.id
+        LEFT JOIN media_likes l2 ON l2.media_id = m.id AND l2.user_id::text = %s
+        LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id::text = %s
+        LEFT JOIN media_comments cm ON cm.media_id = m.id
+        WHERE mci.collection_id=%s AND m.deleted_at IS NULL AND (m.visibility='public' OR m.user_id::text=%s)
+        GROUP BY m.id, c.name, c.slug, sc.name, sc.slug, u.username, u.display_name,
+                 u.avatar_path, u.profile_color, u.public_profile, u.id
+        ORDER BY mci.added_at DESC
+        LIMIT 120
+      ]],
+      v, v, v, v, tostring(collection_id), v
+    )
+    for _, row in ipairs(media_rows) do decode_media_row(row, adult_allowed, req) end
+  end
+
+  return 200, {
+    collection = with_collection_urls(req, collection, adult_allowed),
+    media = arr(media_rows),
+  }
+end
+
+function M.save_collection_item(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local collection_id = tonumber(req.params.collection_id)
+  if not collection_id then return 404, { detail = "Collection not found." } end
+  local payload = json_body(req)
+  local media_id = tonumber(payload.media_id)
+  if not media_id then return 400, { detail = "media_id is required." } end
+  local saved = payload.saved == nil or db.tobool(payload.saved)
+
+  local collection = fetch_collection(collection_id, user.id)
+  if not collection or tostring(collection.user_id) ~= tostring(user.id) then
+    return 404, { detail = "Collection not found." }
+  end
+  local media = fetch_media_by_id(media_id, tostring(user.id))
+  if not media or nn(media.deleted_at) then return 404, { detail = "Collection not found." } end
+  if media.visibility == "private" and tostring(media.user_id) ~= tostring(user.id) then
+    return 404, { detail = "Collection not found." }
+  end
+
+  if saved then
+    db.execute(
+      "INSERT INTO media_collection_items (collection_id, media_id) VALUES (%s, %s) ON CONFLICT (collection_id, media_id) DO NOTHING",
+      tostring(collection_id), tostring(media_id)
+    )
+  else
+    db.execute(
+      "DELETE FROM media_collection_items WHERE collection_id=%s AND media_id=%s",
+      tostring(collection_id), tostring(media_id)
+    )
+  end
+  db.execute("UPDATE media_collections SET updated_at=CURRENT_TIMESTAMP WHERE id=%s", tostring(collection_id))
+
+  local updated = fetch_collection(collection_id, user.id)
+  local adult_allowed = viewer_adult_allowed(tostring(user.id))
+  return 200, { collection = with_collection_urls(req, decode_collection(updated), adult_allowed) }
+end
+
+-- ---------------------------------------------------------------------------
 -- Media byte-serving: thumb / file / preview / download / avatar.
 -- Mirrors app/routers/media_streaming.py. See media_files.lua's module
 -- docstring for the storage-model correction versus this task's original
