@@ -540,6 +540,58 @@ end
 -- not yet servable through this backend.
 -- ---------------------------------------------------------------------------
 
+-- Booru-style boolean tag query: "cat dog" = has both (AND), "cat OR dog" =
+-- has either, "-cat" = must NOT have. Space-separated; an OR chain binds
+-- tighter than the implicit AND between groups, e.g. "cat OR dog -wet"
+-- means (cat OR dog) AND NOT wet. Deliberately not a full boolean-algebra
+-- parser (no parens/nesting) -- this covers the actual booru convention
+-- (Danbooru/e621/Derpibooru all use exactly this flat OR-groups-ANDed-
+-- together-plus-NOT shape) without building a general expression parser
+-- for a feature that's a search-bar convenience, not a query language.
+-- Returns (and_groups, not_tags) where and_groups is an array of arrays
+-- (each inner array is an OR-group of tag strings) and not_tags is a flat
+-- array of excluded tag strings.
+local function parse_tag_query(input)
+  local tokens = {}
+  for word in tostring(input or ""):gmatch("%S+") do
+    if #tokens < 40 then tokens[#tokens + 1] = word end
+  end
+  local and_groups, not_tags = {}, {}
+  local i = 1
+  while i <= #tokens do
+    local tok = tokens[i]
+    if tok:sub(1, 1) == "-" and #tok > 1 then
+      not_tags[#not_tags + 1] = tok:sub(2):lower():sub(1, 60)
+      i = i + 1
+    else
+      local or_group = { tok:lower():sub(1, 60) }
+      i = i + 1
+      while tokens[i] and tokens[i]:upper() == "OR" and tokens[i + 1] do
+        or_group[#or_group + 1] = tokens[i + 1]:lower():sub(1, 60)
+        i = i + 2
+      end
+      and_groups[#and_groups + 1] = or_group
+    end
+  end
+  return and_groups, not_tags
+end
+
+-- Builds a Postgres text[] array literal placeholder ("ARRAY[%s,%s,...]")
+-- for jsonb's `?|`/`?&` "any/all of these keys exist" operators, appending
+-- one %s + one param per tag. clauses/params are mutated in place (same
+-- calling convention as list_media's own clause-building loop below).
+local function append_tag_array_clause(clauses, params, tags, column, negate, mode)
+  local placeholders = {}
+  for _, tag in ipairs(tags) do
+    placeholders[#placeholders + 1] = "%s"
+    params[#params + 1] = tag
+  end
+  local array_sql = "ARRAY[" .. table.concat(placeholders, ",") .. "]"
+  local op = mode == "all" and "?&" or "?|"
+  local test = string.format("(%s::jsonb %s %s)", column, op, array_sql)
+  clauses[#clauses + 1] = negate and ("NOT " .. test) or test
+end
+
 local VALID_SORTS = { new = true, old = true, popular = true, views = true, downloads = true }
 
 -- Moved here (before M.list_media/M.upload_media) rather than kept next to
@@ -889,6 +941,7 @@ function M.list_media(req)
   local date_from = nn(q.date_from)
   local date_to = nn(q.date_to)
   local adult = nn(q.adult)
+  local tag_query = nn(q.tags)
   local color_hex = nn(q.color) and tostring(q.color):gsub("^#", ""):match("^(%x%x%x%x%x%x)$") or nil
   local color_tolerance = math.max(4, math.min(tonumber(q.color_tolerance) or 40, 128))
   local sort = VALID_SORTS[q.sort or ""] and q.sort or "new"
@@ -929,6 +982,15 @@ function M.list_media(req)
   if date_to then clauses[#clauses + 1] = "m.created_at::date <= %s"; params[#params + 1] = date_to end
   if adult == "only" then clauses[#clauses + 1] = "m.is_adult=true"
   elseif adult == "hide" then clauses[#clauses + 1] = "m.is_adult=false" end
+  if tag_query then
+    local and_groups, not_tags = parse_tag_query(tag_query)
+    for _, or_group in ipairs(and_groups) do
+      append_tag_array_clause(clauses, params, or_group, "m.tags", false, "any")
+    end
+    if #not_tags > 0 then
+      append_tag_array_clause(clauses, params, not_tags, "m.tags", true, "any")
+    end
+  end
   if color_hex then
     -- Per-channel absolute-difference box filter (not true Euclidean
     -- distance -- avoids needing sqrt/power in SQL for what's already an
