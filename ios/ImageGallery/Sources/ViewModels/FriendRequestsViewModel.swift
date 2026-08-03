@@ -20,7 +20,7 @@ final class FriendRequestsViewModel: ObservableObject {
             incoming = response.incoming
             outgoing = response.outgoing
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -32,7 +32,7 @@ final class FriendRequestsViewModel: ObservableObject {
             incoming.removeAll { $0.id == request.id }
             outgoing.removeAll { $0.id == request.id }
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 }

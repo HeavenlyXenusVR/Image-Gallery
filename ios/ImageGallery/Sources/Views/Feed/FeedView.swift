@@ -3,6 +3,7 @@ import SwiftUI
 struct FeedView: View {
     @StateObject private var viewModel = FeedViewModel()
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var unreadCounts: UnreadCountsService
     @State private var showingFilters = false
     @FocusState private var searchFocused: Bool
 
@@ -54,6 +55,20 @@ struct FeedView: View {
                     Image(systemName: "line.3.horizontal.decrease.circle")
                 }
                 .accessibilityLabel("More filters")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink(destination: NotificationsView()) {
+                    Image(systemName: "bell")
+                }
+                .accessibilityLabel("Notifications")
+                .overlay(alignment: .topTrailing) {
+                    if unreadCounts.notifications > 0 {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                            .offset(x: 2, y: -2)
+                    }
+                }
             }
         }
         .sheet(isPresented: $showingFilters) {

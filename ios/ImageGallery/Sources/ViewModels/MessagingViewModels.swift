@@ -19,7 +19,7 @@ final class MessagesListViewModel: ObservableObject {
         do {
             directThreads = try await directTask
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
         groupThreads = (try? await groupTask) ?? []
     }
@@ -46,7 +46,7 @@ final class DirectMessageThreadViewModel: ObservableObject {
         do {
             messages = try await api.directMessages(userId: userId)
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -73,7 +73,7 @@ final class DirectMessageThreadViewModel: ObservableObject {
             messages.append(message)
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
             return false
         }
     }
@@ -100,7 +100,7 @@ final class GroupThreadViewModel: ObservableObject {
         do {
             messages = try await api.groupThreadMessages(threadId: threadId)
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -123,7 +123,7 @@ final class GroupThreadViewModel: ObservableObject {
             messages.append(message)
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
             return false
         }
     }
@@ -172,7 +172,7 @@ final class NewGroupThreadViewModel: ObservableObject {
         do {
             createdThread = try await api.createGroupThread(memberIds: selectedMembers.map(\.id), name: name.isEmpty ? nil : name)
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 }

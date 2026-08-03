@@ -39,7 +39,7 @@ final class FeedViewModel: ObservableObject {
             reachedEnd = fetched.count < pageSize
         } catch {
             guard requestGeneration == generation else { return }
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 

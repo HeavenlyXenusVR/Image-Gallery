@@ -20,7 +20,7 @@ final class NotificationsViewModel: ObservableObject {
             unreadCount = response.unreadCount ?? 0
             BadgeService.setBadge(unreadCount)
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 

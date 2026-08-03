@@ -1,10 +1,20 @@
 import SwiftUI
 
 /// Mirrors the web app's primary nav (`Shell.jsx`): Discover, Messages,
-/// Studio, Upload, Notifications, Profile. The owner-only Admin dashboard
-/// stays web-only (see the iOS plan's deferred list). Six tabs means iOS
-/// collapses the last two into a "More" tab — standard, well-understood
-/// behavior, not a bug.
+/// Studio, Upload, Profile. The owner-only Admin dashboard stays web-only
+/// (see the iOS plan's deferred list).
+///
+/// Deliberately kept to 5 tabs, not 6. A 6th tab (Notifications used to be
+/// its own tab) pushes iOS's TabView past its 5-visible-item limit, which
+/// makes it auto-collapse the overflow into a system-generated "More" tab.
+/// That "More" screen is itself navigation-based, and since every tab root
+/// here is independently wrapped in its own NavigationStack (needed for
+/// that tab's own push navigation), a tab reached through "More" ends up
+/// nested inside two navigation controllers at once -- visibly two stacked
+/// back-chevron buttons at the top of the screen instead of one, confirmed
+/// live on device. Access to Notifications moved to a toolbar bell button
+/// (see FeedView) instead, which avoids the 6th-tab overflow entirely
+/// rather than patching around the double-nav-bar symptom.
 struct RootTabView: View {
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var quickActionRouter: QuickActionRouter
@@ -39,13 +49,6 @@ struct RootTabView: View {
             .tag(3)
 
             NavigationStack {
-                NotificationsView()
-            }
-            .tabItem { Label("Alerts", systemImage: "bell") }
-            .badge(unreadCounts.notifications)
-            .tag(4)
-
-            NavigationStack {
                 if let username = session.currentUser?.username {
                     ProfileView(username: username)
                 } else {
@@ -53,7 +56,7 @@ struct RootTabView: View {
                 }
             }
             .tabItem { Label("Profile", systemImage: "person.crop.circle") }
-            .tag(5)
+            .tag(4)
         }
         .onChange(of: quickActionRouter.pendingDestination) { destination in
             if let destination {

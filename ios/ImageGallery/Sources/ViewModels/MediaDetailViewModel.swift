@@ -31,7 +31,7 @@ final class MediaDetailViewModel: ObservableObject {
             reactions = detail.reactions ?? ReactionsSummary(counts: [:], myReaction: nil)
             similar = detail.similar ?? []
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -43,7 +43,7 @@ final class MediaDetailViewModel: ObservableObject {
             self.media = try await api.setLiked(mediaId: media.id, liked: !(media.likedByMe ?? false))
             Haptics.light()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -55,7 +55,7 @@ final class MediaDetailViewModel: ObservableObject {
             self.media = try await api.setBookmarked(mediaId: media.id, bookmarked: !(media.bookmarkedByMe ?? false))
             Haptics.light()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -65,7 +65,7 @@ final class MediaDetailViewModel: ObservableObject {
             reactions = try await api.react(mediaId: media.id, emoji: emoji)
             Haptics.light()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -77,7 +77,7 @@ final class MediaDetailViewModel: ObservableObject {
             replyTarget = nil
             Haptics.light()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -86,7 +86,7 @@ final class MediaDetailViewModel: ObservableObject {
             try await api.deleteComment(id: comment.id)
             comments.removeAll { $0.id == comment.id }
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -97,7 +97,7 @@ final class MediaDetailViewModel: ObservableObject {
             try await api.reportMedia(mediaId: media.id, reason: reason, details: details)
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
             return false
         }
     }

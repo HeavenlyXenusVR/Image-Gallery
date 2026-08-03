@@ -28,7 +28,7 @@ final class ProfileViewModel: ObservableObject {
             collections = response.collections ?? []
             friends = response.friends ?? []
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -39,7 +39,7 @@ final class ProfileViewModel: ObservableObject {
             Haptics.light()
             await load()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -50,7 +50,7 @@ final class ProfileViewModel: ObservableObject {
             Haptics.light()
             await load()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -61,7 +61,7 @@ final class ProfileViewModel: ObservableObject {
             Haptics.warning()
             await load()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 }

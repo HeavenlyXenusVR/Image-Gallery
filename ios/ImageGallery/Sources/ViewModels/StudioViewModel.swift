@@ -35,7 +35,7 @@ final class StudioViewModel: ObservableObject {
             selectedIds.removeAll()
             Haptics.success()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
             Haptics.error()
         }
     }
@@ -51,7 +51,7 @@ final class StudioViewModel: ObservableObject {
             selectedIds.removeAll()
             Haptics.success()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
             Haptics.error()
         }
     }
@@ -66,7 +66,7 @@ final class StudioViewModel: ObservableObject {
             selectedIds.removeAll()
             Haptics.success()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
             Haptics.error()
         }
     }
@@ -78,7 +78,7 @@ final class StudioViewModel: ObservableObject {
         do {
             items = try await api.myMedia()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -87,7 +87,7 @@ final class StudioViewModel: ObservableObject {
             let updated = try await api.updateControls(mediaId: item.id, patch: .init(visibility: visibility, commentsEnabled: nil, downloadsEnabled: nil, pinned: nil))
             replace(updated)
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -96,7 +96,7 @@ final class StudioViewModel: ObservableObject {
             let updated = try await api.updateControls(mediaId: item.id, patch: .init(visibility: nil, commentsEnabled: nil, downloadsEnabled: nil, pinned: !(item.pinnedAt != nil)))
             replace(updated)
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -106,7 +106,7 @@ final class StudioViewModel: ObservableObject {
             await load()
             Haptics.success()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
             Haptics.error()
         }
     }
@@ -117,7 +117,7 @@ final class StudioViewModel: ObservableObject {
             replace(restored)
             Haptics.success()
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
             Haptics.error()
         }
     }

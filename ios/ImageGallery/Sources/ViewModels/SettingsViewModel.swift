@@ -25,7 +25,7 @@ final class SettingsViewModel: ObservableObject {
             try await api.setBlock(userId: entry.user.id, kind: entry.kind, active: false)
             blocks.removeAll { $0.user.id == entry.user.id && $0.kind == entry.kind }
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -34,7 +34,7 @@ final class SettingsViewModel: ObservableObject {
             try await api.deleteSavedSearch(id: search.id)
             savedSearches.removeAll { $0.id == search.id }
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 
@@ -47,7 +47,7 @@ final class SettingsViewModel: ObservableObject {
             try data.write(to: url)
             return url
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
             return nil
         }
     }

@@ -157,7 +157,7 @@ final class UploadViewModel: ObservableObject {
             Haptics.success()
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            if !error.isCancellation { errorMessage = error.localizedDescription }
             Haptics.error()
             return false
         }

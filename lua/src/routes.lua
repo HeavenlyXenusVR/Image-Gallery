@@ -984,6 +984,61 @@ function M.list_media(req)
   return 200, { media = arr(rows), limit = limit, offset = offset, sort = sort }
 end
 
+-- GET /api/me/media -- the Studio tab's data source. Mirrors
+-- app/routers/account.py's my_media() + app/db/media.py's list_user_media()
+-- (recovered from git history: 9986ab5^:app/routers/account.py +
+-- app/db/media.py) -- never ported to Lua at all, confirmed live (the
+-- Studio tab showed "Not found"/0 posts for an account with 15 real
+-- uploads). Unlike list_media() above, this has no visibility filter at
+-- all: it's the owner looking at their OWN media, so private/unlisted/
+-- deleted posts are all included by design (Studio's own client-side
+-- filter chips split them back out) -- only "which media_kind/adult
+-- content is the viewer allowed to see" logic (decode_media_row) still
+-- applies, same as everywhere else media rows get shaped.
+function M.my_media(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local include_deleted = req.query.include_deleted ~= "false" and req.query.include_deleted ~= "0"
+  local viewer_can_open_adult = nn(user.age_verified_at) ~= nil and user.adult_content_consent
+  local viewer0 = tostring(user.id)
+
+  local where = include_deleted and "m.user_id=%s" or "m.user_id=%s AND m.deleted_at IS NULL"
+  local sql = string.format(
+    [[
+      SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.description, m.tags,
+             m.media_kind, m.mime_type, m.original_filename, m.storage_path, m.file_size,
+             m.views, m.downloads, m.created_at, m.updated_at, m.visibility,
+             m.comments_enabled, m.downloads_enabled, m.pinned_at, m.is_adult,
+             m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status, m.deleted_at,
+             c.name AS category_name, c.slug AS category_slug,
+             sc.name AS subcategory_name, sc.slug AS subcategory_slug,
+             u.username, u.display_name, u.profile_color, u.public_profile,
+             COUNT(DISTINCT l.user_id) AS like_count,
+             COUNT(DISTINCT cm.id) AS comment_count,
+             MAX(CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END) AS bookmarked_by_me,
+             MAX(CASE WHEN l2.user_id IS NULL THEN 0 ELSE 1 END) AS liked_by_me
+      FROM media_items m
+      JOIN categories c ON c.id = m.category_id
+      LEFT JOIN subcategories sc ON sc.id = m.subcategory_id
+      JOIN users u ON u.id = m.user_id
+      LEFT JOIN media_likes l ON l.media_id = m.id
+      LEFT JOIN media_likes l2 ON l2.media_id = m.id AND l2.user_id::text = %%s
+      LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id::text = %%s
+      LEFT JOIN media_comments cm ON cm.media_id = m.id
+      WHERE %s
+      GROUP BY m.id, c.name, c.slug, sc.name, sc.slug, u.username, u.display_name, u.profile_color, u.public_profile
+      ORDER BY m.created_at DESC
+      LIMIT 200
+    ]],
+    where
+  )
+  local rows, err = db.fetchall(sql, viewer0, viewer0, viewer0)
+  if err then return 500, { detail = "Query failed: " .. tostring(err) } end
+  attach_media_subcategories(rows)
+  for _, row in ipairs(rows) do decode_media_row(row, viewer_can_open_adult, req) end
+  return 200, { media = arr(rows) }
+end
+
 -- ---------------------------------------------------------------------------
 -- Single media item: detail / like / bookmark / comment / react
 -- Mirrors app/routers/media.py's media_detail/like_media/bookmark_media/
