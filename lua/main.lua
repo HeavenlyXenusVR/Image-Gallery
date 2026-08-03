@@ -214,6 +214,13 @@ httpd.route("GET", "/feed/category/:slug.xml", pages_feeds.category_feed)
 httpd.route("GET", "/feed/user/:username.xml", pages_feeds.user_feed)
 httpd.route("GET", "/feed/tag/:tag.xml", pages_feeds.tag_feed)
 httpd.route("GET", "/sitemap.xml", pages_feeds.sitemap)
+httpd.route("GET", "/feed/me.xml", pages_feeds.personal_feed)
+
+-- "On this day" memories + scoped read-only API keys.
+httpd.route("GET", "/api/me/memories", routes.my_memories)
+httpd.route("POST", "/api/me/api-keys", routes.create_api_key)
+httpd.route("GET", "/api/me/api-keys", routes.list_api_keys)
+httpd.route("DELETE", "/api/me/api-keys/:key_id", routes.revoke_api_key)
 
 -- Serves the built React SPA directly at this backend's own hostname
 -- (gallery.xenusanimations.studio), the same way SwarmPanel's Lua backend

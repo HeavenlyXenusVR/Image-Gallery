@@ -1381,6 +1381,122 @@ function M.my_personal_tags(req)
   return 200, { tags = arr(tag_rows) }
 end
 
+-- ---------------------------------------------------------------------------
+-- "On this day" memories -- resurfaces the viewer's own uploads from
+-- exactly today's month/day in a past year. Simple date-match query, no
+-- background job needed (Python's/Lua's TODO.md-tracked "unported
+-- background loops" are for things that need to run unattended and push
+-- notifications out; this is on-demand, computed the moment a client asks).
+-- ---------------------------------------------------------------------------
+
+function M.my_memories(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local rows = db.fetchall(
+    [[
+      SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.media_kind, m.mime_type,
+             m.original_filename, m.storage_path, m.is_adult, m.created_at, m.views, m.visibility,
+             EXTRACT(YEAR FROM now())::int - EXTRACT(YEAR FROM m.created_at)::int AS years_ago
+      FROM media_items m
+      WHERE m.user_id=%s AND m.deleted_at IS NULL
+        AND EXTRACT(MONTH FROM m.created_at) = EXTRACT(MONTH FROM now())
+        AND EXTRACT(DAY FROM m.created_at) = EXTRACT(DAY FROM now())
+        AND EXTRACT(YEAR FROM m.created_at) < EXTRACT(YEAR FROM now())
+      ORDER BY m.created_at ASC
+      LIMIT 50
+    ]],
+    tostring(user.id)
+  )
+  local adult_allowed = viewer_adult_allowed(tostring(user.id))
+  for _, row in ipairs(rows) do
+    row.id = db.toint(row.id, row.id)
+    row.user_id = db.toint(row.user_id, row.user_id)
+    row.category_id = db.toint(row.category_id, row.category_id)
+    row.views = db.toint(row.views, 0)
+    row.years_ago = db.toint(row.years_ago, row.years_ago)
+    row.is_adult = db.tobool(row.is_adult)
+    with_urls(req, row, adult_allowed)
+  end
+  return 200, { media = arr(rows) }
+end
+
+-- ---------------------------------------------------------------------------
+-- Scoped read-only API keys -- for third-party/personal integrations (a
+-- Discord bot, a personal script) that should be able to read a user's OWN
+-- gallery data without handing over their real login session. Deliberately
+-- NOT wired into current_user()/auth_optional() at all -- rather than
+-- retrofit the entire auth stack (and risk a wiring mistake accidentally
+-- granting write access through a token meant to be read-only), a key only
+-- ever unlocks the small dedicated read-only surface below (right now:
+-- M.my_memories-style "own media" list and the personal RSS feed in
+-- pages_feeds.lua). The raw key is shown to the user exactly once, at
+-- creation; only its SHA-256 hash is ever stored.
+-- ---------------------------------------------------------------------------
+
+-- Required here (not just relying on the later `local sodium =
+-- require("luasodium")` further down this file, near the duplicate-
+-- detection code) since these functions are defined before that point --
+-- require() is cached/idempotent, so this is the same module table either
+-- way, just visible from here too.
+local sodium = require("luasodium")
+
+local API_KEY_PREFIX = "gk_"
+
+-- Exported so pages_feeds.lua's keyed personal feed can authenticate a
+-- ?key= query param the same way, without duplicating the hash-and-look-up
+-- logic. Returns the owning user id (string) or nil.
+function M.resolve_api_key(raw_key)
+  raw_key = tostring(raw_key or "")
+  if raw_key:sub(1, #API_KEY_PREFIX) ~= API_KEY_PREFIX then return nil end
+  local token_hash = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(raw_key))
+  local row = db.fetchone("SELECT id, user_id FROM api_keys WHERE token_hash=%s AND revoked_at IS NULL", token_hash)
+  if not row then return nil end
+  db.execute("UPDATE api_keys SET last_used_at=now() WHERE id=%s", tostring(db.toint(row.id, row.id)))
+  return tostring(db.toint(row.user_id, row.user_id))
+end
+
+function M.create_api_key(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local payload = json_body(req)
+  local label = trim(nn(payload.label) or "API key"):sub(1, 80)
+  local raw_key = API_KEY_PREFIX .. sodium.sodium_bin2hex(sodium.randombytes_buf(24))
+  local token_hash = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(raw_key))
+  local row, err = db.fetchone(
+    "INSERT INTO api_keys (user_id, label, token_hash) VALUES (%s, %s, %s) RETURNING id, created_at",
+    tostring(user.id), label, token_hash
+  )
+  if not row then return 500, { detail = "Could not create API key: " .. tostring(err) } end
+  return 200, {
+    -- Only place the raw key is ever returned -- store it now, it cannot
+    -- be recovered later (only the hash persists).
+    key = raw_key,
+    id = db.toint(row.id, row.id),
+    label = label,
+    created_at = row.created_at,
+  }
+end
+
+function M.list_api_keys(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local rows = db.fetchall(
+    "SELECT id, label, created_at, last_used_at, revoked_at FROM api_keys WHERE user_id=%s ORDER BY created_at DESC",
+    tostring(user.id)
+  )
+  for _, row in ipairs(rows) do row.id = db.toint(row.id, row.id) end
+  return 200, { api_keys = arr(rows) }
+end
+
+function M.revoke_api_key(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local key_id = tonumber(req.params.key_id)
+  if not key_id then return 404, { detail = "API key not found." } end
+  db.execute("UPDATE api_keys SET revoked_at=now() WHERE id=%s AND user_id=%s AND revoked_at IS NULL", tostring(key_id), tostring(user.id))
+  return 200, { ok = true }
+end
+
 function M.like_media(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end

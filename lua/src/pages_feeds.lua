@@ -11,6 +11,7 @@
 -- engine has no login flow to gate behind anyway).
 local db = require("db")
 local html = require("html")
+local routes = require("routes")
 
 local M = {}
 
@@ -116,6 +117,24 @@ function M.tag_feed(req)
     LIMIT 50
   ]], tag)
   return 200, rss_feed(origin, 'Image Gallery: "' .. tag .. '"', "Recent public uploads tagged " .. tag, "/feed/tag/" .. tag .. ".xml", rows), XML_HEADERS
+end
+
+-- Personal feed authenticated by a scoped API key (routes.lua's
+-- api_keys/M.resolve_api_key) instead of a session -- the one consumer of
+-- that feature for now. Unlike the public feeds above, this includes
+-- private/unlisted posts and 18+ content: it's the key owner's own
+-- library, gated by possession of their own key, not a public/crawlable
+-- endpoint.
+function M.personal_feed(req)
+  local user_id = routes.resolve_api_key(req.query.key)
+  if not user_id then return 401, "Invalid or revoked API key.", { ["Content-Type"] = "text/plain" } end
+  local origin = request_origin(req.headers)
+  local rows = db.fetchall(BASE_MEDIA_SELECT .. [[
+    WHERE m.user_id=%s AND m.deleted_at IS NULL
+    ORDER BY m.created_at DESC
+    LIMIT 100
+  ]], user_id)
+  return 200, rss_feed(origin, "My Image Gallery uploads", "All of your uploads, any visibility", "/feed/me.xml", rows), XML_HEADERS
 end
 
 -- Plain list of public post URLs for search-engine discoverability.
