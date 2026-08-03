@@ -1,5 +1,28 @@
 # Lua rewrite — remaining work
 
+## Per-user panel customization pass, 2026-08-03 (later same day)
+
+Note for next time: the premise "the frontend is strictly Lua" is not
+true and shouldn't be assumed again -- only login/register/admin/2FA/OG-
+previews/feeds are server-rendered Lua; the actual gallery/profile
+experience is still the React SPA. This pass built the requested
+customization there instead of trying to force it into a Lua page.
+
+Also discovered the existing customization system (frontend/src/config.js's
+DEFAULT_SETTINGS + user_settings.lua + appearance.js) is already very
+extensive (~40 fields: theme, accent, grid, card style, profile layout/
+banner/card/stat/hero/avatar/media/surface/social/featured-panel styles,
+column gaps, borders, fonts...) and every field was confirmed already
+wired through to real CSS, not dead settings -- except `watermark_text`,
+which had a Settings UI and passed backend validation but was never
+actually applied anywhere. Fixed that (see its own entry above/below) and
+added two genuinely new axes: profile panel opacity/blur ("panel glass")
+and a personal custom-CSS override (self-view only, see commit c922ca9
+for why that's safe despite storing raw CSS).
+
+Site background 5s fade + GIF support (same day, earlier): see commit
+1e5c2ab.
+
 ## 10 researched feature ideas, 2026-08-03
 
 Researched external sources (booru platforms like LANBooru/Derpibooru/
