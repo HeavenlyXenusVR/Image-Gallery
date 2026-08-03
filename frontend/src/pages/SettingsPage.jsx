@@ -454,6 +454,10 @@ export function SettingsPage({ ctx }) {
               <label className="field"><span>Backdrop strength</span><input type="range" min="0" max="0.55" step="0.01" value={prefs.profile_backdrop_strength ?? 0.18} onChange={(event) => updatePrefs("profile_backdrop_strength", Number(event.target.value))} /></label>
             </div>
             <label className="field"><span>Backdrop image URL</span><input value={prefs.profile_backdrop_image_url || ""} onChange={(event) => updatePrefs("profile_backdrop_image_url", event.target.value)} placeholder="https://..." /></label>
+            <div className="two-col">
+              <label className="field"><span>Panel opacity <small>(lower lets the site background show through your profile panel)</small></span><input type="range" min="0.2" max="1" step="0.05" value={prefs.profile_surface_opacity ?? 1} onChange={(event) => updatePrefs("profile_surface_opacity", Number(event.target.value))} /></label>
+              <label className="field"><span>Panel blur <small>(glass/frosted effect)</small></span><input type="range" min="0" max="24" step="1" value={prefs.profile_surface_blur ?? 0} onChange={(event) => updatePrefs("profile_surface_blur", Number(event.target.value))} /></label>
+            </div>
           </div>
             <div className="settings-cluster">
             <div className="settings-cluster-head"><h3>Playback and Visibility</h3><p>Small quality-of-life switches for browsing, preview behavior, and public sections.</p></div>
@@ -483,6 +487,20 @@ export function SettingsPage({ ctx }) {
             {prefs.discord_webhook_url && !/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(prefs.discord_webhook_url) ? (
               <p className="field-hint field-hint-error">Must start with https://discord.com/api/webhooks/ — create one in your Discord server's Integrations settings.</p>
             ) : null}
+          </div>
+            <div className="settings-cluster">
+            <div className="settings-cluster-head"><h3>Advanced</h3><p>Power-user customization. Custom CSS only ever changes what <em>you</em> see while signed in — it never applies to anyone viewing your profile or posts.</p></div>
+            <label className="field">
+              <span>Custom CSS <small>(applies only to your own logged-in view, up to 4000 characters)</small></span>
+              <textarea
+                className="settings-custom-css"
+                value={prefs.custom_css ?? ""}
+                onChange={(event) => updatePrefs("custom_css", event.target.value.slice(0, 4000))}
+                placeholder={".app-shell { --radius: 24px; }"}
+                rows={6}
+                spellCheck={false}
+              />
+            </label>
           </div>
             <div className="form-actions settings-actions">
               <button className="primary" type="submit"><Save size={16} />Save Preferences</button>

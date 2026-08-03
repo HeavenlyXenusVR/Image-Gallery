@@ -119,6 +119,12 @@ export function profileStyle(settings, fallbackAccent = "#37c9a7") {
     "--accent": safeColor(settings?.accent_color || fallbackAccent),
     "--profile-backdrop": safeImage(settings?.profile_backdrop_image_url),
     "--profile-backdrop-strength": `${Math.round(clamp(settings?.profile_backdrop_strength, 0.18, 0, 0.55) * 100)}%`,
+    // "Panel glass" controls: opacity 1 / blur 0px reproduce the original
+    // solid-panel look exactly, so a user who never touches these two new
+    // settings sees no change at all. Lower opacity lets the site-wide
+    // rotating background show through the profile panel itself.
+    "--profile-surface-opacity": clamp(settings?.profile_surface_opacity, 1, 0.2, 1),
+    "--profile-surface-blur": `${Math.round(clamp(settings?.profile_surface_blur, 0, 0, 24))}px`,
   };
 
   const profileBgRaw = String(settings?.profile_bg_color || "").trim();

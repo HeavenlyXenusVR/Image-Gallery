@@ -28,6 +28,12 @@ M.DEFAULT_USER_SETTINGS = {
   card_hover_effect = "lift", card_aspect_ratio = "free", media_border_style = "none",
   gallery_font = "system", card_info_display = "below", column_gap = "normal",
   watermark_text = "", discord_webhook_url = "",
+  -- "Panel glass" controls (1/0 reproduce the original solid-panel look
+  -- exactly) and a personal custom-CSS override applied only to the
+  -- setting owner's own logged-in view (see App.jsx) -- never shown to
+  -- anyone viewing that user's profile, so there's no cross-user styling
+  -- surface despite being raw CSS text.
+  profile_surface_opacity = 1, profile_surface_blur = 0, custom_css = "",
 }
 
 local ALLOWED_CHOICES = {
@@ -157,6 +163,21 @@ function M.clean_user_settings(payload, existing)
           error("Discord webhook URL must start with https://discord.com/api/webhooks/.", 0)
         end
         settings[key] = text
+      elseif key == "profile_surface_opacity" then
+        local n = tonumber(value)
+        if value ~= nil and not n then error("Panel opacity must be a number.", 0) end
+        settings[key] = math.max(0.2, math.min(n or 1, 1))
+      elseif key == "profile_surface_blur" then
+        local n = tonumber(value)
+        if value ~= nil and not n then error("Panel blur must be a number.", 0) end
+        settings[key] = math.max(0, math.min(n or 0, 24))
+      elseif key == "custom_css" then
+        -- No content filtering beyond a length cap: this only ever
+        -- renders back into the setting owner's own logged-in session
+        -- (see App.jsx), never anyone else's page, so it's equivalent to
+        -- a self-applied browser userstyle -- there is no other viewer to
+        -- protect from this value.
+        settings[key] = tostring(value or ""):sub(1, 4000)
       else
         settings[key] = value and true or false
       end

@@ -949,6 +949,12 @@ textarea {
   resize: vertical;
 }
 
+.settings-custom-css {
+  font-family: "Fira Code", "Consolas", ui-monospace, monospace;
+  font-size: 0.85rem;
+  min-height: 140px;
+}
+
 input:focus,
 select:focus,
 textarea:focus {
@@ -2287,13 +2293,19 @@ textarea:focus {
   padding: 22px;
   border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
   border-radius: var(--radius);
+  /* --profile-surface-opacity/-blur default to 1/0px (fully opaque, no
+     extra blur), matching the previous hardcoded look exactly -- these
+     are opt-in via Settings' new "Panel glass" controls, not a silent
+     redesign. Lower opacity lets the site-wide rotating background (see
+     App.jsx) show through the profile panel itself. */
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--accent) var(--profile-backdrop-strength, 18%), transparent), rgba(110, 199, 255, 0.08)),
     var(--profile-backdrop),
     linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, transparent), rgba(110, 199, 255, 0.08)),
-    #151b22;
+    color-mix(in srgb, #151b22 calc(var(--profile-surface-opacity, 1) * 100%), transparent);
   background-size: cover;
   background-position: center;
+  backdrop-filter: blur(var(--profile-surface-blur, 0px));
   box-shadow: var(--shadow);
 }
 
@@ -2309,7 +2321,8 @@ textarea:focus {
   background:
     linear-gradient(120deg, color-mix(in srgb, var(--accent) 18%, transparent), transparent 42%),
     linear-gradient(28deg, transparent 46%, rgba(110, 199, 255, 0.12), transparent 74%),
-    var(--panel);
+    color-mix(in srgb, var(--panel) calc(var(--profile-surface-opacity, 1) * 100%), transparent);
+  backdrop-filter: blur(var(--profile-surface-blur, 0px));
 }
 
 .profile-hero.profile-banner-frame {
@@ -2321,13 +2334,15 @@ textarea:focus {
   background:
     linear-gradient(135deg, color-mix(in srgb, var(--accent) 22%, transparent), transparent 44%),
     linear-gradient(45deg, transparent 32%, rgba(126, 231, 135, 0.12), transparent 68%),
-    var(--panel);
+    color-mix(in srgb, var(--panel) calc(var(--profile-surface-opacity, 1) * 100%), transparent);
+  backdrop-filter: blur(var(--profile-surface-blur, 0px));
 }
 
 .profile-hero.profile-banner-spotlight {
   background:
     linear-gradient(90deg, color-mix(in srgb, var(--accent) 24%, transparent), transparent 68%),
-    var(--panel);
+    color-mix(in srgb, var(--panel) calc(var(--profile-surface-opacity, 1) * 100%), transparent);
+  backdrop-filter: blur(var(--profile-surface-blur, 0px));
 }
 
 .profile-hero.profile-banner-poster {

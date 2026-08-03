@@ -364,6 +364,14 @@ function App() {
 
   return (
     <Shell ctx={ctx} className={galleryClassName(ctx.settings)} style={galleryStyle(ctx.settings)}>
+      {/* Personal "custom CSS" override -- applies only to the logged-in
+          viewer's own session, since effectiveSettings only ever reflects
+          the current user's own user_settings (never another user's, even
+          on someone else's profile page). Equivalent to a self-applied
+          browser userstyle: it can restyle what YOU see, it can never
+          affect what anyone else sees, so there's no cross-user styling/
+          exfiltration surface to worry about here. */}
+      {effectiveSettings.custom_css ? <style>{effectiveSettings.custom_css.slice(0, 4000)}</style> : null}
       <Routes>
         <Route path="/" element={<DiscoverPage ctx={ctx} />} />
         <Route path="/trending" element={<TrendingPage ctx={ctx} />} />
