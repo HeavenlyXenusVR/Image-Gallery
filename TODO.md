@@ -1,5 +1,33 @@
 # Lua rewrite — remaining work
 
+**Two more real bugs found and fixed, 2026-08-02 (later same day)**:
+- Login was silently locking out any account with a non-lowercase stored
+  username (`M.login` lowercased the input via `normalize_username()` but
+  then did an exact-match `WHERE username=%s` against it) — confirmed
+  live against the site owner's own account ("HeavenlyXenusVR"). Fixed to
+  `WHERE LOWER(username)=%s`; also hardened `M.register`'s duplicate-check
+  the same way so a case-colliding second account can't be created going
+  forward. Verified with a throwaway mixed-case test account: login now
+  succeeds regardless of input case, and a colliding registration is
+  correctly rejected.
+- `/api/site/background` (the rotating 16:9 site-wide background,
+  App.jsx's already-built 5-minute crossfade logic) was never ported to
+  Lua at all — 404ing, so the feature silently did nothing. Recovered the
+  original logic from git history (`9986ab5^:app/routers/media_feed.py` +
+  `app/db/feed_collections.py`) and ported it to `routes.lua`'s new
+  "Site-wide rotating background" section: candidates are filtered in SQL
+  to public, non-deleted, image-kind, **`is_adult=false`**, aspect ratio
+  within 0.035 of 16:9, cached 300s, with a "never immediately repeat the
+  previous pick" rule. Simplified from Python by requiring
+  `image_width`/`image_height` to already be populated (skips Python's
+  image-header-byte-sniffing fallback for rows missing them — every
+  current upload path already sets these columns, so the candidate pool
+  isn't meaningfully smaller). Verified live: correct 16:9 image picked
+  (3840×2160), persists across repeated calls within the 5-minute window
+  with a correctly-ticking `refresh_after_seconds`, thumb URL resolves,
+  and confirmed via direct query simulation that flipping a candidate's
+  `is_adult` to true correctly removes it from the pool.
+
 **Cutover complete as of 2026-08-02.** The live site
 (gallery.xenusanimations.studio) is served directly by the Lua backend
 (`lua/`, port 8789) — the cloudflared tunnel points straight at it. The

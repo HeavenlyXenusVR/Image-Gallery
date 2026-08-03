@@ -2244,6 +2244,133 @@ function M.site_announcement(req)
   }
 end
 
+-- ---------------------------------------------------------------------------
+-- Site-wide rotating background. Mirrors app/routers/media_feed.py's
+-- _background_candidate_rows()/_site_background_snapshot()/site_background()
+-- (recovered from git history: 9986ab5^:app/routers/media_feed.py +
+-- app/db/feed_collections.py's list_public_background_candidates()) --
+-- another endpoint the Lua rewrite never ported, so the frontend's already-
+-- built 5-minute rotation/crossfade logic (App.jsx) had nothing to fetch
+-- and silently did nothing.
+--
+-- Simplified from the Python version in one deliberate way: Python falls
+-- back to sniffing image-file header bytes for width/height when
+-- image_width/image_height aren't populated on the row yet. This port
+-- skips that fallback and only considers images that already have both
+-- columns set -- simpler, and every current upload path already populates
+-- them, so the candidate pool isn't meaningfully smaller. If a future
+-- upload path stops populating dimensions, those images just won't be
+-- eligible as backgrounds (fails safe, not silently wrong).
+--
+-- Module-level tables, not per-request state: this backend is one process
+-- (no multi-worker fan-out to keep in sync), so a plain Lua table living
+-- for the process lifetime plays the same role as Python's
+-- main._background_cache / main._site_background_state globals -- every
+-- client polling within the same 5-minute window gets the identical pick.
+local BACKGROUND_ASPECT_RATIO = 16 / 9
+local BACKGROUND_ASPECT_TOLERANCE = 0.035
+local BACKGROUND_CACHE_SECONDS = 300
+local SITE_BACKGROUND_ROTATION_SECONDS = 300
+local background_candidates_cache = { items = nil, built_at = 0 }
+local site_background_state = { item = nil, picked_at = 0 }
+math.randomseed(os.time())
+
+local function background_candidate_rows()
+  local now = os.time()
+  if background_candidates_cache.items and (now - background_candidates_cache.built_at) < BACKGROUND_CACHE_SECONDS then
+    return background_candidates_cache.items
+  end
+  -- Aspect-ratio + adult-content + visibility filtering all happen in SQL
+  -- (not Lua-side after fetch): is_adult=false is not optional here -- this
+  -- is the one condition standing between "site background" and "surprise
+  -- 18+ content on every visitor's screen", so it lives in the WHERE clause
+  -- itself rather than a filter step that's easier to accidentally skip.
+  local rows = db.fetchall(string.format(
+    [[
+      SELECT m.id, m.title, m.original_filename, m.image_width, m.image_height,
+             c.name AS category_name, sc.name AS subcategory_name,
+             u.username, CASE WHEN u.public_profile THEN u.display_name ELSE u.username END AS display_name
+      FROM media_items m
+      JOIN categories c ON c.id = m.category_id
+      LEFT JOIN subcategories sc ON sc.id = m.subcategory_id
+      JOIN users u ON u.id = m.user_id
+      WHERE m.deleted_at IS NULL
+        AND m.visibility='public'
+        AND m.media_kind='image'
+        AND m.is_adult=false
+        AND m.image_width IS NOT NULL AND m.image_height IS NOT NULL
+        AND m.image_width >= m.image_height
+        AND ABS((m.image_width::float / m.image_height::float) - %f) <= %f
+      ORDER BY COALESCE(m.pinned_at, m.created_at) DESC, m.created_at DESC
+      LIMIT 180
+    ]],
+    BACKGROUND_ASPECT_RATIO, BACKGROUND_ASPECT_TOLERANCE
+  ))
+  for _, row in ipairs(rows) do
+    row.id = db.toint(row.id, row.id)
+    row.image_width = db.toint(row.image_width, row.image_width)
+    row.image_height = db.toint(row.image_height, row.image_height)
+  end
+  background_candidates_cache.items = rows
+  background_candidates_cache.built_at = now
+  return rows
+end
+
+function M.site_background(req)
+  local now = os.time()
+  local needs_pick = (not site_background_state.item)
+    or site_background_state.picked_at == 0
+    or (now - site_background_state.picked_at) >= SITE_BACKGROUND_ROTATION_SECONDS
+  if needs_pick then
+    local candidates = background_candidate_rows()
+    if #candidates == 0 then
+      site_background_state.item = nil
+      site_background_state.picked_at = now
+    else
+      -- Never repeat the immediately-previous pick when more than one
+      -- candidate exists, so a slow-changing gallery doesn't visibly
+      -- "rotate" to the exact same image it just showed.
+      local previous_id = site_background_state.item and site_background_state.item.id
+      local pool = {}
+      for _, item in ipairs(candidates) do
+        if item.id ~= previous_id then pool[#pool + 1] = item end
+      end
+      if #pool == 0 then pool = candidates end
+      site_background_state.item = pool[math.random(#pool)]
+      site_background_state.picked_at = now
+    end
+  end
+
+  local item = site_background_state.item
+  local remaining = math.max(1, SITE_BACKGROUND_ROTATION_SECONDS - (now - site_background_state.picked_at))
+  if not item then
+    return 200, {
+      enabled = false, background = cjson.null, background_url = cjson.null, url = cjson.null,
+      updated_at = cjson.null, status = "disabled", refresh_after_seconds = SITE_BACKGROUND_ROTATION_SECONDS,
+    }
+  end
+
+  local origin = request_origin(req)
+  local url = append_query(origin .. "/api/media/" .. item.id .. "/thumb", "w", "1440")
+  return 200, {
+    enabled = true,
+    status = "active",
+    background = {
+      id = item.id,
+      title = nn(item.title) or nn(item.original_filename) or ("Background " .. item.id),
+      username = item.username,
+      display_name = item.display_name,
+      category_name = item.category_name,
+      subcategory_name = item.subcategory_name,
+      width = item.image_width,
+      height = item.image_height,
+      url = url,
+    },
+    updated_at = site_background_state.picked_at,
+    refresh_after_seconds = remaining,
+  }
+end
+
 function M.notifications_unread_count(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end

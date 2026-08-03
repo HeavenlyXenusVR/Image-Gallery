@@ -129,6 +129,7 @@ httpd.route("POST", "/api/me/2fa/disable", routes.totp_disable)
 
 httpd.route("GET", "/api/tags", routes.tag_cloud)
 httpd.route("GET", "/api/site/announcement", routes.site_announcement)
+httpd.route("GET", "/api/site/background", routes.site_background)
 httpd.route("GET", "/api/notifications", routes.notifications_list)
 httpd.route("GET", "/api/notifications/unread-count", routes.notifications_unread_count)
 httpd.route("POST", "/api/notifications/read-all", routes.notifications_mark_all_read)
