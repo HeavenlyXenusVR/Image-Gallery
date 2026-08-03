@@ -1,6 +1,6 @@
 {
   "gallery_url": "https://gallery.xenusanimations.studio",
   "status": "live",
-  "local_urls": ["http://127.0.0.1:8789", "http://localhost:8789", "http://192.168.12.187:8789", "http://172.17.0.1:8789", "http://172.18.0.1:8789"],
-  "updated_at": "2026-08-02T16:03:35-05:00"
+  "local_urls": ["http://127.0.0.1:8789", "http://localhost:8789", "http://172.20.10.6:8789", "http://192.168.12.187:8789"],
+  "updated_at": "2026-08-02T23:21:41-05:00"
 }
