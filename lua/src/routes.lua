@@ -1272,12 +1272,113 @@ function M.media_detail(req)
   end
   attach_media_subcategories(similar)
 
+  -- Personal tags (see the "Personal/private tags" section below) are
+  -- private to the viewer -- only ever fetched/shown for the logged-in
+  -- viewer's own tags on this post, never anyone else's, regardless of
+  -- who owns the post itself.
+  local personal_tags = {}
+  if viewer_id then
+    local rows = db.fetchall("SELECT tag FROM media_personal_tags WHERE media_id=%s AND user_id=%s ORDER BY tag", tostring(media_id), viewer_id)
+    for _, row in ipairs(rows) do personal_tags[#personal_tags + 1] = row.tag end
+  end
+
   return 200, {
     media = decode_media_row(item, adult_allowed, req),
     comments = arr(comments),
     reactions = { counts = counts, my_reaction = my_reaction },
     similar = arr(similar),
+    personal_tags = arr(personal_tags),
   }
+end
+
+-- ---------------------------------------------------------------------------
+-- Personal/private tags -- an idea from Romanticise (a booru-style personal
+-- image database): tags visible only to the tagger, layered on top of the
+-- shared public tag set, for private organization ("saw this on twitter",
+-- "ref for character X") that shouldn't be public metadata on someone
+-- else's (or even your own) post. Any logged-in user can personal-tag any
+-- post they can already see (ensure_media_visible) -- these are private TO
+-- THE TAGGER, not restricted to the post owner.
+-- ---------------------------------------------------------------------------
+
+local function clean_personal_tag(raw)
+  local cleaned = trim(nn(raw) or ""):lower():gsub("%s+", " ")
+  return cleaned:sub(1, 60)
+end
+
+function M.add_personal_tag(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local media_id = tonumber(req.params.media_id)
+  if not media_id then return 404, { detail = "Media not found." } end
+  local item = fetch_media_by_id(media_id, tostring(user.id))
+  local vstatus, vbody = ensure_media_visible(item, tostring(user.id))
+  if vstatus then return vstatus, vbody end
+
+  local payload = json_body(req)
+  local tag = clean_personal_tag(payload.tag)
+  if tag == "" then return 400, { detail = "Tag is required." } end
+  db.execute(
+    "INSERT INTO media_personal_tags (media_id, user_id, tag) VALUES (%s, %s, %s) ON CONFLICT (media_id, user_id, tag) DO NOTHING",
+    tostring(media_id), tostring(user.id), tag
+  )
+  local rows = db.fetchall("SELECT tag FROM media_personal_tags WHERE media_id=%s AND user_id=%s ORDER BY tag", tostring(media_id), tostring(user.id))
+  local tags = {}
+  for _, row in ipairs(rows) do tags[#tags + 1] = row.tag end
+  return 200, { personal_tags = arr(tags) }
+end
+
+function M.remove_personal_tag(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local media_id = tonumber(req.params.media_id)
+  if not media_id then return 404, { detail = "Media not found." } end
+  local tag = clean_personal_tag(req.params.tag)
+  db.execute("DELETE FROM media_personal_tags WHERE media_id=%s AND user_id=%s AND tag=%s", tostring(media_id), tostring(user.id), tag)
+  local rows = db.fetchall("SELECT tag FROM media_personal_tags WHERE media_id=%s AND user_id=%s ORDER BY tag", tostring(media_id), tostring(user.id))
+  local tags = {}
+  for _, row in ipairs(rows) do tags[#tags + 1] = row.tag end
+  return 200, { personal_tags = arr(tags) }
+end
+
+-- Lists everything the viewer has personally tagged with a given tag
+-- (or, with no tag param, their full set of distinct personal tags) --
+-- the "browse my own private organization" half of the feature, mirrors
+-- how the public tag cloud/search work but scoped to media_personal_tags.
+function M.my_personal_tags(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local tag = nn(req.query.tag)
+  if tag then
+    local rows = db.fetchall(
+      [[
+        SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.media_kind, m.mime_type,
+               m.original_filename, m.storage_path, m.is_adult, m.created_at, m.views, m.visibility
+        FROM media_personal_tags pt
+        JOIN media_items m ON m.id = pt.media_id
+        WHERE pt.user_id=%s AND pt.tag=%s AND m.deleted_at IS NULL
+        ORDER BY pt.created_at DESC
+        LIMIT 200
+      ]],
+      tostring(user.id), clean_personal_tag(tag)
+    )
+    local adult_allowed = viewer_adult_allowed(tostring(user.id))
+    for _, row in ipairs(rows) do
+      row.id = db.toint(row.id, row.id)
+      row.user_id = db.toint(row.user_id, row.user_id)
+      row.category_id = db.toint(row.category_id, row.category_id)
+      row.views = db.toint(row.views, 0)
+      row.is_adult = db.tobool(row.is_adult)
+      with_urls(req, row, adult_allowed)
+    end
+    return 200, { media = arr(rows) }
+  end
+  local tag_rows = db.fetchall(
+    "SELECT tag, COUNT(*) AS n FROM media_personal_tags WHERE user_id=%s GROUP BY tag ORDER BY n DESC, tag ASC",
+    tostring(user.id)
+  )
+  for _, row in ipairs(tag_rows) do row.n = db.toint(row.n, 0) end
+  return 200, { tags = arr(tag_rows) }
 end
 
 function M.like_media(req)
