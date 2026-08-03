@@ -11,6 +11,7 @@ local static = require("static")
 local pages_auth = require("pages_auth")
 local pages_admin = require("pages_admin")
 local pages_totp = require("pages_totp")
+local pages_feeds = require("pages_feeds")
 
 local settings = config.load()
 routes.settings = settings
@@ -204,6 +205,15 @@ httpd.route("GET", "/settings/2fa", pages_totp.settings_page)
 httpd.route("POST", "/settings/2fa/start", pages_totp.start_enrollment)
 httpd.route("POST", "/settings/2fa/confirm", pages_totp.confirm_enrollment)
 httpd.route("POST", "/settings/2fa/disable", pages_totp.disable_totp)
+
+-- RSS feeds + sitemap -- see pages_feeds.lua's header comment. All public/
+-- unauthenticated, crawlable endpoints. ".xml" is part of the literal path
+-- (not an extension httpd.lua strips), matching what feed readers expect.
+httpd.route("GET", "/feed.xml", pages_feeds.site_feed)
+httpd.route("GET", "/feed/category/:slug.xml", pages_feeds.category_feed)
+httpd.route("GET", "/feed/user/:username.xml", pages_feeds.user_feed)
+httpd.route("GET", "/feed/tag/:tag.xml", pages_feeds.tag_feed)
+httpd.route("GET", "/sitemap.xml", pages_feeds.sitemap)
 
 -- Serves the built React SPA directly at this backend's own hostname
 -- (gallery.xenusanimations.studio), the same way SwarmPanel's Lua backend

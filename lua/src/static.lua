@@ -12,6 +12,7 @@
 -- (index.html at repo root) which needs the extra /Image-Gallery/ prefix
 -- injected by scripts/write-root-shell.mjs for that separate deployment.
 local httpd = require("httpd")
+local pages_og = require("pages_og")
 
 local M = {}
 
@@ -72,15 +73,36 @@ function M.register()
   end)
 end
 
+-- Mirrors routes.lua's own request_origin() (not exported/shared -- it's
+-- a one-line computation, not worth adding a cross-module dependency for).
+local function request_origin(headers)
+  headers = headers or {}
+  local proto = (headers["x-forwarded-proto"] or "http"):match("^[^,%s]+") or "http"
+  local host = (headers["x-forwarded-host"] or headers["host"] or "localhost"):match("^[^,%s]+") or "localhost"
+  return proto .. "://" .. host
+end
+
 -- SPA fallback: any GET that isn't an API route and isn't a known static
 -- asset above falls through to httpd's "no route matched" path, which
 -- calls this. Serves the same index.html for "/", "/media/123",
 -- "/users/alice", etc. -- client-side react-router then takes over,
 -- exactly like the GitHub Pages 404.html trick this backend previously
 -- relied on, except here it's a real 200 instead of a 404-that-looks-fine.
-function M.fallback(method, path)
+--
+-- Exception: a known link-unfurling crawler hitting /media/:id gets a
+-- real Open Graph preview page instead (see pages_og.lua) -- crawlers
+-- never execute the SPA's JS, so without this every shared link preview
+-- was just the generic app-shell title/icon, not the actual post.
+function M.fallback(method, path, headers)
   if method ~= "GET" then return nil end
   if path:match("^/api/") then return nil end
+  local media_id = path:match("^/media/(%d+)$")
+  if media_id and pages_og.is_crawler(headers and headers["user-agent"]) then
+    local preview = pages_og.render_media_preview(request_origin(headers), media_id)
+    if preview then
+      return 200, preview, { ["Content-Type"] = "text/html; charset=utf-8" }
+    end
+  end
   return serve_file("../static/react/index.html")
 end
 

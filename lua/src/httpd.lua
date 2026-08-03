@@ -298,7 +298,7 @@ local function handle_connection(sock)
     local handler, params = match_route(method, path)
     if not handler then
       if M.fallback_handler then
-        local fb_status, fb_body, fb_headers = M.fallback_handler(method, path)
+        local fb_status, fb_body, fb_headers = M.fallback_handler(method, path, headers)
         if fb_status then
           for k, v in pairs(fb_headers or {}) do resp_headers[k] = v end
           send_response(sock, fb_status, STATUS_TEXT[fb_status] or "OK", resp_headers, fb_body)
