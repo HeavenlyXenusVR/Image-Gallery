@@ -4214,7 +4214,7 @@ local function referenced_media_ids()
   return set
 end
 
-local ORPHAN_CACHE_DIR_NAMES = { "_thumb_cache", "_video_cache" }
+local ORPHAN_CACHE_DIR_NAMES = { "_thumb_cache", "_video_cache", "_watermark_cache" }
 local ORPHAN_MIN_AGE_SECONDS = 24 * 3600
 
 -- Lua's %q escapes for a *Lua* string literal, not a shell argument -- use
@@ -4922,6 +4922,40 @@ local function serve_media_bytes_response(req, media_id, as_download, quality)
   if not content then
     return 404, { detail = "File is missing. Re-upload this post once so it can be saved into the new DB-backed file store." }
   end
+
+  -- Watermark/signature text has had a real Settings-page input and a
+  -- validated user_settings field since before this pass, but was never
+  -- actually applied to anything -- pure dead data. Cached on disk keyed
+  -- by (media_id, hash-of-current-watermark-text) so an ffmpeg pass only
+  -- ever runs once per post per watermark string, and changing your
+  -- watermark text naturally invalidates the old cached file instead of
+  -- requiring an explicit purge step.
+  if item.media_kind == "image" then
+    local owner = get_user(item.user_id)
+    local watermark_text = owner and owner.user_settings and nn(owner.user_settings.watermark_text)
+    if watermark_text and watermark_text ~= "" then
+      local cache_key = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(watermark_text)):sub(1, 16)
+      local cache_dir = M.settings.uploads_dir .. "/_watermark_cache"
+      local cache_path = cache_dir .. "/" .. tostring(media_id) .. "_" .. cache_key
+      local cf = io.open(cache_path, "rb")
+      if cf then
+        content = cf:read("*a")
+        cf:close()
+      else
+        local watermarked = media_files.apply_watermark(content, mime_type, watermark_text)
+        if watermarked then
+          os.execute("mkdir -p " .. shell_quote(cache_dir))
+          local out = io.open(cache_path, "wb")
+          if out then
+            out:write(watermarked)
+            out:close()
+          end
+          content = watermarked
+        end
+      end
+    end
+  end
+
   if as_download then
     db.execute("UPDATE media_items SET downloads=downloads+1 WHERE id=%s", tostring(media_id))
   end

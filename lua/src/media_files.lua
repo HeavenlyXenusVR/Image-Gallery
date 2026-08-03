@@ -499,4 +499,82 @@ function M.jpeg_preview_base64(content)
   return sodium.sodium_bin2base64(bytes, sodium.sodium_base64_VARIANT_ORIGINAL)
 end
 
+-- ---------------------------------------------------------------------------
+-- Watermark overlay -- "Watermark / Signature Text" has existed as a saved
+-- user_settings field with a real Settings-page input since before this
+-- pass, but was never actually applied anywhere: it was pure dead data,
+-- silently doing nothing after being saved. Uses ffmpeg's drawtext filter
+-- (already the only image-processing tool this backend depends on -- no
+-- ImageMagick binary is even installed on this host, despite being listed
+-- in the NixOS deps script, so staying on ffmpeg avoids adding a real new
+-- dependency for this).
+-- ---------------------------------------------------------------------------
+
+local WATERMARK_FONT = os.getenv("GALLERY_WATERMARK_FONT") or "/usr/share/fonts/noto/NotoSans-Regular.ttf"
+
+-- Escapes a file path for use as a drawtext fontfile=/textfile= value --
+-- ffmpeg's filtergraph mini-language treats ":" as the option separator
+-- and "\" as its own escape character, so both need doubling/escaping even
+-- though a real filesystem path (not user-controlled text -- that's the
+-- textfile trick above) is very unlikely to contain either in practice.
+local function ffmpeg_filter_path_escape(path)
+  return (tostring(path):gsub("\\", "\\\\"):gsub(":", "\\:"))
+end
+
+local EXT_FOR_MIME = {
+  ["image/png"] = "png",
+  ["image/webp"] = "webp",
+  ["image/jpeg"] = "jpg",
+  ["image/jpg"] = "jpg",
+}
+
+-- Returns new watermarked bytes, or nil on any failure (missing font,
+-- unsupported format, ffmpeg error, ...) -- callers must fail OPEN (serve
+-- the original, unwatermarked bytes) rather than error the whole request,
+-- since a cosmetic feature breaking should never take down file serving.
+function M.apply_watermark(content, mime_type, watermark_text)
+  local text = tostring(watermark_text or ""):match("^%s*(.-)%s*$")
+  if text == "" or not file_exists(WATERMARK_FONT) then return nil end
+  local ext = EXT_FOR_MIME[tostring(mime_type or ""):lower()]
+  if not ext then return nil end
+
+  local src = write_temp_file(content, "")
+  -- textfile= (not text=) so the user-controlled string never has to be
+  -- escaped into ffmpeg's filtergraph mini-language (colons/commas/quotes
+  -- in drawtext's inline text= are a real footgun to escape correctly) --
+  -- ffmpeg just reads the file's raw bytes as the label instead.
+  local text_file = os.tmpname()
+  local tf = io.open(text_file, "wb")
+  if not tf then os.remove(src); return nil end
+  tf:write(text:sub(1, 40))
+  tf:close()
+  local dst = os.tmpname() .. "." .. ext
+
+  -- Bottom-right corner, semi-transparent white with a soft shadow so it
+  -- reads against both light and dark image content; size and margin
+  -- scale with image height so it looks proportional on any resolution.
+  local filter = string.format(
+    "drawtext=fontfile=%s:textfile=%s:fontcolor=white@0.55:fontsize=h/22:x=w-tw-(h/40+12):y=h-th-(h/40+12):shadowcolor=black@0.5:shadowx=2:shadowy=2",
+    ffmpeg_filter_path_escape(WATERMARK_FONT), ffmpeg_filter_path_escape(text_file)
+  )
+  local cmd = string.format(
+    "%s -y -hide_banner -loglevel error -i %s -vf %s -frames:v 1 %s </dev/null >/dev/null 2>&1",
+    ffmpeg_bin(), shell_quote(src), shell_quote(filter), shell_quote(dst)
+  )
+  local ok = os.execute(cmd)
+  local success = (ok == 0 or ok == true)
+  os.remove(src)
+  os.remove(text_file)
+  if not success or not file_exists(dst) then
+    os.remove(dst)
+    return nil
+  end
+  local f = io.open(dst, "rb")
+  local bytes = f:read("*a")
+  f:close()
+  os.remove(dst)
+  if not bytes or #bytes == 0 then return nil end
+  return bytes
+end
+
 return M
