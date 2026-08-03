@@ -2662,7 +2662,7 @@ local function background_candidate_rows()
   -- itself rather than a filter step that's easier to accidentally skip.
   local rows = db.fetchall(string.format(
     [[
-      SELECT m.id, m.title, m.original_filename, m.image_width, m.image_height,
+      SELECT m.id, m.title, m.original_filename, m.mime_type, m.image_width, m.image_height,
              c.name AS category_name, sc.name AS subcategory_name,
              u.username, CASE WHEN u.public_profile THEN u.display_name ELSE u.username END AS display_name
       FROM media_items m
@@ -2726,7 +2726,18 @@ function M.site_background(req)
   end
 
   local origin = request_origin(req)
-  local url = append_query(origin .. "/api/media/" .. item.id .. "/thumb", "w", "1440")
+  -- GIFs go out as the raw original file, not the w=1440 thumb -- the
+  -- thumb endpoint flattens everything (animated or not) to a single
+  -- static WebP frame for grid-display performance, which would silently
+  -- turn an animated GIF background into a still image. The frontend
+  -- applies this as a CSS background-image, and browsers do animate GIFs
+  -- used that way, so serving the real file is all that's needed here.
+  local url
+  if is_gif_media(item) then
+    url = origin .. "/api/media/" .. item.id .. "/file"
+  else
+    url = append_query(origin .. "/api/media/" .. item.id .. "/thumb", "w", "1440")
+  end
   return 200, {
     enabled = true,
     status = "active",
