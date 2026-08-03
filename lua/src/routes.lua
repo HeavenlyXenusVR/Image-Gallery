@@ -889,6 +889,8 @@ function M.list_media(req)
   local date_from = nn(q.date_from)
   local date_to = nn(q.date_to)
   local adult = nn(q.adult)
+  local color_hex = nn(q.color) and tostring(q.color):gsub("^#", ""):match("^(%x%x%x%x%x%x)$") or nil
+  local color_tolerance = math.max(4, math.min(tonumber(q.color_tolerance) or 40, 128))
   local sort = VALID_SORTS[q.sort or ""] and q.sort or "new"
   local limit = bounded_limit(q.limit, 60)
   local offset = bounded_offset(q.offset)
@@ -927,6 +929,26 @@ function M.list_media(req)
   if date_to then clauses[#clauses + 1] = "m.created_at::date <= %s"; params[#params + 1] = date_to end
   if adult == "only" then clauses[#clauses + 1] = "m.is_adult=true"
   elseif adult == "hide" then clauses[#clauses + 1] = "m.is_adult=false" end
+  if color_hex then
+    -- Per-channel absolute-difference box filter (not true Euclidean
+    -- distance -- avoids needing sqrt/power in SQL for what's already an
+    -- approximate 8x8-average "dominant color", so extra precision here
+    -- wouldn't mean much). dominant_color is stored as "#rrggbb"; extract
+    -- each byte via decode(...,'hex') + get_byte rather than three
+    -- separate substring/to_number calls.
+    local target_r = tonumber(color_hex:sub(1, 2), 16)
+    local target_g = tonumber(color_hex:sub(3, 4), 16)
+    local target_b = tonumber(color_hex:sub(5, 6), 16)
+    clauses[#clauses + 1] = [[
+      m.dominant_color IS NOT NULL
+      AND ABS(get_byte(decode(substring(m.dominant_color from 2), 'hex'), 0) - %s) <= %s
+      AND ABS(get_byte(decode(substring(m.dominant_color from 2), 'hex'), 1) - %s) <= %s
+      AND ABS(get_byte(decode(substring(m.dominant_color from 2), 'hex'), 2) - %s) <= %s
+    ]]
+    params[#params + 1] = tostring(target_r); params[#params + 1] = tostring(color_tolerance)
+    params[#params + 1] = tostring(target_g); params[#params + 1] = tostring(color_tolerance)
+    params[#params + 1] = tostring(target_b); params[#params + 1] = tostring(color_tolerance)
+  end
 
   local where = "WHERE " .. table.concat(clauses, " AND ")
   local order = ({
@@ -949,7 +971,7 @@ function M.list_media(req)
            m.media_kind, m.mime_type, m.original_filename, m.storage_path, m.file_size,
            m.views, m.downloads, m.created_at, m.updated_at, m.visibility,
            m.comments_enabled, m.downloads_enabled, m.pinned_at, m.is_adult,
-           m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status,
+           m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status, m.dominant_color,
            c.name AS category_name, c.slug AS category_slug,
            sc.name AS subcategory_name, sc.slug AS subcategory_slug,
            u.username,
@@ -1009,7 +1031,7 @@ function M.my_media(req)
              m.media_kind, m.mime_type, m.original_filename, m.storage_path, m.file_size,
              m.views, m.downloads, m.created_at, m.updated_at, m.visibility,
              m.comments_enabled, m.downloads_enabled, m.pinned_at, m.is_adult,
-             m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status, m.deleted_at,
+             m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status, m.dominant_color, m.deleted_at,
              c.name AS category_name, c.slug AS category_slug,
              sc.name AS subcategory_name, sc.slug AS subcategory_slug,
              u.username, u.display_name, u.profile_color, u.public_profile,
@@ -1055,7 +1077,7 @@ local function fetch_media_by_id(media_id, viewer0)
            m.media_kind, m.mime_type, m.original_filename, m.storage_path, m.file_size,
            m.views, m.downloads, m.created_at, m.updated_at, m.visibility,
            m.comments_enabled, m.downloads_enabled, m.pinned_at, m.is_adult,
-           m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status,
+           m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status, m.dominant_color,
            m.deleted_at, m.publish_at,
            c.name AS category_name, c.slug AS category_slug,
            sc.name AS subcategory_name, sc.slug AS subcategory_slug,
@@ -1697,8 +1719,8 @@ function M.upload_media(req)
         (user_id, category_id, subcategory_id, title, description, tags, media_kind, mime_type, original_filename,
          storage_path, file_size, media_file_id, content_sha256, visibility, comments_enabled, downloads_enabled,
          is_adult, adult_marked_by_user, adult_marked_by_ai, moderation_status, moderation_score, moderation_reason, moderated_at,
-         image_phash, image_dhash, image_width, image_height)
-      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s,%s,%s)
+         image_phash, image_dhash, image_width, image_height, dominant_color)
+      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s,%s,%s,%s)
       RETURNING id
     ]],
     tostring(user.id), tostring(category_id), subcategory_id and tostring(subcategory_id) or nil,
@@ -1709,7 +1731,8 @@ function M.upload_media(req)
     moderation.moderation_status, tostring(moderation.moderation_score), moderation.moderation_reason,
     fingerprint and fingerprint.image_phash or nil, fingerprint and fingerprint.image_dhash or nil,
     fingerprint and fingerprint.image_width and tostring(fingerprint.image_width) or nil,
-    fingerprint and fingerprint.image_height and tostring(fingerprint.image_height) or nil
+    fingerprint and fingerprint.image_height and tostring(fingerprint.image_height) or nil,
+    fingerprint and fingerprint.dominant_color or nil
   )
   if not row then return 500, { detail = "Could not save media: " .. tostring(insert_err) } end
   local media_id = db.toint(row.id, row.id)
@@ -3004,7 +3027,7 @@ function M.collection_detail(req)
                m.media_kind, m.mime_type, m.original_filename, m.storage_path, m.file_size,
                m.views, m.downloads, m.created_at, m.updated_at, m.visibility,
                m.comments_enabled, m.downloads_enabled, m.pinned_at, m.is_adult,
-               m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status,
+               m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status, m.dominant_color,
                c.name AS category_name, c.slug AS category_slug,
                sc.name AS subcategory_name, sc.slug AS subcategory_slug,
                u.username,
@@ -3239,7 +3262,7 @@ local function list_profile_media(req, target_id, viewer_id, viewer_can_open_adu
              m.media_kind, m.mime_type, m.original_filename, m.storage_path, m.file_size,
              m.views, m.downloads, m.created_at, m.updated_at, m.visibility,
              m.comments_enabled, m.downloads_enabled, m.pinned_at, m.is_adult,
-             m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status,
+             m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status, m.dominant_color,
              c.name AS category_name, c.slug AS category_slug,
              sc.name AS subcategory_name, sc.slug AS subcategory_slug,
              u.username, u.display_name, u.profile_color, u.public_profile,

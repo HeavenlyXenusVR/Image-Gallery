@@ -331,6 +331,53 @@ local function raw_gray_frame(src_path, w, h)
   return bytes
 end
 
+-- Grabs a `w`x`h` RGB24 raw frame (3 bytes/pixel, row-major) via ffmpeg --
+-- same pattern as raw_gray_frame above, just a different pix_fmt. Used for
+-- cheap dominant-color extraction: downscaling to a small grid first (via
+-- ffmpeg's own lanczos scaler) and averaging those few pixels in Lua is
+-- effectively a fast box-blur, which is a perfectly good "dominant color"
+-- approximation without pulling in a real color-quantization library.
+local function raw_rgb_frame(src_path, w, h)
+  local dst = os.tmpname() .. ".raw"
+  local cmd = string.format(
+    "%s -y -hide_banner -loglevel error -i %s -vf %s -f rawvideo -pix_fmt rgb24 -frames:v 1 %s </dev/null >/dev/null 2>&1",
+    ffmpeg_bin(),
+    shell_quote(src_path),
+    shell_quote(string.format("scale=%d:%d:flags=lanczos", w, h)),
+    shell_quote(dst)
+  )
+  local ok = os.execute(cmd)
+  local success = (ok == 0 or ok == true)
+  if not success or not file_exists(dst) then
+    os.remove(dst)
+    return nil
+  end
+  local f = io.open(dst, "rb")
+  local bytes = f:read("*a")
+  f:close()
+  os.remove(dst)
+  if #bytes ~= w * h * 3 then return nil end
+  return bytes
+end
+
+-- Returns "#rrggbb" or nil. 8x8 (not 1x1) so ffmpeg's own lanczos scaler
+-- does the heavy lifting of a real weighted downsample instead of ffmpeg
+-- picking/blending just one sample point, then Lua averages those 64
+-- pixels -- cheap, deterministic, no extra dependency beyond the ffmpeg
+-- binary already required for phash/dhash/thumbnails.
+local function average_color(src_path)
+  local pixels = raw_rgb_frame(src_path, 8, 8)
+  if not pixels then return nil end
+  local r, g, b, count = 0, 0, 0, 0
+  for i = 1, #pixels, 3 do
+    r = r + pixels:byte(i)
+    g = g + pixels:byte(i + 1)
+    b = b + pixels:byte(i + 2)
+    count = count + 1
+  end
+  return string.format("#%02x%02x%02x", math.floor(r / count + 0.5), math.floor(g / count + 0.5), math.floor(b / count + 0.5))
+end
+
 -- Packs 64 0/1 bits (MSB-first) into a 16-hex-char string, matching Python's
 -- f"{bits:016x}" for a 64-bit integer -- built as two 32-bit halves since
 -- Lua 5.1/LuaJIT's `bit` library (and plain Lua number arithmetic) only
@@ -367,6 +414,7 @@ function M.image_fingerprint(content)
 
   local phash_pixels = raw_gray_frame(src, 8, 8)
   local dhash_pixels = raw_gray_frame(src, 9, 8)
+  local dominant_color = average_color(src)
   os.remove(src)
   if not phash_pixels and not dhash_pixels then return nil end
 
@@ -392,6 +440,7 @@ function M.image_fingerprint(content)
     image_dhash = image_dhash,
     image_width = width and tonumber(width) or nil,
     image_height = height and tonumber(height) or nil,
+    dominant_color = dominant_color,
   }
 end
 
