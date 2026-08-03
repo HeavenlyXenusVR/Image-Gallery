@@ -1121,7 +1121,25 @@ function M.media_detail(req)
     return 403, { detail = "Age verification required for this 18+ post." }
   end
 
-  db.execute("UPDATE media_items SET views=views+1 WHERE id=%s", tostring(media_id))
+  -- Only credit a view the first time this viewer sees this post, ever --
+  -- previously every single media_detail request incremented
+  -- unconditionally (confirmed also true of the original Python backend,
+  -- so not a rewrite regression, but a real reported bug either way:
+  -- reopening a post, a pull-to-refresh, or the client silently retrying
+  -- a request all inflated the count). viewer_key is "user:<id>" for a
+  -- logged-in viewer or "ip:<address>" for an anonymous one (public posts
+  -- don't require login to view, so there's no user id to key on); the
+  -- media_views row's PRIMARY KEY does the actual dedup work via ON
+  -- CONFLICT DO NOTHING -- views only ever increments when that INSERT
+  -- actually adds a new row.
+  local viewer_key = viewer_id and ("user:" .. viewer_id) or ("ip:" .. client_ip(req))
+  local new_view = db.fetchone(
+    "INSERT INTO media_views (media_id, viewer_key) VALUES (%s, %s) ON CONFLICT (media_id, viewer_key) DO NOTHING RETURNING media_id",
+    tostring(media_id), viewer_key
+  )
+  if new_view then
+    db.execute("UPDATE media_items SET views=views+1 WHERE id=%s", tostring(media_id))
+  end
 
   local comments = db.fetchall([[
     SELECT cm.id, cm.media_id, cm.user_id, cm.body, cm.created_at, cm.parent_comment_id,

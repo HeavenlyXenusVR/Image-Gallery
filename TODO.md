@@ -1,5 +1,22 @@
 # Lua rewrite — remaining work
 
+**View counts no longer inflate on repeat views, 2026-08-03**: every
+`GET /api/media/:id` unconditionally did `views=views+1` — reopening a
+post, pulling to refresh, or the client silently retrying all inflated
+the count, reported live. (Checked git history first: the original Python
+backend had the exact same unconditional-increment behavior, so this
+wasn't a rewrite regression, but still a real bug worth fixing either
+way.) Added a `media_views(media_id, viewer_key)` table (new, not in any
+prior migration script — created directly via psql) with a composite
+primary key doing the actual dedup: `viewer_key` is `"user:<id>"` for a
+logged-in viewer or `"ip:<address>"` for an anonymous one (public posts
+don't require login to view). `M.media_detail` now does `INSERT ... ON
+CONFLICT DO NOTHING RETURNING media_id` and only increments the counter
+when that insert actually adds a new row — i.e. the first time *this*
+viewer has ever seen *this* post. Verified live: the same viewer hitting
+a post 3x only added 1 view; a genuinely different (real, newly
+registered then deleted) viewer correctly added exactly 1 more.
+
 **Two more real bugs found and fixed, 2026-08-02 (later same day)**:
 - Login was silently locking out any account with a non-lowercase stored
   username (`M.login` lowercased the input via `normalize_username()` but
