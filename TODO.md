@@ -1,5 +1,43 @@
 # Lua rewrite — remaining work
 
+## 10 researched feature ideas, 2026-08-03
+
+Researched external sources (booru platforms like LANBooru/Derpibooru/
+Romanticise, self-hosted galleries like PhotoPrism/Piwigo/Lychee, and
+2026 social-engagement trends) for ideas compatible with this stack
+(LuaJIT + Postgres + ffmpeg/ImageMagick, no GPU/ML). All 10 are now live:
+
+1. **Perceptual-hash duplicate detection** — already fully built
+   (media_files.lua's image_fingerprint, routes.lua's
+   find_possible_duplicates) before this pass; just verified live.
+2. **Saved-search notifications** — already fully built
+   (notify_matching_saved_searches, called on every upload); just
+   verified live.
+3. **Dominant-color extraction + `&color=rrggbb` search** — new. 8x8
+   ffmpeg-scaled average, per-channel box filter.
+4. **Boolean tag search** (`&tags=cat OR dog -wet`) — new. jsonb `?|`/`?&`
+   operators against `tags::jsonb`, GIN-indexed.
+5. **Personal/private tags** — new. `media_personal_tags` table, visible
+   only to the tagger.
+6. **Open Graph link previews** — new. Crawler-UA detection in
+   `static.lua`'s SPA fallback serves real `og:*` tags for `/media/:id`;
+   excludes private/18+ posts.
+7. **RSS feeds + sitemap.xml** — new. `/feed.xml`,
+   `/feed/{category,tag,user}/*.xml`, `/sitemap.xml`, all public/18+-excluded.
+8. **"On this day" memories** — new. `GET /api/me/memories`.
+9. **Scoped read-only API keys** — new. `api_keys` table +
+   `/api/me/api-keys` CRUD + a keyed personal feed (`/feed/me.xml?key=`)
+   as the one consuming surface, deliberately not wired into the general
+   auth stack.
+
+Every new one was verified against live data (real uploads, throwaway
+test accounts created then deleted) before committing, not just
+syntax-checked. See individual commits for the full verification detail
+and the two bugs found/fixed along the way (a `local` visibility ordering
+bug in the API-keys code, and remembering `postgres` superuser access is
+needed for `ALTER TABLE`/`CREATE INDEX` on pre-existing tables since
+`botuser` only owns tables it creates itself).
+
 **View counts no longer inflate on repeat views, 2026-08-03**: every
 `GET /api/media/:id` unconditionally did `views=views+1` — reopening a
 post, pulling to refresh, or the client silently retrying all inflated
