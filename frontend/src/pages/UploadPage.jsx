@@ -35,6 +35,7 @@ export function UploadPage({ ctx }) {
     pinned: false,
     auto_ai: true,
     publish_at: "",
+    check_site_duplicates: false,
   });
   const [preview, setPreview] = useState("");
   const [busy, setBusy] = useState(false);
@@ -168,6 +169,7 @@ export function UploadPage({ ctx }) {
       body.set("downloads_enabled", String(form.downloads_enabled));
       body.set("pinned", String(form.pinned));
       body.set("auto_ai", String(form.auto_ai));
+      body.set("check_site_duplicates", String(form.check_site_duplicates));
       if (form.publish_at) body.set("publish_at", new Date(form.publish_at).toISOString());
 
       // Use XHR for upload progress tracking
@@ -212,6 +214,11 @@ export function UploadPage({ ctx }) {
       if (!duplicates.length && data.possible_duplicates?.length) {
         ctx.showToast(
           `Uploaded — heads up, ${data.possible_duplicates.length} similar post${data.possible_duplicates.length === 1 ? "" : "s"} already exist in your library.`,
+          "info",
+        );
+      } else if (data.possible_site_duplicates?.length) {
+        ctx.showToast(
+          `Uploaded — heads up, ${data.possible_site_duplicates.length} similar post${data.possible_site_duplicates.length === 1 ? "" : "s"} already exist elsewhere on the site.`,
           "info",
         );
       } else {
@@ -309,6 +316,7 @@ export function UploadPage({ ctx }) {
               <label className="check-row"><input checked={form.is_adult} onChange={(event) => update("is_adult", event.target.checked)} type="checkbox" />18+</label>
               <label className="check-row"><input checked={form.comments_enabled} onChange={(event) => update("comments_enabled", event.target.checked)} type="checkbox" />Comments</label>
               <label className="check-row"><input checked={form.downloads_enabled} onChange={(event) => update("downloads_enabled", event.target.checked)} type="checkbox" />Downloads</label>
+              <label className="check-row"><input checked={form.check_site_duplicates} onChange={(event) => update("check_site_duplicates", event.target.checked)} type="checkbox" />Check across the whole site</label>
             </div>
           </div>
           <div className="form-actions">

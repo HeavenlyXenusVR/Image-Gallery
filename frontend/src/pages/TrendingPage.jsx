@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { RefreshCw, TrendingUp } from "lucide-react";
 import { apiFetch, cachedApiFetch, clearApiCache, toQuery } from "../api.js";
 import { MediaGrid } from "../components/media.jsx";
@@ -6,6 +7,52 @@ import { Notice, Page, Segmented } from "../components/ui.jsx";
 import { preloadMediaAssets, replaceMedia } from "../utils/media.js";
 
 const WINDOWS = [["1", "24h"], ["7", "7 days"], ["30", "30 days"]];
+const LEADERBOARD_WINDOWS = [["7d", "7 days"], ["30d", "30 days"], ["all", "All time"]];
+
+function Leaderboard() {
+  const [window_, setWindow] = useState("30d");
+  const [creators, setCreators] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await cachedApiFetch(`/api/leaderboard${toQuery({ window: window_ })}`, { ttl: 60_000, staleTtl: 5 * 60_000 });
+      setCreators(data.creators || []);
+    } catch {
+      setCreators([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [window_]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  return (
+    <div className="leaderboard">
+      <div className="leaderboard-header">
+        <h3>Top creators</h3>
+        <Segmented value={window_} onChange={setWindow} options={LEADERBOARD_WINDOWS} />
+      </div>
+      {loading ? null : !creators.length ? (
+        <p className="leaderboard-empty">No creator activity in this window yet.</p>
+      ) : (
+        <ol className="leaderboard-list">
+          {creators.map((c, i) => (
+            <li key={c.id}>
+              <span className="leaderboard-rank">{i + 1}</span>
+              {c.user_avatar_url ? <img src={c.user_avatar_url} alt="" /> : <span className="leaderboard-avatar-fallback" />}
+              <Link to={`/users/${c.username}`} className="leaderboard-name">{c.display_name || c.username}</Link>
+              <span className="leaderboard-stats">{c.total_views.toLocaleString()} views · {c.total_likes.toLocaleString()} likes</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
 
 export function TrendingPage({ ctx }) {
   const [days, setDays] = useState("7");
@@ -61,6 +108,7 @@ export function TrendingPage({ ctx }) {
       ) : (
         <MediaGrid ctx={ctx} items={items} loading={loading} emptyTitle="Nothing trending yet" onItemUpdated={handleItemUpdated} onOpen={ctx.openLightbox} />
       )}
+      <Leaderboard />
     </Page>
   );
 }

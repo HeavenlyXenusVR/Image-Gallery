@@ -58,12 +58,16 @@ httpd.route("POST", "/api/auth/2fa/verify", routes.verify_2fa)
 httpd.route("POST", "/api/auth/logout", routes.logout)
 httpd.route("GET", "/api/me", routes.me)
 httpd.route("GET", "/api/me/media", routes.my_media)
+httpd.route("GET", "/api/me/stats", routes.creator_stats)
+httpd.route("GET", "/api/me/likes", routes.feed_liked)
+httpd.route("GET", "/api/feed/following", routes.feed_following)
 httpd.route("PATCH", "/api/me/profile", routes.update_profile)
 httpd.route("PATCH", "/api/me/settings", routes.update_settings)
 httpd.route("GET", "/api/appearance/presets", routes.appearance_presets)
 
 httpd.route("GET", "/api/categories", routes.list_categories)
 httpd.route("POST", "/api/categories", routes.create_category)
+httpd.route("GET", "/api/leaderboard", routes.leaderboard)
 
 httpd.route("GET", "/api/media", routes.list_media)
 httpd.route("POST", "/api/media", routes.upload_media)
@@ -73,6 +77,7 @@ httpd.route("POST", "/api/media", routes.upload_media)
 httpd.route("POST", "/api/media/bulk", routes.bulk_edit_media)
 httpd.route("POST", "/api/media/bulk-delete", routes.bulk_delete_media)
 httpd.route("POST", "/api/media/analyze", routes.analyze_media)
+httpd.route("GET", "/api/media/trending", routes.media_trending)
 -- ROUTE-ORDERING TRAP for future passes: httpd.lua's match_route() returns
 -- the FIRST registered route whose pattern matches, with no most-specific-
 -- wins logic. "/api/media/:media_id" below matches ANY single path segment
@@ -243,6 +248,11 @@ end
 -- No-op if no bot token is configured.
 local telegram = require("telegram")
 telegram.start(settings)
+
+-- Weekly per-creator Discord stats digest (see lua/src/digest.lua) -- same
+-- copas-background-coroutine pattern as telegram above.
+local digest = require("digest")
+digest.start(settings)
 
 httpd.listen(settings.host, settings.port)
 print(string.format("[image-gallery-lua] listening on %s:%d", settings.host, settings.port))

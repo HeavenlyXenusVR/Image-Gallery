@@ -46,7 +46,7 @@ function getFilterChips(filters, categories) {
     chips.push({ key: "adult", label: filters.adult === "hide" ? "No 18+" : "Only 18+", clear: { adult: "show" } });
   }
   if (filters.sort && filters.sort !== "new") {
-    const sortLabels = { popular: "Most liked", downloads: "Most downloaded", views: "Most viewed", old: "Oldest" };
+    const sortLabels = { trending: "Trending", popular: "Most liked", downloads: "Most downloaded", views: "Most viewed", old: "Oldest" };
     chips.push({ key: "sort", label: sortLabels[filters.sort] || filters.sort, clear: { sort: "new" } });
   }
   return chips;
@@ -345,6 +345,7 @@ export function DiscoverPage({ ctx }) {
             <span>Sort</span>
             <select value={filters.sort} onChange={(e) => updateFilter("sort", e.target.value)}>
               <option value="new">Newest</option>
+              <option value="trending">Trending</option>
               <option value="popular">Most liked</option>
               <option value="downloads">Most downloaded</option>
               <option value="views">Most viewed</option>

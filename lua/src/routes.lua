@@ -592,7 +592,7 @@ local function append_tag_array_clause(clauses, params, tags, column, negate, mo
   clauses[#clauses + 1] = negate and ("NOT " .. test) or test
 end
 
-local VALID_SORTS = { new = true, old = true, popular = true, views = true, downloads = true }
+local VALID_SORTS = { new = true, old = true, popular = true, views = true, downloads = true, trending = true }
 
 -- Moved here (before M.list_media/M.upload_media) rather than kept next to
 -- the rest of the collections-section helpers further down, since both
@@ -1018,6 +1018,21 @@ function M.list_media(req)
     downloads = "m.pinned_at DESC NULLS LAST, m.downloads DESC, m.created_at DESC",
     views = "m.pinned_at DESC NULLS LAST, m.views DESC, m.created_at DESC",
     old = "m.created_at ASC",
+    -- Age-decayed "hot" score (views + 3x weight per like, divided by age in
+    -- hours to a power) -- same idea as Reddit/HN ranking. Deliberately
+    -- built from columns list_media already selects (m.views, like_count,
+    -- m.created_at) rather than a media_views time-window join: that table
+    -- is a per-viewer dedup set (one row per unique viewer ever, see its
+    -- schema/TODO.md), not a view-event log, so a true "views in the last N
+    -- days" score isn't available without a schema change. The age decay
+    -- gets the same practical effect (recent posts with traction rank
+    -- above old posts with high raw totals) using only existing columns.
+    -- Note: can't reference the `like_count` SELECT-list alias here --
+    -- Postgres only resolves output aliases when they're the *entire*
+    -- ORDER BY item, not when nested inside a larger expression (confirmed
+    -- live: "column \"like_count\" does not exist") -- so this repeats the
+    -- underlying COUNT(DISTINCT l.user_id) aggregate instead.
+    trending = "m.pinned_at DESC NULLS LAST, (m.views + COUNT(DISTINCT l.user_id) * 3) / POWER(EXTRACT(EPOCH FROM (now() - m.created_at)) / 3600 + 2, 1.5) DESC, m.created_at DESC",
   })[sort] or "m.pinned_at DESC NULLS LAST, m.created_at DESC"
 
   -- Build the full parameter list in call order: 4 leading viewer refs used
@@ -1066,6 +1081,209 @@ function M.list_media(req)
   attach_media_subcategories(rows)
   for _, row in ipairs(rows) do decode_media_row(row, viewer_can_open_adult, req) end
   return 200, { media = arr(rows), limit = limit, offset = offset, sort = sort }
+end
+
+-- Shared by the three feed-shaped endpoints below (feed_following,
+-- feed_liked, media_trending) -- deliberately NOT wired into list_media()
+-- above (which stays exactly as already verified/live) to avoid risking a
+-- regression there; this repeats list_media's SELECT/JOIN/GROUP BY shape
+-- once, for these three new callers, rather than three more full copies.
+-- `extra_clause`/`extra_params` is one optional additional %s-style WHERE
+-- fragment (already includes its own params); `order_sql` is a trusted
+-- internal literal (never user input), same convention as list_media's own
+-- `order` table.
+local function fetch_media_feed(req, viewer_id, extra_clause, extra_params, order_sql, limit, offset)
+  local viewer_can_open_adult = false
+  if viewer_id then
+    local viewer = get_user(viewer_id)
+    viewer_can_open_adult = viewer ~= nil and nn(viewer.age_verified_at) ~= nil and viewer.adult_content_consent
+  end
+  local viewer0 = viewer_id or "0"
+
+  local clauses = {
+    "m.deleted_at IS NULL",
+    "(m.visibility='public' OR m.user_id=%s)",
+    "(m.publish_at IS NULL OR m.publish_at <= now() OR m.user_id=%s)",
+  }
+  local params = { viewer0, viewer0 }
+  if extra_clause then
+    clauses[#clauses + 1] = extra_clause
+    for _, p in ipairs(extra_params or {}) do params[#params + 1] = p end
+  end
+  local where = "WHERE " .. table.concat(clauses, " AND ")
+
+  local sql_params = { viewer0, viewer0, viewer0, viewer0, viewer0, viewer0 }
+  for _, p in ipairs(params) do sql_params[#sql_params + 1] = p end
+  sql_params[#sql_params + 1] = tostring(limit)
+  sql_params[#sql_params + 1] = tostring(offset)
+
+  local sql = string.format([[
+    SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.description, m.tags,
+           m.media_kind, m.mime_type, m.original_filename, m.storage_path, m.file_size,
+           m.views, m.downloads, m.created_at, m.updated_at, m.visibility,
+           m.comments_enabled, m.downloads_enabled, m.pinned_at, m.is_adult,
+           m.adult_marked_by_user, m.adult_marked_by_ai, m.moderation_status, m.dominant_color,
+           c.name AS category_name, c.slug AS category_slug,
+           sc.name AS subcategory_name, sc.slug AS subcategory_slug,
+           u.username,
+           CASE WHEN u.public_profile OR u.id::text=%%s THEN u.display_name ELSE u.username END AS display_name,
+           CASE WHEN u.public_profile OR u.id::text=%%s THEN u.bio ELSE NULL END AS user_bio,
+           CASE WHEN u.public_profile OR u.id::text=%%s THEN u.website_url ELSE NULL END AS user_website_url,
+           CASE WHEN u.public_profile OR u.id::text=%%s THEN u.avatar_path ELSE NULL END AS user_avatar_path,
+           u.profile_color, u.public_profile,
+           COUNT(DISTINCT l.user_id) AS like_count,
+           COUNT(DISTINCT cm.id) AS comment_count,
+           MAX(CASE WHEN b.user_id IS NULL THEN 0 ELSE 1 END) AS bookmarked_by_me,
+           MAX(CASE WHEN l2.user_id IS NULL THEN 0 ELSE 1 END) AS liked_by_me
+    FROM media_items m
+    JOIN categories c ON c.id = m.category_id
+    LEFT JOIN subcategories sc ON sc.id = m.subcategory_id
+    JOIN users u ON u.id = m.user_id
+    LEFT JOIN media_likes l ON l.media_id = m.id
+    LEFT JOIN media_likes l2 ON l2.media_id = m.id AND l2.user_id::text = %%s
+    LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id::text = %%s
+    LEFT JOIN media_comments cm ON cm.media_id = m.id
+    %s
+    GROUP BY m.id, c.name, c.slug, sc.name, sc.slug, u.username, u.display_name, u.bio,
+             u.website_url, u.avatar_path, u.profile_color, u.public_profile, u.id
+    ORDER BY %s
+    LIMIT %%s OFFSET %%s
+  ]], where, order_sql)
+
+  local rows, err = db.fetchall(sql, unpack(sql_params))
+  if err then return nil, err end
+  attach_media_subcategories(rows)
+  for _, row in ipairs(rows) do decode_media_row(row, viewer_can_open_adult, req) end
+  return rows
+end
+
+-- GET /api/feed/following -- confirmed live-404ing: FeedPage.jsx (routed at
+-- /following) has always called this endpoint, but it was never registered
+-- in main.lua. Same "shipped in React, never ported to Lua" gap this
+-- project has repeatedly found (login/register, /admin, social routes,
+-- site background all had the same shape).
+function M.feed_following(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local viewer0 = tostring(user.id)
+  local q = req.query or {}
+  local limit = bounded_limit(q.limit, 60)
+  local offset = bounded_offset(q.offset)
+  local rows, err = fetch_media_feed(
+    req, viewer0,
+    "m.user_id IN (SELECT followed_id FROM user_follows WHERE follower_id=%s)", { viewer0 },
+    "m.pinned_at DESC NULLS LAST, m.created_at DESC", limit, offset
+  )
+  if err then return 500, { detail = "Query failed: " .. tostring(err) } end
+  return 200, { media = arr(rows), limit = limit, offset = offset }
+end
+
+-- GET /api/me/likes -- same dead-endpoint shape as feed_following above:
+-- FeedPage.jsx's mode="liked" variant (routed at /liked) has always called
+-- this, also never registered.
+function M.feed_liked(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local viewer0 = tostring(user.id)
+  local q = req.query or {}
+  local limit = bounded_limit(q.limit, 60)
+  local offset = bounded_offset(q.offset)
+  local rows, err = fetch_media_feed(
+    req, viewer0,
+    "EXISTS (SELECT 1 FROM media_likes ml WHERE ml.media_id=m.id AND ml.user_id=%s)", { viewer0 },
+    "m.pinned_at DESC NULLS LAST, m.created_at DESC", limit, offset
+  )
+  if err then return 500, { detail = "Query failed: " .. tostring(err) } end
+  return 200, { media = arr(rows), limit = limit, offset = offset }
+end
+
+local TRENDING_WINDOWS = { ["1"] = true, ["7"] = true, ["30"] = true }
+
+-- GET /api/media/trending?days=N&limit=N -- same dead-endpoint shape again:
+-- TrendingPage.jsx (routed at /trending) has always called this with a
+-- day-window param; never registered. Distinct from list_media's own
+-- `sort=trending` (added earlier this pass) -- that one is an all-time,
+-- age-decayed ranking with no window; the frontend never actually calls it
+-- and always expected this dedicated windowed endpoint instead, per its own
+-- lede text ("ranked by views, likes, and comments within the selected
+-- window") -- no age-decay needed here since the window itself bounds
+-- recency.
+function M.media_trending(req)
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  local q = req.query or {}
+  local days = TRENDING_WINDOWS[tostring(q.days or "7")] and tostring(q.days) or "7"
+  local limit = bounded_limit(q.limit, 30)
+  local rows, err = fetch_media_feed(
+    req, viewer_id,
+    "m.created_at > now() - (%s || ' days')::interval", { days },
+    "(m.views + COUNT(DISTINCT l.user_id) * 3 + COUNT(DISTINCT cm.id) * 2) DESC, m.created_at DESC",
+    limit, 0
+  )
+  if err then return 500, { detail = "Query failed: " .. tostring(err) } end
+  return 200, { media = arr(rows), days = tonumber(days), limit = limit }
+end
+
+-- GET /api/leaderboard?window=7d|30d|all -- public creator ranking. Net-new
+-- (no dead frontend route recovered here, unlike feed_following/feed_liked/
+-- media_trending above). Ranks by the same visibility guard as list_media,
+-- respecting public_profile for display name/avatar the same way
+-- fetch_media_feed's SELECT list does.
+local LEADERBOARD_WINDOW_DAYS = { ["7d"] = "7", ["30d"] = "30" }
+
+function M.leaderboard(req)
+  local q = req.query or {}
+  local window = (q.window == "7d" or q.window == "30d" or q.window == "all") and q.window or "30d"
+  local days = LEADERBOARD_WINDOW_DAYS[window]
+  -- Applied identically to the main aggregate AND both like-count subqueries
+  -- below, so "7-day leaderboard" consistently means "views/likes/posts from
+  -- posts created in the last 7 days" rather than mixing an all-time like
+  -- count into a windowed view count.
+  local main_window_clause = days and "AND m.created_at > now() - (%s || ' days')::interval" or ""
+  local sub_window_clause = days and "AND lm.created_at > now() - (%s || ' days')::interval" or ""
+
+  local sql = string.format([[
+    SELECT u.id, u.username,
+           CASE WHEN u.public_profile THEN u.display_name ELSE u.username END AS display_name,
+           CASE WHEN u.public_profile THEN u.avatar_path ELSE NULL END AS user_avatar_path,
+           u.profile_color, u.public_profile,
+           COALESCE(SUM(m.views), 0) AS total_views,
+           COUNT(DISTINCT m.id) AS post_count,
+           (SELECT COUNT(*) FROM media_likes l
+            JOIN media_items lm ON lm.id = l.media_id AND lm.deleted_at IS NULL
+            WHERE lm.user_id = u.id %s) AS total_likes
+    FROM media_items m
+    JOIN users u ON u.id = m.user_id
+    WHERE m.deleted_at IS NULL AND m.visibility='public'
+      AND (m.publish_at IS NULL OR m.publish_at <= now())
+      %s
+    GROUP BY u.id
+    ORDER BY (COALESCE(SUM(m.views), 0) + (
+      SELECT COUNT(*) FROM media_likes l
+      JOIN media_items lm ON lm.id = l.media_id AND lm.deleted_at IS NULL
+      WHERE lm.user_id = u.id %s
+    ) * 3) DESC
+    LIMIT 25
+  ]], sub_window_clause, main_window_clause, sub_window_clause)
+
+  local params = {}
+  if days then params = { days, days, days } end
+  local rows, err = db.fetchall(sql, unpack(params))
+  if err then return 500, { detail = "Query failed: " .. tostring(err) } end
+
+  local origin = request_origin(req)
+  for _, row in ipairs(rows) do
+    row.id = db.toint(row.id, row.id)
+    row.total_views = db.toint(row.total_views, 0)
+    row.post_count = db.toint(row.post_count, 0)
+    row.total_likes = db.toint(row.total_likes, 0)
+    row.public_profile = db.tobool(row.public_profile)
+    if row.user_avatar_path and row.user_avatar_path ~= cjson.null then
+      row.user_avatar_url = origin .. "/api/users/" .. row.id .. "/avatar"
+    end
+    row.user_avatar_path = nil
+  end
+  return 200, { window = window, creators = arr(rows) }
 end
 
 -- GET /api/me/media -- the Studio tab's data source. Mirrors
@@ -1121,6 +1339,94 @@ function M.my_media(req)
   attach_media_subcategories(rows)
   for _, row in ipairs(rows) do decode_media_row(row, viewer_can_open_adult, req) end
   return 200, { media = arr(rows) }
+end
+
+-- GET /api/me/stats -- Creator analytics dashboard data source. Two parts:
+-- (1) top_posts: the creator's own non-deleted media ranked by views, same
+-- join shape as M.my_media above (likes/comments/bookmarks) just re-ordered
+-- and capped smaller since this is a "top N" table, not the full Studio list.
+-- (2) daily_new_viewers: a day-bucketed count of media_views rows (the
+-- per-viewer-ever dedup table backing the view-count-dedup fix) for the
+-- last 30 days across all of this creator's media. This is "unique viewer
+-- growth," NOT "total views" -- media_views has one row per viewer per
+-- media item, ever (PRIMARY KEY (media_id, viewer_key)), so it can't count
+-- repeat views; label it accordingly in the UI.
+-- Extracted so the weekly Discord digest (digest.lua) can call this from a
+-- background loop with no real HTTP `req` -- only needs a raw user id and an
+-- origin string for building absolute thumb URLs (avoids depending on
+-- with_urls()/request_origin(), which both require a real req.headers).
+local function creator_stats_for(user_id, origin)
+  local viewer0 = tostring(user_id)
+
+  local top_posts, err1 = db.fetchall([[
+    SELECT m.id, m.title, m.media_kind, m.mime_type, m.original_filename, m.storage_path,
+           m.views, m.downloads, m.created_at, m.visibility,
+           COUNT(DISTINCT l.user_id) AS like_count,
+           COUNT(DISTINCT b.user_id) AS save_count,
+           COUNT(DISTINCT cm.id) AS comment_count
+    FROM media_items m
+    LEFT JOIN media_likes l ON l.media_id = m.id
+    LEFT JOIN media_bookmarks b ON b.media_id = m.id
+    LEFT JOIN media_comments cm ON cm.media_id = m.id
+    WHERE m.user_id = %s AND m.deleted_at IS NULL
+    GROUP BY m.id
+    ORDER BY m.views DESC, m.created_at DESC
+    LIMIT 20
+  ]], viewer0)
+  if err1 then return nil, err1 end
+  for _, row in ipairs(top_posts) do
+    row.id = db.toint(row.id, row.id)
+    row.views = db.toint(row.views, 0)
+    row.downloads = db.toint(row.downloads, 0)
+    row.like_count = db.toint(row.like_count, 0)
+    row.save_count = db.toint(row.save_count, 0)
+    row.comment_count = db.toint(row.comment_count, 0)
+    if row.media_kind == "image" or row.media_kind == "video" then
+      row.thumb_url = append_query(origin .. "/api/media/" .. row.id .. "/thumb", "w", "640")
+    end
+  end
+
+  local daily_new_viewers, err2 = db.fetchall([[
+    SELECT date_trunc('day', mv.created_at) AS day, COUNT(*) AS new_viewers
+    FROM media_views mv
+    JOIN media_items m ON m.id = mv.media_id
+    WHERE m.user_id = %s AND mv.created_at > now() - interval '30 days'
+    GROUP BY 1
+    ORDER BY 1
+  ]], viewer0)
+  if err2 then return nil, err2 end
+  for _, row in ipairs(daily_new_viewers) do
+    row.new_viewers = db.toint(row.new_viewers, 0)
+  end
+
+  local totals = db.fetchone([[
+    SELECT COALESCE(SUM(m.views), 0) AS total_views,
+           COUNT(DISTINCT l.user_id || ':' || l.media_id) AS total_likes,
+           COUNT(DISTINCT b.user_id || ':' || b.media_id) AS total_saves
+    FROM media_items m
+    LEFT JOIN media_likes l ON l.media_id = m.id
+    LEFT JOIN media_bookmarks b ON b.media_id = m.id
+    WHERE m.user_id = %s AND m.deleted_at IS NULL
+  ]], viewer0)
+
+  return {
+    top_posts = arr(top_posts),
+    daily_new_viewers = arr(daily_new_viewers),
+    totals = {
+      total_views = db.toint(totals and totals.total_views, 0),
+      total_likes = db.toint(totals and totals.total_likes, 0),
+      total_saves = db.toint(totals and totals.total_saves, 0),
+    },
+  }
+end
+M.creator_stats_for = creator_stats_for
+
+function M.creator_stats(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local result, err = creator_stats_for(user.id, request_origin(req))
+  if not result then return 500, { detail = "Query failed: " .. tostring(err) } end
+  return 200, result
 end
 
 -- ---------------------------------------------------------------------------
@@ -1254,14 +1560,64 @@ function M.media_detail(req)
     my_reaction = r and r.emoji or nil
   end
 
-  local similar = db.fetchall([[
-    SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.media_kind, m.mime_type,
-           m.original_filename, m.storage_path, m.is_adult, m.created_at, m.views
-    FROM media_items m
-    WHERE m.category_id = %s AND m.id != %s AND m.deleted_at IS NULL AND m.visibility='public'
-    ORDER BY m.created_at DESC
-    LIMIT 8
-  ]], tostring(item.category_id), tostring(media_id))
+  -- "Related media": scored by tag overlap (reusing the same jsonb `?|`
+  -- helper the boolean tag search uses) OR-ed with same-category, ranked by
+  -- overlap count with category match as a tiebreaker. Falls back to the
+  -- original category-only/newest behavior when the seed post has no tags,
+  -- so an untagged post still gets a non-empty related list. Deliberately
+  -- skips perceptual-hash comparison here -- find_possible_duplicates
+  -- already showed that's expensive even scoped to a single user's 1500
+  -- most recent uploads; not worth it for a "you might also like" widget
+  -- spanning every user's media.
+  local seed_tags = {}
+  if item.tags and item.tags ~= cjson.null then
+    local ok, decoded = pcall(cjson.decode, item.tags)
+    if ok and type(decoded) == "table" then seed_tags = decoded end
+  end
+
+  local similar_sql, similar_params
+  if #seed_tags > 0 then
+    local where_tag_parts, where_tag_params = {}, {}
+    append_tag_array_clause(where_tag_parts, where_tag_params, seed_tags, "m.tags", false, "any")
+
+    local order_placeholders, order_tag_params = {}, {}
+    for _, tag in ipairs(seed_tags) do
+      order_placeholders[#order_placeholders + 1] = "%s"
+      order_tag_params[#order_tag_params + 1] = tag
+    end
+    local order_tag_array_sql = "ARRAY[" .. table.concat(order_placeholders, ",") .. "]"
+
+    similar_sql = string.format([[
+      SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.media_kind, m.mime_type,
+             m.original_filename, m.storage_path, m.is_adult, m.created_at, m.views
+      FROM media_items m
+      WHERE m.id != %%s AND m.deleted_at IS NULL AND m.visibility='public'
+        AND (m.publish_at IS NULL OR m.publish_at <= now())
+        AND (m.category_id = %%s OR %s)
+      ORDER BY
+        (CASE WHEN m.category_id = %%s THEN 1 ELSE 0 END)
+        + (SELECT count(*) FROM jsonb_array_elements_text(m.tags::jsonb) t WHERE t = ANY(%s::text[])) DESC,
+        m.created_at DESC
+      LIMIT 12
+    ]], where_tag_parts[1], order_tag_array_sql)
+
+    similar_params = { tostring(media_id), tostring(item.category_id) }
+    for _, p in ipairs(where_tag_params) do similar_params[#similar_params + 1] = p end
+    similar_params[#similar_params + 1] = tostring(item.category_id)
+    for _, p in ipairs(order_tag_params) do similar_params[#similar_params + 1] = p end
+  else
+    similar_sql = [[
+      SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.media_kind, m.mime_type,
+             m.original_filename, m.storage_path, m.is_adult, m.created_at, m.views
+      FROM media_items m
+      WHERE m.category_id = %s AND m.id != %s AND m.deleted_at IS NULL AND m.visibility='public'
+        AND (m.publish_at IS NULL OR m.publish_at <= now())
+      ORDER BY m.created_at DESC
+      LIMIT 12
+    ]]
+    similar_params = { tostring(item.category_id), tostring(media_id) }
+  end
+  local similar = db.fetchall(similar_sql, unpack(similar_params))
   for _, row in ipairs(similar) do
     row.id = db.toint(row.id, row.id)
     row.user_id = db.toint(row.user_id, row.user_id)
@@ -1653,16 +2009,26 @@ end
 -- (media_files.save_media_file) -> media_items row. Mirrors
 -- app/routers/media.py's upload_media() + app/db/media.py's add_media().
 --
--- NOT YET PORTED as part of this pass (left for a follow-up): AI auto-
--- classification/autofill (Python's auto_ai path), possible-duplicate
--- perceptual-hash detection, Discord upload notifications, background AI
--- learning, saved-search match notifications, publish_at scheduling, and
--- the multi-subcategory array (subcategory_ids_json) -- this accepts a
--- single subcategory via subcategory_id/subcategory_name, matching what
--- list_media/media_detail already expose (m.subcategory_id). Video thumb/
--- quality cache warmup is also not queued here; serve_media_thumb already
--- renders+caches lazily on first request instead.
+-- Video thumb/quality cache warmup is not queued here; serve_media_thumb
+-- already renders+caches lazily on first request instead.
 -- ---------------------------------------------------------------------------
+
+-- Validates the frontend's "Schedule for later" field (a datetime-local
+-- value round-tripped through JS Date#toISOString(), e.g.
+-- "2026-08-10T15:30:00.000Z"). Returns nil (immediate publish) when blank,
+-- the validated timestamp string when it parses and is in the future, or
+-- nil + an error message otherwise. Parsing/future-check is delegated to
+-- Postgres itself (a single cheap round trip) rather than hand-rolling
+-- ISO8601 parsing in Lua -- avoids silently accepting a format Postgres
+-- would then reject at INSERT time, after the file blob is already saved.
+local function parse_publish_at(raw)
+  raw = nn(raw)
+  if not raw or trim(raw) == "" then return nil, nil end
+  local row, err = db.fetchone("SELECT (%s::timestamp > now()) AS in_future", raw)
+  if not row then return nil, "Invalid schedule date." end
+  if not db.tobool(row.in_future) then return nil, "Scheduled time must be in the future." end
+  return raw, nil
+end
 
 local sodium = require("luasodium")
 
@@ -1802,20 +2168,40 @@ end
 -- comparison pool small and the result meaningful -- catching accidental
 -- re-uploads, not flagging every repost. Advisory only; never blocks the
 -- upload itself.
-local function find_possible_duplicates(req, user_id, fingerprint, limit)
+-- `scope`: "mine" (default, unchanged behavior) scopes candidates to the
+-- uploader's own prior uploads. "site" widens the search to every user's
+-- uploads, opt-in only (see M.upload_media's check_site_duplicates flag) --
+-- bounded by dedup_scan_window_days (config.lua) rather than just the 1500-
+-- row cap, since "site-wide" with no time bound would just become "the 1500
+-- newest uploads from anyone," missing older duplicates and not meaningfully
+-- related to fingerprint similarity.
+local function find_possible_duplicates(req, user_id, fingerprint, limit, scope)
   limit = limit or 3
   if not fingerprint then return {} end
   local current_phash, current_dhash = nn(fingerprint.image_phash), nn(fingerprint.image_dhash)
   if not current_phash and not current_dhash then return {} end
 
-  local candidates = db.fetchall([[
-    SELECT id, title, image_phash, image_dhash
-    FROM media_items
-    WHERE user_id=%s AND deleted_at IS NULL AND media_kind='image'
-      AND (image_phash IS NOT NULL OR image_dhash IS NOT NULL)
-    ORDER BY created_at DESC
-    LIMIT 1500
-  ]], tostring(user_id))
+  local candidates
+  if scope == "site" then
+    candidates = db.fetchall(string.format([[
+      SELECT id, title, image_phash, image_dhash
+      FROM media_items
+      WHERE user_id != %%s AND deleted_at IS NULL AND media_kind='image' AND visibility='public'
+        AND (image_phash IS NOT NULL OR image_dhash IS NOT NULL)
+        AND created_at > now() - (%d || ' days')::interval
+      ORDER BY created_at DESC
+      LIMIT 1500
+    ]], M.settings.dedup_scan_window_days), tostring(user_id))
+  else
+    candidates = db.fetchall([[
+      SELECT id, title, image_phash, image_dhash
+      FROM media_items
+      WHERE user_id=%s AND deleted_at IS NULL AND media_kind='image'
+        AND (image_phash IS NOT NULL OR image_dhash IS NOT NULL)
+      ORDER BY created_at DESC
+      LIMIT 1500
+    ]], tostring(user_id))
+  end
 
   local scored = {}
   for _, candidate in ipairs(candidates) do
@@ -1911,6 +2297,8 @@ function M.upload_media(req)
   if visibility ~= "public" and visibility ~= "unlisted" and visibility ~= "private" then
     return 400, { detail = "Visibility must be public, unlisted, or private." }
   end
+  local publish_at, publish_at_err = parse_publish_at(form.publish_at)
+  if publish_at_err then return 400, { detail = publish_at_err } end
   local comments_enabled = form_bool(form.comments_enabled, true)
   local downloads_enabled = form_bool(form.downloads_enabled, true)
   local is_adult_input = form_bool(form.is_adult, false)
@@ -1979,6 +2367,12 @@ function M.upload_media(req)
 
   local fingerprint = media_kind == "image" and media_files.image_fingerprint(upload.content) or nil
   local possible_duplicates = find_possible_duplicates(req, user.id, fingerprint)
+  -- Site-wide check is opt-in per upload (not automatic) so the default
+  -- upload response/behavior for everyone who doesn't set this flag is
+  -- completely unchanged.
+  local possible_site_duplicates = form_bool(form.check_site_duplicates, false)
+    and find_possible_duplicates(req, user.id, fingerprint, 3, "site")
+    or {}
 
   local media_file, save_err = media_files.save_media_file({
     user_id = user.id,
@@ -1998,8 +2392,8 @@ function M.upload_media(req)
         (user_id, category_id, subcategory_id, title, description, tags, media_kind, mime_type, original_filename,
          storage_path, file_size, media_file_id, content_sha256, visibility, comments_enabled, downloads_enabled,
          is_adult, adult_marked_by_user, adult_marked_by_ai, moderation_status, moderation_score, moderation_reason, moderated_at,
-         image_phash, image_dhash, image_width, image_height, dominant_color)
-      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s,%s,%s,%s)
+         image_phash, image_dhash, image_width, image_height, dominant_color, publish_at)
+      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now(),%s,%s,%s,%s,%s,%s)
       RETURNING id
     ]],
     tostring(user.id), tostring(category_id), subcategory_id and tostring(subcategory_id) or nil,
@@ -2011,7 +2405,7 @@ function M.upload_media(req)
     fingerprint and fingerprint.image_phash or nil, fingerprint and fingerprint.image_dhash or nil,
     fingerprint and fingerprint.image_width and tostring(fingerprint.image_width) or nil,
     fingerprint and fingerprint.image_height and tostring(fingerprint.image_height) or nil,
-    fingerprint and fingerprint.dominant_color or nil
+    fingerprint and fingerprint.dominant_color or nil, publish_at
   )
   if not row then return 500, { detail = "Could not save media: " .. tostring(insert_err) } end
   local media_id = db.toint(row.id, row.id)
@@ -2021,10 +2415,15 @@ function M.upload_media(req)
   local adult_allowed = viewer_adult_allowed(tostring(user.id))
   local enriched = decode_media_row(item, adult_allowed, req)
   notify_discord_upload(req, user, enriched)
-  if visibility == "public" then
+  -- Scheduled posts (future publish_at) aren't visible yet, so saved-search
+  -- subscribers must not be notified until the scheduled time actually
+  -- arrives; there's no publish-time sweep (see parse_publish_at's comment
+  -- above -- visibility is computed at read time everywhere), so a
+  -- scheduled post simply never triggers this notification retroactively.
+  if visibility == "public" and not publish_at then
     notify_matching_saved_searches(user.id, enriched)
   end
-  return 200, { media = enriched, possible_duplicates = arr(possible_duplicates) }
+  return 200, { media = enriched, possible_duplicates = arr(possible_duplicates), possible_site_duplicates = arr(possible_site_duplicates) }
 end
 
 -- Standalone "preview the AI suggestion before uploading" endpoint. Mirrors

@@ -3137,6 +3137,150 @@ textarea:focus {
   background: var(--panel-2);
 }
 
+.leaderboard {
+  margin-top: 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.leaderboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.leaderboard-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.leaderboard-empty {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.leaderboard-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.leaderboard-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.leaderboard-rank {
+  width: 20px;
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.leaderboard-list img,
+.leaderboard-avatar-fallback {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--panel-2);
+  flex-shrink: 0;
+}
+
+.leaderboard-name {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.leaderboard-stats {
+  color: var(--muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.studio-analytics {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.studio-analytics h3 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.studio-chart {
+  width: 100%;
+  height: 64px;
+  display: block;
+}
+
+.studio-chart-bar {
+  fill: var(--accent, #37c9a7);
+  opacity: 0.85;
+}
+
+.studio-chart-bar:hover {
+  opacity: 1;
+}
+
+.studio-top-posts table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.studio-top-posts th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.studio-top-posts td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--text);
+}
+
+.studio-top-posts-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 260px;
+}
+
+.studio-top-posts-title img {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.studio-top-posts-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .studio-bulk-bar span {
   flex: 1;
   color: var(--muted);

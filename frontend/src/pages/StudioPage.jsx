@@ -6,6 +6,67 @@ import { StudioItem } from "../components/media.jsx";
 import { EmptyState, Metric, Page, RequireLogin, SkeletonList } from "../components/ui.jsx";
 import { replaceMedia } from "../utils/media.js";
 
+// Minimal inline-SVG bar chart -- deliberately no charting library (none is
+// installed; this app's frontend footprint is otherwise dependency-light).
+// `days` is the /api/me/stats `daily_new_viewers` array of
+// { day, new_viewers }, already ordered oldest-to-newest.
+function ViewerGrowthChart({ days }) {
+  if (!days || !days.length) return null;
+  const max = Math.max(1, ...days.map((d) => Number(d.new_viewers || 0)));
+  const width = 320;
+  const height = 64;
+  const barGap = 2;
+  const barWidth = Math.max(1, width / days.length - barGap);
+  return (
+    <svg className="studio-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="New unique viewers per day, last 30 days">
+      {days.map((d, i) => {
+        const value = Number(d.new_viewers || 0);
+        const barHeight = Math.max(1, (value / max) * (height - 4));
+        const x = i * (barWidth + barGap);
+        const y = height - barHeight;
+        return (
+          <rect key={d.day || i} x={x} y={y} width={barWidth} height={barHeight} rx={1} className="studio-chart-bar">
+            <title>{`${new Date(d.day).toLocaleDateString()}: ${value} new viewer${value === 1 ? "" : "s"}`}</title>
+          </rect>
+        );
+      })}
+    </svg>
+  );
+}
+
+function TopPostsTable({ posts }) {
+  if (!posts || !posts.length) return null;
+  return (
+    <div className="studio-top-posts">
+      <table>
+        <thead>
+          <tr>
+            <th>Post</th>
+            <th>Views</th>
+            <th>Likes</th>
+            <th>Saves</th>
+            <th>Comments</th>
+          </tr>
+        </thead>
+        <tbody>
+          {posts.map((post) => (
+            <tr key={post.id}>
+              <td className="studio-top-posts-title">
+                {post.thumb_url ? <img src={post.thumb_url} alt="" loading="lazy" /> : null}
+                <span>{post.title || "Untitled"}</span>
+              </td>
+              <td>{Number(post.views || 0).toLocaleString()}</td>
+              <td>{Number(post.like_count || 0).toLocaleString()}</td>
+              <td>{Number(post.save_count || 0).toLocaleString()}</td>
+              <td>{Number(post.comment_count || 0).toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export function StudioPage({ ctx }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -14,6 +75,7 @@ export function StudioPage({ ctx }) {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkVisibility, setBulkVisibility] = useState("public");
   const [bulkTag, setBulkTag] = useState("");
+  const [stats, setStats] = useState(null);
 
   const showToast = ctx.showToast;
   const userId = ctx.user?.id;
@@ -125,9 +187,21 @@ export function StudioPage({ ctx }) {
     }
   }, [userId, showToast]);
 
+  const loadStats = useCallback(async () => {
+    if (!userId) return;
+    try {
+      const data = await apiFetch("/api/me/stats");
+      setStats(data);
+    } catch {
+      // Analytics is a nice-to-have on top of the core Studio list above --
+      // never toast/block the page over it failing.
+    }
+  }, [userId]);
+
   useEffect(() => {
     loadStudio();
-  }, [loadStudio]);
+    loadStats();
+  }, [loadStudio, loadStats]);
 
   useLiveRefresh(() => loadStudio({ background: true }), { enabled: Boolean(ctx.user), interval: 25_000 });
 
@@ -146,6 +220,18 @@ export function StudioPage({ ctx }) {
         <Metric label="Likes" value={totals.likes} />
         <Metric label="Downloads" value={totals.downloads} />
       </div>
+      {stats && stats.daily_new_viewers?.length ? (
+        <div className="studio-analytics">
+          <h3>New viewers, last 30 days</h3>
+          <ViewerGrowthChart days={stats.daily_new_viewers} />
+        </div>
+      ) : null}
+      {stats && stats.top_posts?.length ? (
+        <div className="studio-analytics">
+          <h3>Top posts</h3>
+          <TopPostsTable posts={stats.top_posts} />
+        </div>
+      ) : null}
       {selectedIds.size ? (
         <div className="studio-bulk-bar">
           <span>{selectedIds.size} selected</span>

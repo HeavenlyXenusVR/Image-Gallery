@@ -60,6 +60,19 @@ function M.load()
     cors_allow_origin_regex = env("GALLERY_CORS_ALLOW_ORIGIN_REGEX", ""),
     trusted_hosts = env_csv("GALLERY_TRUSTED_HOSTS"),
     pages_public_url = env("GALLERY_PAGES_PUBLIC_URL", "https://heavenlyxenusvr.github.io/Image-Gallery/"),
+    -- Backend's own public origin (the cloudflared tunnel target, same value
+    -- start_live_tunnel_service.sh already reads from .env) -- used by
+    -- digest.lua's background loop to build absolute thumb URLs with no real
+    -- HTTP req to derive request_origin() from.
+    public_origin = env("GALLERY_CLOUDFLARE_PUBLIC_URL", "http://localhost:" .. tostring(env_int("GALLERY_HTTP_PORT", 8788))),
+
+    -- Weekly Discord stats digest: day-of-week (os.date("!*t").wday: 1=Sun
+    -- .. 7=Sat) and hour (UTC) after which the loop is allowed to send. The
+    -- loop wakes every 6h, so this is a ">=" gate, not an exact match --
+    -- idempotency (at most one send per creator per week) comes from the
+    -- digest_sends marker table, not from hitting this hour precisely.
+    digest_send_weekday = env_int("GALLERY_DIGEST_SEND_WEEKDAY", 2),
+    digest_send_hour = env_int("GALLERY_DIGEST_SEND_HOUR", 15),
 
     -- Python defaults this to ROOT_DIR/uploads (the project root that
     -- contains app/, one level above app/config.py). This Lua backend's cwd
@@ -80,6 +93,11 @@ function M.load()
     max_tag_length = math.max(8, math.min(80, env_int("GALLERY_MAX_TAG_LENGTH", 32))),
     visual_phash_max_distance = env_int("GALLERY_VISUAL_PHASH_MAX_DISTANCE", 10),
     visual_dhash_max_distance = env_int("GALLERY_VISUAL_DHASH_MAX_DISTANCE", 14),
+    -- Bounds the opt-in site-wide duplicate check (find_possible_duplicates
+    -- scope="site") to recent uploads only -- without this, "site-wide" would
+    -- just mean "the 1500 newest uploads from anyone," which misses older
+    -- duplicates and isn't meaningfully related to fingerprint similarity.
+    dedup_scan_window_days = env_int("GALLERY_DEDUP_SCAN_WINDOW_DAYS", 90),
 
     host = env("GALLERY_HTTP_HOST", "0.0.0.0"),
     port = env_int("GALLERY_HTTP_PORT", 8788),
