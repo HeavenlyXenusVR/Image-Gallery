@@ -4444,6 +4444,8 @@ local function get_public_profile(req, username, viewer_id)
              CASE WHEN u.public_profile OR u.id::text=%s THEN u.user_settings ELSE NULL END AS user_settings,
              u.avatar_file_id, u.profile_color, u.public_profile, u.show_liked_count,
              u.show_collections, u.show_recent_uploads, u.show_friends, u.created_at, u.last_seen_at,
+             u.user_settings::jsonb->>'profile_show_follow_counts' AS show_follow_counts_raw,
+             u.user_settings::jsonb->>'profile_show_joined_date' AS show_joined_date_raw,
              COUNT(DISTINCT m.id) AS media_count,
              COALESCE(SUM(CASE WHEN m.deleted_at IS NULL AND m.visibility='public' THEN m.downloads ELSE 0 END), 0) AS download_count,
              COUNT(DISTINCT (ml.user_id, ml.media_id)) AS like_count,
@@ -4476,6 +4478,26 @@ local function get_public_profile(req, username, viewer_id)
   row.followed_by_me = db.tobool(row.followed_by_me)
   row.is_online = db.tobool(row.is_online)
   row.friend_status = viewer_id and friend_status(viewer_id, row.id) or "none"
+
+  -- Privacy toggles that were stored/editable (Settings page) but never
+  -- actually gated anything server-side -- confirmed via grep, same class
+  -- of bug as mute's: show_liked_count, profile_show_follow_counts, and
+  -- profile_show_joined_date all existed purely as inert form fields.
+  -- like_count/follower_count/following_count/created_at were always
+  -- computed and returned regardless, so turning the toggle off only ever
+  -- hid the number client-side -- the real value was still sitting in the
+  -- API response for anyone to read directly.
+  local is_owner = viewer_id and tostring(viewer_id) == tostring(row.id)
+  if not is_owner then
+    if not db.tobool(row.show_liked_count) then row.like_count = nil end
+    if row.show_follow_counts_raw == "false" then
+      row.follower_count = nil
+      row.following_count = nil
+    end
+    if row.show_joined_date_raw == "false" then row.created_at = nil end
+  end
+  row.show_follow_counts_raw = nil
+  row.show_joined_date_raw = nil
   return row
 end
 
