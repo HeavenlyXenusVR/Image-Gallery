@@ -140,6 +140,11 @@ private struct ProfileHeader: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(user.displayName ?? user.username).font(.title3).bold()
                     Text("@\(user.username)").foregroundStyle(.secondary)
+                    if user.discordVerifiedAt != nil {
+                        Label("Discord Verified", systemImage: "checkmark.seal.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color(red: 0.345, green: 0.396, blue: 0.949))
+                    }
                     if let bio = user.bio, !bio.isEmpty {
                         Text(bio).font(.footnote)
                     }

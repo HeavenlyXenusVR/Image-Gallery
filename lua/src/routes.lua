@@ -4464,6 +4464,7 @@ local function get_public_profile(req, username, viewer_id)
              CASE WHEN u.public_profile OR u.id::text=%s THEN u.user_settings ELSE NULL END AS user_settings,
              u.avatar_file_id, u.profile_color, u.public_profile, u.show_liked_count,
              u.show_collections, u.show_recent_uploads, u.show_friends, u.created_at, u.last_seen_at,
+             u.discord_verified_at, u.discord_username,
              u.user_settings::jsonb->>'profile_show_follow_counts' AS show_follow_counts_raw,
              u.user_settings::jsonb->>'profile_show_joined_date' AS show_joined_date_raw,
              COUNT(DISTINCT m.id) AS media_count,

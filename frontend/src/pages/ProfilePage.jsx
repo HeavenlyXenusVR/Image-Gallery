@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { CalendarDays, Images, Link as LinkIcon, MapPin, Settings, Users } from "lucide-react";
+import { BadgeCheck, CalendarDays, Images, Link as LinkIcon, MapPin, Settings, Users } from "lucide-react";
 import { cachedApiFetch } from "../api.js";
 import { MediaGrid } from "../components/media.jsx";
 import { ProfileActions } from "../components/social.jsx";
@@ -93,6 +93,11 @@ export function ProfilePage({ ctx }) {
           <div className="profile-hero-status">
             <PresencePill user={profile} />
             {isOwner ? <span className="profile-owner-pill">Owner View</span> : null}
+            {profile.discord_verified_at ? (
+              <span className="profile-discord-verified" title={profile.discord_username ? `Verified via Discord as @${profile.discord_username}` : "Verified via Discord"}>
+                <BadgeCheck size={14} />Discord Verified
+              </span>
+            ) : null}
           </div>
           {profile.bio ? <p>{profile.bio}</p> : null}
           <div className="profile-meta">
