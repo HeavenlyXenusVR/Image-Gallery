@@ -10,6 +10,7 @@ struct MediaDetailResponse: Decodable {
     var comments: [Comment]?
     var reactions: ReactionsSummary?
     var similar: [MediaItem]?
+    var personalTags: [String]?
 }
 struct CommentResponse: Decodable { var comment: Comment }
 struct ReactionsResponse: Decodable { var reactions: ReactionsSummary }
@@ -147,6 +148,22 @@ extension GalleryAPIClient {
 
     func reportMedia(mediaId: Int, reason: String, details: String?) async throws {
         _ = try await requestJSON("/api/media/\(mediaId)/report", body: ReportBody(reason: reason, details: details)) as UnreadCountResponseOrIgnore
+    }
+
+    struct PersonalTagBody: Encodable { var tag: String }
+    private struct PersonalTagsResponse: Decodable { var personalTags: [String] }
+
+    /// Private, per-viewer organizational tags -- never shown to anyone else,
+    /// existed on the backend since 2026-08-03 with no client anywhere until now.
+    func addPersonalTag(mediaId: Int, tag: String) async throws -> [String] {
+        let response: PersonalTagsResponse = try await requestJSON("/api/media/\(mediaId)/personal-tags", body: PersonalTagBody(tag: tag))
+        return response.personalTags
+    }
+
+    func removePersonalTag(mediaId: Int, tag: String) async throws -> [String] {
+        let encodedTag = tag.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? tag
+        let response: PersonalTagsResponse = try await requestJSON("/api/media/\(mediaId)/personal-tags/\(encodedTag)", method: "DELETE", query: nil)
+        return response.personalTags
     }
 }
 

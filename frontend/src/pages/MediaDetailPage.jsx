@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { Bookmark, ChevronLeft, ChevronRight, Copy, Download, Heart, Link as LinkIcon, Lock, MessageCircle, Reply, Trash2 } from "lucide-react";
+import { Bookmark, ChevronLeft, ChevronRight, Copy, Download, Heart, Link as LinkIcon, Lock, MessageCircle, Reply, Tag, Trash2, X as XIcon } from "lucide-react";
 import { apiFetch } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
@@ -29,6 +29,8 @@ export function MediaDetailPage({ ctx }) {
   const [replyTo, setReplyTo] = useState(null);
   const [reactions, setReactions] = useState({ counts: {}, my_reaction: null });
   const [similar, setSimilar] = useState([]);
+  const [personalTags, setPersonalTags] = useState([]);
+  const [personalTagInput, setPersonalTagInput] = useState("");
   const [report, setReport] = useState({ reason: "", details: "" });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -52,6 +54,7 @@ export function MediaDetailPage({ ctx }) {
       setComments(data.comments || []);
       setReactions(data.reactions || { counts: {}, my_reaction: null });
       setSimilar(data.similar || []);
+      setPersonalTags(data.personal_tags || []);
     } catch (fetchError) {
       if (controller.signal.aborted) return;
       if (!background) {
@@ -148,6 +151,32 @@ export function MediaDetailPage({ ctx }) {
     }
   }
 
+  async function addPersonalTag(event) {
+    event.preventDefault();
+    const tag = personalTagInput.trim();
+    if (!media || !tag) return;
+    try {
+      const data = await apiFetch(`/api/media/${media.id}/personal-tags`, {
+        method: "POST",
+        body: JSON.stringify({ tag }),
+      });
+      setPersonalTags(data.personal_tags || []);
+      setPersonalTagInput("");
+    } catch (tagError) {
+      ctx.showToast(tagError.message, "error");
+    }
+  }
+
+  async function removePersonalTag(tag) {
+    if (!media) return;
+    try {
+      const data = await apiFetch(`/api/media/${media.id}/personal-tags/${encodeURIComponent(tag)}`, { method: "DELETE" });
+      setPersonalTags(data.personal_tags || []);
+    } catch (tagError) {
+      ctx.showToast(tagError.message, "error");
+    }
+  }
+
   if (loading) return <Page title="Media" eyebrow="Loading"><SkeletonGrid count={1} /></Page>;
   if (error) return <Page title="Media" eyebrow="Error"><Notice kind="error">{error}</Notice></Page>;
   if (!media) return <NotFound />;
@@ -221,6 +250,26 @@ export function MediaDetailPage({ ctx }) {
           {media.description ? <p className="description">{media.description}</p> : null}
           <StatsRow item={media} />
           <ChipRow values={metadataChips} />
+          {ctx.user ? (
+            <div className="side-box personal-tags-box">
+              <h3><Tag size={14} />Your private tags</h3>
+              <p className="field-hint">Only visible to you — for your own organizing, never shown to anyone else.</p>
+              {personalTags.length ? (
+                <div className="chip-row">
+                  {personalTags.map((tag) => (
+                    <span key={tag}>
+                      {tag}
+                      <button type="button" onClick={() => removePersonalTag(tag)} aria-label={`Remove tag ${tag}`}><XIcon size={12} /></button>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              <form onSubmit={addPersonalTag} className="two-col">
+                <input value={personalTagInput} onChange={(event) => setPersonalTagInput(event.target.value)} placeholder="Add a private tag" maxLength={32} />
+                <button type="submit" disabled={!personalTagInput.trim()}>Add</button>
+              </form>
+            </div>
+          ) : null}
           {ctx.user ? (
             <div className="reaction-tray">
               {REACTION_EMOJIS.map((emoji) => (

@@ -7,6 +7,7 @@ final class MediaDetailViewModel: ObservableObject {
     @Published var comments: [Comment] = []
     @Published var reactions = ReactionsSummary(counts: [:], myReaction: nil)
     @Published var similar: [MediaItem] = []
+    @Published var personalTags: [String] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var replyTarget: Comment?
@@ -30,6 +31,7 @@ final class MediaDetailViewModel: ObservableObject {
             comments = detail.comments ?? []
             reactions = detail.reactions ?? ReactionsSummary(counts: [:], myReaction: nil)
             similar = detail.similar ?? []
+            personalTags = detail.personalTags ?? []
         } catch {
             if !error.isCancellation { errorMessage = error.localizedDescription }
         }
@@ -85,6 +87,24 @@ final class MediaDetailViewModel: ObservableObject {
         do {
             try await api.deleteComment(id: comment.id)
             comments.removeAll { $0.id == comment.id }
+        } catch {
+            if !error.isCancellation { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func addPersonalTag(_ tag: String) async {
+        guard let media, !tag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        do {
+            personalTags = try await api.addPersonalTag(mediaId: media.id, tag: tag)
+        } catch {
+            if !error.isCancellation { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func removePersonalTag(_ tag: String) async {
+        guard let media else { return }
+        do {
+            personalTags = try await api.removePersonalTag(mediaId: media.id, tag: tag)
         } catch {
             if !error.isCancellation { errorMessage = error.localizedDescription }
         }

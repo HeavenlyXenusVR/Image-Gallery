@@ -39,6 +39,10 @@ struct MediaDetailView: View {
                         Task { await viewModel.react(emoji: emoji) }
                     }
 
+                    if session.currentUser != nil {
+                        PersonalTagsSection(viewModel: viewModel)
+                    }
+
                     Divider()
                     CommentsSection(viewModel: viewModel)
 
