@@ -2610,10 +2610,58 @@ local function finalize_upload_debug_mark(label, t0)
   end
 end
 
-local function finalize_upload(req, user, content, original_filename, form)
+-- `source` is either `{content = "..."}` (already in memory -- the plain
+-- multipart upload path, where httpd.lua's parser already holds the whole
+-- request body as one string anyway, so there's nothing to gain by
+-- treating it specially) or `{file_path = "...", file_size = N}` (a
+-- chunked upload's already-fully-assembled session file, still just
+-- sitting on disk). The file_path case is what actually matters: sniffing
+-- reads a few hundred bytes, hashing streams the file in chunks
+-- (media_files.sha256_file), AI analysis extracts one small preview frame
+-- via ffmpeg reading straight from the path, and the final storage step
+-- is a plain rename -- a multi-hundred-MB upload's real content is never
+-- pulled into a single Lua string anywhere in this path. Confirmed live
+-- (2026-08-10) that holding that much in LuaJIT's GC-managed heap was
+-- itself what froze this single-threaded server, independent of raw OS
+-- memory pressure: a full GC sweep is a stop-the-world pause proportional
+-- to live heap size.
+local function source_sniff_prefix(source)
+  if source.content then return source.content:sub(1, 512) end
+  local f = io.open(source.file_path, "rb")
+  if not f then return "" end
+  local prefix = f:read(512) or ""
+  f:close()
+  return prefix
+end
+
+local function source_size(source)
+  return source.content and #source.content or source.file_size
+end
+
+local function source_sha256(source)
+  if source.content then
+    return sodium.sodium_bin2hex(sodium.crypto_hash_sha256(source.content))
+  end
+  return media_files.sha256_file(source.file_path)
+end
+
+-- Fingerprinting is image-only, and images realistically never approach
+-- the size where holding one fully in memory matters -- so the file_path
+-- case just reads the whole (small) file once here rather than needing
+-- its own streaming image_fingerprint variant.
+local function source_content_for_fingerprint(source)
+  if source.content then return source.content end
+  local f = io.open(source.file_path, "rb")
+  if not f then return nil end
+  local content = f:read("*a")
+  f:close()
+  return content
+end
+
+local function finalize_upload(req, user, source, original_filename, form)
   local debug_t0 = os.time()
   finalize_upload_debug_mark("start", debug_t0)
-  local sniffed_mime, media_kind = sniff_magic(content)
+  local sniffed_mime, media_kind = sniff_magic(source_sniff_prefix(source))
   finalize_upload_debug_mark("sniff_magic done", debug_t0)
   if not sniffed_mime then return 400, { detail = "Unsupported or invalid file bytes." } end
   local safe_ext = safe_extension(original_filename, sniffed_mime)
@@ -2642,7 +2690,7 @@ local function finalize_upload(req, user, content, original_filename, form)
   local analysis = nil
   if auto_ai and M.settings.ai_enabled and (media_kind == "image" or media_kind == "video") then
     local ok, result = pcall(ai_metadata.analyze_media_bytes, {
-      content = content, filename = original_filename, mime_type = sniffed_mime, media_kind = media_kind,
+      content = source.content, file_path = source.file_path, filename = original_filename, mime_type = sniffed_mime, media_kind = media_kind,
       title_hint = title_raw, description_hint = description_raw, tags_hint = tags_hint, settings = M.settings,
     })
     if ok then analysis = result end
@@ -2693,12 +2741,12 @@ local function finalize_upload(req, user, content, original_filename, form)
   if not resolved_subcategory_ids then return 400, { detail = subcat_err } end
   local subcategory_id = resolved_subcategory_ids[1]
 
-  local sha256 = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(content))
+  local sha256 = source_sha256(source)
   finalize_upload_debug_mark("sha256 done", debug_t0)
   local moderation = moderate_upload(title, description, tags, original_filename, sniffed_mime,
     is_adult_input or (analysis and analysis.is_adult) or false)
 
-  local fingerprint = media_kind == "image" and media_files.image_fingerprint(content) or nil
+  local fingerprint = media_kind == "image" and media_files.image_fingerprint(source_content_for_fingerprint(source)) or nil
   local possible_duplicates = find_possible_duplicates(req, user.id, fingerprint)
   -- Site-wide check is opt-in per upload (not automatic) so the default
   -- upload response/behavior for everyone who doesn't set this flag is
@@ -2709,7 +2757,8 @@ local function finalize_upload(req, user, content, original_filename, form)
   finalize_upload_debug_mark("moderation/fingerprint/dupes done", debug_t0)
 
   local media_file, save_err = media_files.save_media_file_to_disk(M.settings.uploads_dir, {
-    content = content,
+    content = source.content,
+    source_path = source.file_path,
     sha256 = sha256,
     ext = safe_ext,
     original_filename = original_filename,
@@ -2729,7 +2778,7 @@ local function finalize_upload(req, user, content, original_filename, form)
     ]],
     tostring(user.id), tostring(category_id), subcategory_id and tostring(subcategory_id) or nil,
     title, description, cjson.encode(arr(tags)), media_kind, sniffed_mime, original_filename,
-    media_file.storage_path, tostring(#content), nil, sha256,
+    media_file.storage_path, tostring(source_size(source)), nil, sha256,
     visibility, comments_enabled, downloads_enabled,
     moderation.is_adult, moderation.adult_marked_by_user, moderation.adult_marked_by_ai,
     moderation.moderation_status, tostring(moderation.moderation_score), moderation.moderation_reason,
@@ -2777,7 +2826,7 @@ function M.upload_media(req)
   if rl_status then return rl_status, rl_body end
 
   local original_filename = ((upload.filename or "upload"):match("([^/\\]+)$") or "upload"):sub(1, 255)
-  return finalize_upload(req, user, upload.content, original_filename, form)
+  return finalize_upload(req, user, { content = upload.content }, original_filename, form)
 end
 
 -- ---------------------------------------------------------------------------
@@ -2895,17 +2944,12 @@ function M.upload_chunk_finish(req)
     return 400, { detail = "Upload is incomplete: expected " .. session.total_size .. " bytes, received " .. session.received_bytes .. "." }
   end
 
-  local f, ferr = io.open(session.temp_path, "rb")
-  if not f then
-    upload_chunk_sessions[session_id] = nil
-    return 500, { detail = "Could not read assembled upload: " .. tostring(ferr) }
-  end
-  local content = f:read("*a")
-  f:close()
-  pcall(os.remove, session.temp_path)
+  local temp_path = session.temp_path
+  local total_size = session.total_size
   upload_chunk_sessions[session_id] = nil
 
-  if not content or #content == 0 then
+  if not total_size or total_size == 0 then
+    pcall(os.remove, temp_path)
     return 400, { detail = "Upload is empty." }
   end
 
@@ -2925,7 +2969,16 @@ function M.upload_chunk_finish(req)
     end
   end
 
-  return finalize_upload(req, user, content, session.filename, pseudo_form)
+  -- Deliberately NOT read into memory here -- see finalize_upload's
+  -- `source` doc comment. save_media_file_to_disk renames temp_path away
+  -- on success/dedup; this cleanup only fires if finalize_upload returned
+  -- an error before reaching that step (e.g. failed validation), in which
+  -- case the file is still sitting at temp_path and would otherwise leak.
+  local status_code, resp_body = finalize_upload(
+    req, user, { file_path = temp_path, file_size = total_size }, session.filename, pseudo_form
+  )
+  pcall(os.remove, temp_path)
+  return status_code, resp_body
 end
 
 -- Standalone "preview the AI suggestion before uploading" endpoint. Mirrors

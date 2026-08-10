@@ -955,10 +955,16 @@ M.select_vision_provider = select_vision_provider
 
 -- opts: { content, filename, mime_type, media_kind, title_hint,
 --         description_hint, tags_hint, settings }
+-- `opts.file_path` may be given instead of `opts.content` -- used by the
+-- streaming (chunked) upload path so a large video's bytes never have to
+-- be pulled fully into memory just to extract a small preview frame; both
+-- media_dimensions/jpeg_preview_base64 (in-memory) and their
+-- _from_path siblings (file already on disk) shell out to the same
+-- ffmpeg/ffprobe commands either way.
 -- Returns an analysis table shaped like SmartMediaAnalysis.to_dict().
 function M.analyze_media_bytes(opts)
   local settings = opts.settings
-  local size = media_files.media_dimensions(opts.content)
+  local size = opts.file_path and media_files.media_dimensions_from_path(opts.file_path) or media_files.media_dimensions(opts.content)
   local fallback = heuristic_analysis(
     opts.filename, opts.mime_type, opts.media_kind, opts.title_hint or "",
     opts.description_hint or "", opts.tags_hint or {}, size
@@ -976,7 +982,7 @@ function M.analyze_media_bytes(opts)
     return fallback
   end
 
-  local preview_b64 = media_files.jpeg_preview_base64(opts.content)
+  local preview_b64 = opts.file_path and media_files.jpeg_preview_base64_from_path(opts.file_path) or media_files.jpeg_preview_base64(opts.content)
   if not preview_b64 then
     if domain_hint_result then
       return merge_analysis(domain_hint_result, fallback, opts.filename, opts.mime_type, opts.media_kind, provider)

@@ -33,6 +33,29 @@ local copas_ok, copas = pcall(require, "copas")
 
 local M = {}
 
+-- Streams a file through sha256 in fixed-size chunks instead of reading it
+-- whole into one Lua string first -- the whole point of the disk-based
+-- upload path this is used by (M.finalize_upload_from_file in routes.lua)
+-- is to never hold a large upload's full bytes in GC-managed memory at
+-- once. Yields to the scheduler between chunks (see save_media_file's
+-- chunk-insert loop for the same rationale) so hashing a big file doesn't
+-- freeze the single-threaded server for its own duration.
+function M.sha256_file(path, chunk_bytes)
+  local sodium = require("luasodium")
+  chunk_bytes = chunk_bytes or (4 * 1024 * 1024)
+  local f, ferr = io.open(path, "rb")
+  if not f then return nil, ferr end
+  local state = sodium.crypto_hash_sha256_init()
+  while true do
+    local chunk = f:read(chunk_bytes)
+    if not chunk then break end
+    sodium.crypto_hash_sha256_update(state, chunk)
+    if copas_ok then copas.pause(0) end
+  end
+  f:close()
+  return sodium.sodium_bin2hex(sodium.crypto_hash_sha256_final(state))
+end
+
 -- ---------------------------------------------------------------------------
 -- DB blob reads (mirrors app/db/media_storage.py)
 -- ---------------------------------------------------------------------------
@@ -231,6 +254,12 @@ end
 -- -- NOT a media_file_id/db:// row; resolve_media_bytes() already falls
 -- back to this exact layout via legacy_upload_path(), unchanged) instead of
 -- a media_files row.
+-- `opts.content` (a string already in memory) or `opts.source_path` (a
+-- file already fully written to disk -- e.g. a chunked upload's assembled
+-- session file) work interchangeably: the source_path case is a plain
+-- rename, no read/write of the actual bytes at all, which is the entire
+-- point of the streaming upload path (M.finalize_upload_from_file in
+-- routes.lua) that's the only caller of that branch.
 function M.save_media_file_to_disk(uploads_dir, opts)
   local ext = opts.ext or (opts.original_filename or ""):match("(%.[^./\\]+)$") or ".bin"
   local prefix = opts.sha256:sub(1, 2)
@@ -243,10 +272,18 @@ function M.save_media_file_to_disk(uploads_dir, opts)
   local existing = io.open(full_path, "rb")
   if existing then
     existing:close()
+    if opts.source_path then os.remove(opts.source_path) end
     return { storage_path = rel_path, duplicate = true }
   end
 
   os.execute("mkdir -p " .. shell_quote_early(full_dir))
+
+  if opts.source_path then
+    local ok, rerr = os.rename(opts.source_path, full_path)
+    if not ok then return nil, "Could not finalize stored file: " .. tostring(rerr) end
+    return { storage_path = rel_path, duplicate = false }
+  end
+
   -- Write-then-rename so a concurrent reader (or a crash mid-write) never
   -- sees a partial file at the final path.
   local tmp_path = full_path .. ".tmp." .. tostring(math.random(100000, 999999))
@@ -575,9 +612,12 @@ end
 -- branches.
 -- ---------------------------------------------------------------------------
 
--- Returns {width, height} or nil.
-function M.media_dimensions(content)
-  local src = write_temp_file(content, "")
+-- Returns {width, height} or nil. Operates on a file already on disk --
+-- no temp-file copy needed, so this is safe to call directly against a
+-- large upload's real path instead of first materializing it as a Lua
+-- string (see M.media_dimensions/M.jpeg_preview_base64 below, which do
+-- need that copy since they only ever receive in-memory content).
+function M.media_dimensions_from_path(src)
   local width, height
   local probe = io.popen(string.format(
     "%s -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x %s 2>/dev/null",
@@ -588,16 +628,21 @@ function M.media_dimensions(content)
     probe:close()
     if line then width, height = line:match("^(%d+)x(%d+)$") end
   end
-  os.remove(src)
   if not width or not height then return nil end
   return { tonumber(width), tonumber(height) }
 end
 
--- Returns a base64-encoded JPEG preview (scaled to fit 1600x1600, matching
--- Python's preview.thumbnail((1600, 1600))), or nil on failure.
-function M.jpeg_preview_base64(content)
-  local sodium = require("luasodium")
+-- Returns {width, height} or nil.
+function M.media_dimensions(content)
   local src = write_temp_file(content, "")
+  local result = M.media_dimensions_from_path(src)
+  os.remove(src)
+  return result
+end
+
+-- Same file-already-on-disk rationale as M.media_dimensions_from_path.
+function M.jpeg_preview_base64_from_path(src)
+  local sodium = require("luasodium")
   local dst = os.tmpname() .. ".jpg"
   local cmd = string.format(
     "%s -y -hide_banner -loglevel error -i %s -frames:v 1 -vf %s -q:v 3 -f mjpeg %s </dev/null >/dev/null 2>&1",
@@ -606,7 +651,6 @@ function M.jpeg_preview_base64(content)
   )
   local ok = os.execute(cmd)
   local success = (ok == 0 or ok == true)
-  os.remove(src)
   if not success or not file_exists(dst) then
     os.remove(dst)
     return nil
@@ -617,6 +661,15 @@ function M.jpeg_preview_base64(content)
   os.remove(dst)
   if not bytes or #bytes == 0 then return nil end
   return sodium.sodium_bin2base64(bytes, sodium.sodium_base64_VARIANT_ORIGINAL)
+end
+
+-- Returns a base64-encoded JPEG preview (scaled to fit 1600x1600, matching
+-- Python's preview.thumbnail((1600, 1600))), or nil on failure.
+function M.jpeg_preview_base64(content)
+  local src = write_temp_file(content, "")
+  local result = M.jpeg_preview_base64_from_path(src)
+  os.remove(src)
+  return result
 end
 
 -- ---------------------------------------------------------------------------
