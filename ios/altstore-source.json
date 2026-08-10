@@ -14,6 +14,14 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.19.0",
+          "date": "2026-08-10T12:21:10Z",
+          "downloadURL": "https://github.com/HeavenlyXenusVR/Image-Gallery/releases/download/ios%2Fv1.19.0/ImageGallery-1.19.0-unsigned.ipa",
+          "localizedDescription": "See release notes on GitHub.",
+          "size": 922208,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.18.0",
           "date": "2026-08-10T05:59:09Z",
           "downloadURL": "https://github.com/HeavenlyXenusVR/Image-Gallery/releases/download/ios%2Fv1.18.0/ImageGallery-1.18.0-unsigned.ipa",
