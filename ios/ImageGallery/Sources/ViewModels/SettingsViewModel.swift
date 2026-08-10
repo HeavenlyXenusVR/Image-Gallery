@@ -6,8 +6,10 @@ final class SettingsViewModel: ObservableObject {
     @Published var blocks: [BlockEntry] = []
     @Published var savedSearches: [SavedSearch] = []
     @Published var totp: TotpStatusResponse?
+    @Published var visionStatus: AIVisionStatus?
     @Published var errorMessage: String?
     @Published var isExporting = false
+    @Published var isExportingTraining = false
 
     private let api = GalleryAPIClient.shared
 
@@ -15,9 +17,11 @@ final class SettingsViewModel: ObservableObject {
         async let blocksTask = api.myBlocks()
         async let searchesTask = api.savedSearches()
         async let totpTask = api.totpStatus()
+        async let visionTask = api.aiVisionStatus()
         blocks = (try? await blocksTask) ?? []
         savedSearches = (try? await searchesTask) ?? []
         totp = try? await totpTask
+        visionStatus = try? await visionTask
     }
 
     func unblock(_ entry: BlockEntry) async {
@@ -44,6 +48,20 @@ final class SettingsViewModel: ObservableObject {
         do {
             let data = try await api.exportMyData()
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("image-gallery-export.json")
+            try data.write(to: url)
+            return url
+        } catch {
+            if !error.isCancellation { errorMessage = error.localizedDescription }
+            return nil
+        }
+    }
+
+    func exportTrainingData() async -> URL? {
+        isExportingTraining = true
+        defer { isExportingTraining = false }
+        do {
+            let data = try await api.exportAITrainingData()
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("gallery-ai-vision-training.jsonl")
             try data.write(to: url)
             return url
         } catch {

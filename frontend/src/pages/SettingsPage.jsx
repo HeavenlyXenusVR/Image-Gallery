@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Ban, Bell, Check, Download, Eye, KeyRound, Mail, Palette, Save, ShieldCheck, Trash2, UserRound } from "lucide-react";
+import { Ban, Bell, Check, Download, Eye, KeyRound, Mail, Palette, Save, ShieldCheck, Sparkles, Trash2, UserRound } from "lucide-react";
 import { apiFetch, apiFetchBlob, clearApiCache, downloadBlob } from "../api.js";
 import { Avatar, ChipRow, EmptyState, Page, RequireLogin, UserMini } from "../components/ui.jsx";
 import { profileClassName, profileStyle } from "../utils/appearance.js";
@@ -46,6 +46,8 @@ export function SettingsPage({ ctx }) {
   const [apiKeyLabel, setApiKeyLabel] = useState("");
   const [creatingApiKey, setCreatingApiKey] = useState(false);
   const [newApiKey, setNewApiKey] = useState(null);
+  const [visionStatus, setVisionStatus] = useState(null);
+  const [exportingTraining, setExportingTraining] = useState(false);
 
   const refreshBlocks = useCallback(async () => {
     try {
@@ -74,11 +76,21 @@ export function SettingsPage({ ctx }) {
     }
   }, []);
 
+  const refreshVisionStatus = useCallback(async () => {
+    try {
+      const data = await apiFetch("/api/ai/vision/status");
+      setVisionStatus(data.vision || null);
+    } catch (_error) {
+      // Non-critical background read.
+    }
+  }, []);
+
   useEffect(() => {
     refreshBlocks();
     refreshSavedSearches();
     refreshApiKeys();
-  }, [refreshBlocks, refreshSavedSearches, refreshApiKeys]);
+    refreshVisionStatus();
+  }, [refreshBlocks, refreshSavedSearches, refreshApiKeys, refreshVisionStatus]);
 
   async function createApiKey(event) {
     event.preventDefault();
@@ -129,6 +141,18 @@ export function SettingsPage({ ctx }) {
       ctx.showToast(`@${entry.user.username} ${entry.kind === "mute" ? "unmuted" : "unblocked"}.`, "success");
     } catch (error) {
       ctx.showToast(error.message, "error");
+    }
+  }
+
+  async function exportTrainingData() {
+    setExportingTraining(true);
+    try {
+      const { blob, filename } = await apiFetchBlob("/api/ai/vision/training/export");
+      downloadBlob(blob, filename);
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    } finally {
+      setExportingTraining(false);
     }
   }
 
@@ -807,6 +831,40 @@ export function SettingsPage({ ctx }) {
               <button type="submit" disabled={creatingApiKey}>{creatingApiKey ? "Creating..." : "New key"}</button>
             </form>
           </div>
+          {visionStatus ? (
+            <div className="side-box stacked-form settings-form-card">
+              <h2><Sparkles size={18} /> AI Training</h2>
+              <p>
+                Every time you correct an AI-suggested title, tags, or category on upload, that correction is saved
+                as a training example — this is where those accumulate.
+              </p>
+              <div className="check-stack">
+                <div className="friend-request">
+                  <span>Provider</span>
+                  <small>{visionStatus.provider}{visionStatus.active_model ? ` — ${visionStatus.active_model}` : ""}</small>
+                </div>
+                <div className="friend-request">
+                  <span>Status</span>
+                  <small>
+                    {!visionStatus.ai_enabled
+                      ? "Disabled"
+                      : visionStatus.reachable === false
+                        ? (visionStatus.reason || "Unreachable")
+                        : "Reachable"}
+                  </small>
+                </div>
+                <div className="friend-request">
+                  <span>Training examples</span>
+                  <small>{visionStatus.training_examples_available} saved (loads up to {visionStatus.training_examples_loaded_limit} most recent as hints)</small>
+                </div>
+              </div>
+              <div className="form-actions settings-actions">
+                <button type="button" onClick={exportTrainingData} disabled={exportingTraining || !visionStatus.training_examples_available}>
+                  <Download size={16} />{exportingTraining ? "Preparing..." : "Export training data (JSONL)"}
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       </section>
     </Page>

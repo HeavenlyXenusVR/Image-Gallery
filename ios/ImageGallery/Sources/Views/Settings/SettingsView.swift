@@ -195,6 +195,32 @@ struct SettingsView: View {
                 }
             }
 
+            if let vision = viewModel.visionStatus {
+                Section("AI Training") {
+                    Text("Every time you correct an AI-suggested title, tags, or category on upload, that correction is saved as a training example — this is where those accumulate.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    LabeledContent("Provider", value: vision.activeModel.map { "\(vision.provider) — \($0)" } ?? vision.provider)
+                    LabeledContent("Status", value: visionStatusText(vision))
+                    LabeledContent("Training examples", value: "\(vision.trainingExamplesAvailable)")
+                    Button {
+                        Task {
+                            if let url = await viewModel.exportTrainingData() {
+                                exportURL = url
+                                showingShareSheet = true
+                            }
+                        }
+                    } label: {
+                        if viewModel.isExportingTraining {
+                            ProgressView()
+                        } else {
+                            Text("Export training data (JSONL)")
+                        }
+                    }
+                    .disabled(vision.trainingExamplesAvailable == 0)
+                }
+            }
+
             if let errorMessage = viewModel.errorMessage {
                 Section {
                     Text(errorMessage).foregroundStyle(.red)
@@ -240,6 +266,12 @@ struct SettingsView: View {
             }
             Button("Cancel", role: .cancel) { searchPendingDelete = nil }
         }
+    }
+
+    private func visionStatusText(_ vision: AIVisionStatus) -> String {
+        guard vision.aiEnabled else { return "Disabled" }
+        if vision.reachable == false { return vision.reason ?? "Unreachable" }
+        return "Reachable"
     }
 
     /// Seeds the appearance controls from the account's stored settings —

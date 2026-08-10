@@ -492,3 +492,29 @@ extension GalleryAPIClient {
         try await download("/api/me/export")
     }
 }
+
+// MARK: - AI vision training status
+
+struct AIVisionStatus: Decodable {
+    var provider: String
+    var aiEnabled: Bool
+    var trainingExamplesLoadedLimit: Int?
+    var trainingExamplesAvailable: Int
+    var activeModel: String?
+    var geminiKeyConfigured: Bool?
+    var reachable: Bool?
+    var reason: String?
+}
+
+extension GalleryAPIClient {
+    private struct AIVisionStatusResponse: Decodable { var vision: AIVisionStatus }
+
+    func aiVisionStatus() async throws -> AIVisionStatus {
+        let response: AIVisionStatusResponse = try await requestJSON("/api/ai/vision/status")
+        return response.vision
+    }
+
+    func exportAITrainingData() async throws -> Data {
+        try await download("/api/ai/vision/training/export")
+    }
+}

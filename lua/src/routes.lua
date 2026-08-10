@@ -5565,8 +5565,18 @@ function M.ai_vision_status(req)
   }
   if provider == "gemini" then
     vision.active_base_url = "https://generativelanguage.googleapis.com"
-    vision.reachable = M.settings.ai_api_key ~= "" and nil or false
-    vision.reason = M.settings.ai_api_key ~= "" and nil or "Gemini provider is selected but no Gemini API key is configured."
+    -- NOT `cond and nil or false` -- that Lua ternary idiom breaks whenever
+    -- the "true" branch value is itself nil/false (nil is falsy, so `or`
+    -- always falls through to the third operand regardless of `cond`).
+    -- Confirmed live: this previously reported "unreachable, no API key
+    -- configured" unconditionally, even with gemini_key_configured=true.
+    if M.settings.ai_api_key ~= "" then
+      vision.reachable = nil
+      vision.reason = nil
+    else
+      vision.reachable = false
+      vision.reason = "Gemini provider is selected but no Gemini API key is configured."
+    end
   elseif provider == "ollama" then
     local base_url = tostring(M.settings.ai_ollama_base_url or "http://127.0.0.1:11434"):gsub("/+$", "")
     -- copas.http, not socket.http directly -- see telegram.lua's api_call
