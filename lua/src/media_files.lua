@@ -97,10 +97,27 @@ end
 -- DB blob writes (mirrors save_media_file() in app/db/media_storage.py)
 -- ---------------------------------------------------------------------------
 
--- Precomputed byte->hex-pair table so encoding a multi-MB chunk is one
--- gsub() call instead of a manual per-byte string.format loop.
-local HEX_BYTE = {}
-for i = 0, 255 do HEX_BYTE[string.char(i)] = string.format("%02x", i) end
+-- `bytes:gsub(".", HEX_BYTE)` (the original approach here) drives the Lua
+-- VM's full match/capture/replace machinery once per BYTE -- fine for a
+-- small avatar, but confirmed live to fully freeze the single-threaded
+-- server (no response to even /api/health) for several minutes on a
+-- 250MB video, i.e. exactly the "network connection was lost" reports:
+-- the client times out long before this ever returns. Rewritten with FFI
+-- as a tight fixed-cost loop over a precomputed byte->hex-pair table
+-- instead, which LuaJIT compiles to native code -- same output, several
+-- orders of magnitude faster on multi-MB/GB input.
+local ffi = require("ffi")
+local bit = require("bit")
+
+local hex_pair_lo = ffi.new("uint8_t[256]")
+local hex_pair_hi = ffi.new("uint8_t[256]")
+do
+  local hexdigits = "0123456789abcdef"
+  for b = 0, 255 do
+    hex_pair_hi[b] = hexdigits:byte(bit.rshift(b, 4) + 1)
+    hex_pair_lo[b] = hexdigits:byte(bit.band(b, 0xf) + 1)
+  end
+end
 
 -- Postgres bytea values must travel as a plain-ASCII hex-format literal
 -- (`\x4865...`) inside the single SQL string db.lua builds via
@@ -108,7 +125,15 @@ for i = 0, 255 do HEX_BYTE[string.char(i)] = string.format("%02x", i) end
 -- inside a %-formatted SQL string otherwise. pgmoon's escape_literal only
 -- quotes/escapes the resulting ASCII text, so this must happen first.
 local function bytea_literal(bytes)
-  return "\\x" .. (bytes:gsub(".", HEX_BYTE))
+  local n = #bytes
+  local src = ffi.cast("const uint8_t*", bytes)
+  local out = ffi.new("uint8_t[?]", n * 2)
+  for i = 0, n - 1 do
+    local b = src[i]
+    out[i * 2] = hex_pair_hi[b]
+    out[i * 2 + 1] = hex_pair_lo[b]
+  end
+  return "\\x" .. ffi.string(out, n * 2)
 end
 
 local DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024

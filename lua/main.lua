@@ -87,6 +87,9 @@ httpd.route("POST", "/api/media/bulk", routes.bulk_edit_media)
 httpd.route("POST", "/api/media/bulk-delete", routes.bulk_delete_media)
 httpd.route("POST", "/api/media/download-batch", routes.download_media_batch)
 httpd.route("POST", "/api/media/analyze", routes.analyze_media)
+httpd.route("POST", "/api/media/upload/init", routes.upload_chunk_init)
+httpd.route("POST", "/api/media/upload/chunk", routes.upload_chunk_append)
+httpd.route("POST", "/api/media/upload/finish", routes.upload_chunk_finish)
 httpd.route("GET", "/api/media/trending", routes.media_trending)
 -- ROUTE-ORDERING TRAP for future passes: httpd.lua's match_route() returns
 -- the FIRST registered route whose pattern matches, with no most-specific-

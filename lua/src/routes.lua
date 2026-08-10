@@ -2596,25 +2596,16 @@ local function notify_discord_upload(req, uploader, item)
   end
 end
 
-function M.upload_media(req)
-  local user, auth, status, body = current_user(req)
-  if not user then return status, body end
-
-  local form = req.form or {}
-  local upload = (req.files or {}).file
-  if not upload or not upload.content or upload.content == "" then
-    return 400, { detail = "Upload is empty." }
-  end
-  if #upload.content > M.settings.max_upload_bytes then
-    return 413, { detail = string.format("Uploads must be %dMB or smaller.", math.floor(M.settings.max_upload_bytes / (1024 * 1024))) }
-  end
-
-  local rl_status, rl_body = ratelimit.check("upload:" .. user.id, M.settings.upload_rate_limit_per_hour, 3600)
-  if rl_status then return rl_status, rl_body end
-
-  local sniffed_mime, media_kind = sniff_magic(upload.content)
+-- Shared by both upload paths: the normal single-request multipart upload
+-- (M.upload_media, still used for anything that fits under one request --
+-- the Cloudflare tunnel this deployment sits behind hard-413s any single
+-- request body over ~100MB, well below what M.settings.max_upload_bytes
+-- allows) and the chunked upload path (M.upload_chunk_finish) that exists
+-- specifically to get large videos past that same edge limit by sending
+-- them as several sub-100MB requests instead of one.
+local function finalize_upload(req, user, content, original_filename, form)
+  local sniffed_mime, media_kind = sniff_magic(content)
   if not sniffed_mime then return 400, { detail = "Unsupported or invalid file bytes." } end
-  local original_filename = ((upload.filename or "upload"):match("([^/\\]+)$") or "upload"):sub(1, 255)
   if not safe_extension(original_filename, sniffed_mime) then
     return 400, { detail = "Unsupported file extension." }
   end
@@ -2640,7 +2631,7 @@ function M.upload_media(req)
   local analysis = nil
   if auto_ai and M.settings.ai_enabled and (media_kind == "image" or media_kind == "video") then
     local ok, result = pcall(ai_metadata.analyze_media_bytes, {
-      content = upload.content, filename = original_filename, mime_type = sniffed_mime, media_kind = media_kind,
+      content = content, filename = original_filename, mime_type = sniffed_mime, media_kind = media_kind,
       title_hint = title_raw, description_hint = description_raw, tags_hint = tags_hint, settings = M.settings,
     })
     if ok then analysis = result end
@@ -2690,11 +2681,11 @@ function M.upload_media(req)
   if not resolved_subcategory_ids then return 400, { detail = subcat_err } end
   local subcategory_id = resolved_subcategory_ids[1]
 
-  local sha256 = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(upload.content))
+  local sha256 = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(content))
   local moderation = moderate_upload(title, description, tags, original_filename, sniffed_mime,
     is_adult_input or (analysis and analysis.is_adult) or false)
 
-  local fingerprint = media_kind == "image" and media_files.image_fingerprint(upload.content) or nil
+  local fingerprint = media_kind == "image" and media_files.image_fingerprint(content) or nil
   local possible_duplicates = find_possible_duplicates(req, user.id, fingerprint)
   -- Site-wide check is opt-in per upload (not automatic) so the default
   -- upload response/behavior for everyone who doesn't set this flag is
@@ -2705,12 +2696,12 @@ function M.upload_media(req)
 
   local media_file, save_err = media_files.save_media_file({
     user_id = user.id,
-    content = upload.content,
+    content = content,
     sha256 = sha256,
     mime_type = sniffed_mime,
     original_filename = original_filename,
     media_kind = media_kind,
-    file_size = #upload.content,
+    file_size = #content,
     chunk_bytes = M.settings.db_blob_chunk_bytes,
   })
   if not media_file then return 500, { detail = "Could not store uploaded file: " .. tostring(save_err) } end
@@ -2727,7 +2718,7 @@ function M.upload_media(req)
     ]],
     tostring(user.id), tostring(category_id), subcategory_id and tostring(subcategory_id) or nil,
     title, description, cjson.encode(arr(tags)), media_kind, sniffed_mime, original_filename,
-    "db://media/" .. tostring(media_file.id), tostring(#upload.content), tostring(media_file.id), sha256,
+    "db://media/" .. tostring(media_file.id), tostring(#content), tostring(media_file.id), sha256,
     visibility, comments_enabled, downloads_enabled,
     moderation.is_adult, moderation.adult_marked_by_user, moderation.adult_marked_by_ai,
     moderation.moderation_status, tostring(moderation.moderation_score), moderation.moderation_reason,
@@ -2753,6 +2744,174 @@ function M.upload_media(req)
     notify_matching_saved_searches(user.id, enriched)
   end
   return 200, { media = enriched, possible_duplicates = arr(possible_duplicates), possible_site_duplicates = arr(possible_site_duplicates) }
+end
+
+function M.upload_media(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+
+  local form = req.form or {}
+  local upload = (req.files or {}).file
+  if not upload or not upload.content or upload.content == "" then
+    return 400, { detail = "Upload is empty." }
+  end
+  if #upload.content > M.settings.max_upload_bytes then
+    return 413, { detail = string.format("Uploads must be %dMB or smaller.", math.floor(M.settings.max_upload_bytes / (1024 * 1024))) }
+  end
+
+  local rl_status, rl_body = ratelimit.check("upload:" .. user.id, M.settings.upload_rate_limit_per_hour, 3600)
+  if rl_status then return rl_status, rl_body end
+
+  local original_filename = ((upload.filename or "upload"):match("([^/\\]+)$") or "upload"):sub(1, 255)
+  return finalize_upload(req, user, upload.content, original_filename, form)
+end
+
+-- ---------------------------------------------------------------------------
+-- Chunked upload (large videos). The Cloudflare tunnel this deployment sits
+-- behind hard-413s any single request body over ~100MB regardless of what
+-- M.settings.max_upload_bytes allows -- confirmed live: a 105MB POST gets a
+-- Cloudflare-branded 413 before it ever reaches this process, while 95MB
+-- goes through fine. M.upload_media above therefore stays correct only up
+-- to that edge limit; anything larger (most videos with the cap now raised
+-- to 700MB) has to be split into several sub-100MB requests instead of one,
+-- which is what this session-based init/append/finish flow does. Sessions
+-- live in-process only (no DB table, no clustering here) and are pruned
+-- lazily on each init call rather than on a timer.
+-- ---------------------------------------------------------------------------
+
+local UPLOAD_CHUNK_SESSION_TTL_SECONDS = 2 * 3600
+local upload_chunk_sessions = {}
+
+local function prune_upload_chunk_sessions()
+  local now = os.time()
+  for id, session in pairs(upload_chunk_sessions) do
+    if now - session.created_at > UPLOAD_CHUNK_SESSION_TTL_SECONDS then
+      pcall(os.remove, session.temp_path)
+      upload_chunk_sessions[id] = nil
+    end
+  end
+end
+
+function M.upload_chunk_init(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+
+  local rl_status, rl_body = ratelimit.check("upload:" .. user.id, M.settings.upload_rate_limit_per_hour, 3600)
+  if rl_status then return rl_status, rl_body end
+
+  prune_upload_chunk_sessions()
+
+  local json = req.json or {}
+  local total_size = tonumber(json.total_size)
+  local filename = ((nn(json.filename) or "upload"):match("([^/\\]+)$") or "upload"):sub(1, 255)
+  if not total_size or total_size <= 0 then
+    return 400, { detail = "total_size is required." }
+  end
+  if total_size > M.settings.max_upload_bytes then
+    return 413, { detail = string.format("Uploads must be %dMB or smaller.", math.floor(M.settings.max_upload_bytes / (1024 * 1024))) }
+  end
+
+  local session_id = sodium.sodium_bin2hex(sodium.randombytes_buf(16))
+  local temp_path = M.settings.uploads_dir .. "/_upload_sessions_" .. session_id .. ".part"
+  local f, ferr = io.open(temp_path, "wb")
+  if not f then return 500, { detail = "Could not start upload: " .. tostring(ferr) } end
+  f:close()
+
+  upload_chunk_sessions[session_id] = {
+    user_id = user.id,
+    temp_path = temp_path,
+    filename = filename,
+    total_size = total_size,
+    received_bytes = 0,
+    next_index = 0,
+    created_at = os.time(),
+  }
+
+  -- 20MB keeps every individual request comfortably under the ~100MB
+  -- Cloudflare edge ceiling even accounting for retries/overhead; it's a
+  -- suggestion the client is free to ignore (chunks are appended in order
+  -- by index regardless of size), not an enforced contract.
+  return 200, { session_id = session_id, chunk_size = 20 * 1024 * 1024 }
+end
+
+function M.upload_chunk_append(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+
+  local session_id = nn(req.query and req.query.session_id)
+  local index = tonumber(req.query and req.query.index)
+  local session = session_id and upload_chunk_sessions[session_id]
+  if not session or session.user_id ~= user.id then
+    return 404, { detail = "Upload session not found or expired." }
+  end
+  if not index or index ~= session.next_index then
+    return 409, { detail = "Chunks must be uploaded in order, starting at 0." }
+  end
+  local chunk = req.raw_body or ""
+  if chunk == "" then
+    return 400, { detail = "Empty chunk." }
+  end
+  if session.received_bytes + #chunk > session.total_size then
+    pcall(os.remove, session.temp_path)
+    upload_chunk_sessions[session_id] = nil
+    return 413, { detail = "Received more bytes than declared at upload start." }
+  end
+
+  local f, ferr = io.open(session.temp_path, "ab")
+  if not f then return 500, { detail = "Could not write chunk: " .. tostring(ferr) } end
+  f:write(chunk)
+  f:close()
+
+  session.received_bytes = session.received_bytes + #chunk
+  session.next_index = session.next_index + 1
+  return 200, { ok = true, received_bytes = session.received_bytes }
+end
+
+function M.upload_chunk_finish(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+
+  local form = req.json or {}
+  local session_id = nn(form.session_id)
+  local session = session_id and upload_chunk_sessions[session_id]
+  if not session or session.user_id ~= user.id then
+    return 404, { detail = "Upload session not found or expired." }
+  end
+  if session.received_bytes ~= session.total_size then
+    return 400, { detail = "Upload is incomplete: expected " .. session.total_size .. " bytes, received " .. session.received_bytes .. "." }
+  end
+
+  local f, ferr = io.open(session.temp_path, "rb")
+  if not f then
+    upload_chunk_sessions[session_id] = nil
+    return 500, { detail = "Could not read assembled upload: " .. tostring(ferr) }
+  end
+  local content = f:read("*a")
+  f:close()
+  pcall(os.remove, session.temp_path)
+  upload_chunk_sessions[session_id] = nil
+
+  if not content or #content == 0 then
+    return 400, { detail = "Upload is empty." }
+  end
+
+  -- req.json fields double as the "form" here since chunk sessions carry
+  -- metadata as JSON, not multipart -- form_bool/nn etc all just expect
+  -- string-ish values, and cjson already decodes true/false as Lua
+  -- booleans, so coerce back to the "true"/"false" strings those helpers
+  -- expect from a real multipart form field.
+  local pseudo_form = {}
+  for k, v in pairs(form) do
+    if type(v) == "boolean" then
+      pseudo_form[k] = v and "true" or "false"
+    elseif type(v) == "table" then
+      pseudo_form[k] = cjson.encode(v)
+    else
+      pseudo_form[k] = v
+    end
+  end
+
+  return finalize_upload(req, user, content, session.filename, pseudo_form)
 end
 
 -- Standalone "preview the AI suggestion before uploading" endpoint. Mirrors
