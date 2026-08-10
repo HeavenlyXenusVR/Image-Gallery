@@ -995,7 +995,16 @@ function M.analyze_media_bytes(opts)
     return fallback
   end
 
-  local timeout_seconds = math.max(10, tonumber(settings.ai_timeout_seconds) or 45)
+  -- Hard-capped at 30s regardless of what GALLERY_AI_TIMEOUT_SECONDS says --
+  -- this call runs synchronously on the request that triggered it (an
+  -- upload or the standalone /api/media/analyze preview), so whatever this
+  -- is set to is directly how long that request's own client can be left
+  -- waiting. Confirmed live: .env had this at 300 (5 minutes) inherited
+  -- from an earlier default, which is exactly the freeze duration reported
+  -- for a real upload -- auto-fill AI is best-effort by design (see the
+  -- fallback/heuristic paths throughout this file), so it should never be
+  -- allowed to make "upload a video" feel broken.
+  local timeout_seconds = math.min(30, math.max(10, tonumber(settings.ai_timeout_seconds) or 20))
   local ai_result, err = gemini_vision_analysis({
     preview_image_b64 = preview_b64,
     filename = opts.filename,

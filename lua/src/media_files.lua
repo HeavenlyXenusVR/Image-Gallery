@@ -29,6 +29,7 @@
 -- here rather than silently accepted.
 
 local db = require("db")
+local copas_ok, copas = pcall(require, "copas")
 
 local M = {}
 
@@ -178,6 +179,20 @@ function M.save_media_file(opts)
       if not ok2 then error(chunk_err or "chunk insert failed") end
       chunk_index = chunk_index + 1
       offset = offset + chunk_bytes
+      -- Confirmed live: under real disk I/O contention on this host, a
+      -- single blob-chunk INSERT can block on Postgres's own DataFileExtend
+      -- wait for multiple seconds -- and since this Postgres driver
+      -- (swarmlua.pg) talks over a plain blocking socket, not a
+      -- copas-wrapped one, that block freezes the ENTIRE single-threaded
+      -- server, not just this request (verified: /api/health itself went
+      -- unresponsive for the whole duration of a large video's chunk-insert
+      -- loop). A large video is dozens of these chunks in a row with no
+      -- yield point between them. copas.pause(0) hands control back to the
+      -- scheduler after each chunk so other in-flight requests get a
+      -- window to run between chunks -- it doesn't make this upload faster
+      -- (still bounded by real disk I/O), but it stops one big upload from
+      -- taking the whole site down while it's in progress.
+      if copas_ok then copas.pause(0) end
     end
   end)
   if not ok then

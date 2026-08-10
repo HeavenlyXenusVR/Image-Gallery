@@ -2603,8 +2603,18 @@ end
 -- allows) and the chunked upload path (M.upload_chunk_finish) that exists
 -- specifically to get large videos past that same edge limit by sending
 -- them as several sub-100MB requests instead of one.
+local function finalize_upload_debug_mark(label, t0)
+  if os.getenv("GALLERY_UPLOAD_DEBUG_TIMING") then
+    io.stdout:write(string.format("[upload-timing] %s at +%.2fs\n", label, os.time() - t0))
+    io.stdout:flush()
+  end
+end
+
 local function finalize_upload(req, user, content, original_filename, form)
+  local debug_t0 = os.time()
+  finalize_upload_debug_mark("start", debug_t0)
   local sniffed_mime, media_kind = sniff_magic(content)
+  finalize_upload_debug_mark("sniff_magic done", debug_t0)
   if not sniffed_mime then return 400, { detail = "Unsupported or invalid file bytes." } end
   if not safe_extension(original_filename, sniffed_mime) then
     return 400, { detail = "Unsupported file extension." }
@@ -2636,6 +2646,7 @@ local function finalize_upload(req, user, content, original_filename, form)
     })
     if ok then analysis = result end
   end
+  finalize_upload_debug_mark("ai analysis done", debug_t0)
 
   local title = title_raw ~= "" and title_raw or (analysis and analysis.title) or ""
   if title == "" then return 400, { detail = "Title is required." } end
@@ -2682,6 +2693,7 @@ local function finalize_upload(req, user, content, original_filename, form)
   local subcategory_id = resolved_subcategory_ids[1]
 
   local sha256 = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(content))
+  finalize_upload_debug_mark("sha256 done", debug_t0)
   local moderation = moderate_upload(title, description, tags, original_filename, sniffed_mime,
     is_adult_input or (analysis and analysis.is_adult) or false)
 
@@ -2693,6 +2705,7 @@ local function finalize_upload(req, user, content, original_filename, form)
   local possible_site_duplicates = form_bool(form.check_site_duplicates, false)
     and find_possible_duplicates(req, user.id, fingerprint, 3, "site")
     or {}
+  finalize_upload_debug_mark("moderation/fingerprint/dupes done", debug_t0)
 
   local media_file, save_err = media_files.save_media_file({
     user_id = user.id,
@@ -2704,6 +2717,7 @@ local function finalize_upload(req, user, content, original_filename, form)
     file_size = #content,
     chunk_bytes = M.settings.db_blob_chunk_bytes,
   })
+  finalize_upload_debug_mark("save_media_file done", debug_t0)
   if not media_file then return 500, { detail = "Could not store uploaded file: " .. tostring(save_err) } end
 
   local row, insert_err = db.fetchone(
@@ -2727,6 +2741,7 @@ local function finalize_upload(req, user, content, original_filename, form)
     fingerprint and fingerprint.image_height and tostring(fingerprint.image_height) or nil,
     fingerprint and fingerprint.dominant_color or nil, publish_at
   )
+  finalize_upload_debug_mark("media_items insert done", debug_t0)
   if not row then return 500, { detail = "Could not save media: " .. tostring(insert_err) } end
   local media_id = db.toint(row.id, row.id)
   write_media_subcategories(media_id, resolved_subcategory_ids)
@@ -2734,7 +2749,9 @@ local function finalize_upload(req, user, content, original_filename, form)
   local item = fetch_media_by_id(media_id, tostring(user.id))
   local adult_allowed = viewer_adult_allowed(tostring(user.id))
   local enriched = decode_media_row(item, adult_allowed, req)
+  finalize_upload_debug_mark("decode_media_row done", debug_t0)
   notify_discord_upload(req, user, enriched)
+  finalize_upload_debug_mark("notify_discord_upload done", debug_t0)
   -- Scheduled posts (future publish_at) aren't visible yet, so saved-search
   -- subscribers must not be notified until the scheduled time actually
   -- arrives; there's no publish-time sweep (see parse_publish_at's comment
