@@ -217,6 +217,48 @@ extension GalleryAPIClient {
         return try await upload("/api/media", fields: uploadForm(fields), file: file)
     }
 
+    private struct UploadInitBody: Encodable { var totalSize: Int; var filename: String }
+    private struct UploadInitResponse: Decodable { var sessionId: String; var chunkSize: Int }
+    private struct ChunkAck: Decodable { var ok: Bool; var receivedBytes: Int }
+
+    /// Splits large files into pieces before sending instead of one giant
+    /// request -- this deployment's Cloudflare tunnel hard-413s any single
+    /// request body over ~100MB regardless of the server's own configured
+    /// upload limit (confirmed live: a 105MB request gets a Cloudflare
+    /// error page before it ever reaches the app), which is what "network
+    /// connection was lost" on big video uploads actually was. Mirrors
+    /// `M.upload_chunk_init/_append/_finish` in routes.lua.
+    func uploadMediaChunked(fileURL: URL, fileName: String, fields: UploadFields, onProgress: ((Double) -> Void)? = nil) async throws -> MediaUploadResponse {
+        let totalSize = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int) ?? nil
+        guard let totalSize, totalSize > 0 else {
+            throw GalleryAPIError.http(status: 0, message: "Could not read the file to upload.")
+        }
+
+        let initResponse: UploadInitResponse = try await requestJSON(
+            "/api/media/upload/init",
+            body: UploadInitBody(totalSize: totalSize, filename: fileName)
+        )
+
+        let reader = try FileHandle(forReadingFrom: fileURL)
+        defer { try? reader.close() }
+        var index = 0
+        var sentBytes = 0
+        while let chunk = try reader.read(upToCount: initResponse.chunkSize), !chunk.isEmpty {
+            let ack: ChunkAck = try await uploadChunkBytes(
+                "/api/media/upload/chunk",
+                query: ["session_id": initResponse.sessionId, "index": String(index)],
+                data: chunk
+            )
+            sentBytes = ack.receivedBytes
+            onProgress?(Double(sentBytes) / Double(totalSize))
+            index += 1
+        }
+
+        var body = uploadForm(fields)
+        body["session_id"] = initResponse.sessionId
+        return try await requestJSON("/api/media/upload/finish", body: body)
+    }
+
     func myMedia(includeDeleted: Bool = true) async throws -> [MediaItem] {
         let response: MediaListResponse = try await requestJSON("/api/me/media", query: ["include_deleted": String(includeDeleted)])
         return response.media

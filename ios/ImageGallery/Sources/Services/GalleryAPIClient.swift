@@ -297,6 +297,27 @@ final class GalleryAPIClient {
         }
     }
 
+    /// Posts a single raw chunk (no multipart envelope) for the chunked
+    /// upload flow -- see `uploadMediaChunked` in +Endpoints.swift. Returns
+    /// the decoded JSON ack (`{"ok": true, "received_bytes": ...}`).
+    @discardableResult
+    func uploadChunkBytes<T: Decodable>(_ path: String, query: [String: String], data: Data) async throws -> T {
+        let (respData, response) = try await sendWithRetry(
+            buildRequest: {
+                var request = try baseRequest(path: path, method: "POST", query: query, requiresAuth: true)
+                request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+                return request
+            },
+            perform: { request in try await self.session.upload(for: request, from: data) }
+        )
+        try validate(response, data: respData)
+        do {
+            return try decoder.decode(T.self, from: respData)
+        } catch {
+            throw GalleryAPIError.decoding(String(describing: error))
+        }
+    }
+
     /// Fire-and-forget-shaped DELETE/POST calls that only return `{"ok": true}`-style acks.
     func requestVoid(_ path: String, method: String, query: [String: String]? = nil, requiresAuth: Bool = true) async throws {
         let (data, response) = try await sendWithRetry(

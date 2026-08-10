@@ -139,7 +139,9 @@ struct UploadView: View {
             }
         } label: {
             Group {
-                if viewModel.isUploading {
+                if viewModel.isUploading && viewModel.uploadProgress > 0 {
+                    ProgressView(value: viewModel.uploadProgress).tint(.white).frame(maxWidth: 120)
+                } else if viewModel.isUploading {
                     ProgressView().tint(.white)
                 } else {
                     Text("Publish").font(.headline)

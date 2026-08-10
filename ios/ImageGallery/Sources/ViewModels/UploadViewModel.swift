@@ -51,6 +51,9 @@ final class UploadViewModel: ObservableObject {
 
     @Published var categories: [CategorySummary] = []
     @Published var isUploading = false
+    /// Only meaningfully updated for chunked (large-video) uploads -- see
+    /// `submit()`. Stays 0 for the ordinary single-request path.
+    @Published var uploadProgress: Double = 0
     @Published var errorMessage: String?
     @Published var uploadedMedia: MediaItem?
     @Published var possibleDuplicates: [DuplicateMatch] = []
@@ -122,6 +125,7 @@ final class UploadViewModel: ObservableObject {
             return false
         }
         isUploading = true
+        uploadProgress = 0
         errorMessage = nil
         defer { isUploading = false }
 
@@ -148,7 +152,17 @@ final class UploadViewModel: ObservableObject {
         do {
             let response: MediaUploadResponse
             if let pickedFileURL {
-                response = try await api.uploadMedia(fileURL: pickedFileURL, fileName: pickedFileName, mimeType: pickedMimeType, fields: fields)
+                let size = (try? FileManager.default.attributesOfItem(atPath: pickedFileURL.path)[.size] as? Int) ?? nil
+                // Comfortably under the ~100MB Cloudflare edge limit the
+                // direct single-request path silently dies above (see
+                // GalleryAPIClient+Endpoints.swift's uploadMediaChunked).
+                if let size, size > 60 * 1024 * 1024 {
+                    response = try await api.uploadMediaChunked(fileURL: pickedFileURL, fileName: pickedFileName, fields: fields) { [weak self] progress in
+                        Task { @MainActor in self?.uploadProgress = progress }
+                    }
+                } else {
+                    response = try await api.uploadMedia(fileURL: pickedFileURL, fileName: pickedFileName, mimeType: pickedMimeType, fields: fields)
+                }
             } else if let pickedData {
                 response = try await api.uploadMedia(data: pickedData, fileName: pickedFileName, mimeType: pickedMimeType, fields: fields)
             } else {
