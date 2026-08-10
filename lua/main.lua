@@ -85,6 +85,7 @@ httpd.route("POST", "/api/media", routes.upload_media)
 -- are literal 2nd-segment paths under /api/media/*, same shape as :media_id.
 httpd.route("POST", "/api/media/bulk", routes.bulk_edit_media)
 httpd.route("POST", "/api/media/bulk-delete", routes.bulk_delete_media)
+httpd.route("POST", "/api/media/download-batch", routes.download_media_batch)
 httpd.route("POST", "/api/media/analyze", routes.analyze_media)
 httpd.route("GET", "/api/media/trending", routes.media_trending)
 -- ROUTE-ORDERING TRAP for future passes: httpd.lua's match_route() returns
@@ -172,6 +173,7 @@ httpd.route("GET", "/api/collections/suggestions", routes.collection_suggestions
 httpd.route("GET", "/api/collections", routes.list_collections)
 httpd.route("POST", "/api/collections", routes.create_collection)
 httpd.route("GET", "/api/collections/:collection_id", routes.collection_detail)
+httpd.route("GET", "/api/collections/:collection_id/download", routes.download_collection)
 httpd.route("POST", "/api/collections/:collection_id/items", routes.save_collection_item)
 
 httpd.route("GET", "/api/saved-searches", routes.list_saved_searches)

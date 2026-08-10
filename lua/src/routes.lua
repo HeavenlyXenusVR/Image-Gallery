@@ -4249,7 +4249,7 @@ function M.collection_detail(req)
         LEFT JOIN media_bookmarks b ON b.media_id = m.id AND b.user_id::text = %s
         LEFT JOIN media_comments cm ON cm.media_id = m.id
         WHERE mci.collection_id=%s AND m.deleted_at IS NULL AND (m.visibility='public' OR m.user_id::text=%s)
-        GROUP BY m.id, c.name, c.slug, sc.name, sc.slug, u.username, u.display_name,
+        GROUP BY m.id, mci.added_at, c.name, c.slug, sc.name, sc.slug, u.username, u.display_name,
                  u.avatar_path, u.profile_color, u.public_profile, u.id
         ORDER BY mci.added_at DESC
         LIMIT 120
@@ -5907,6 +5907,145 @@ function M.download_media(req)
   local media_id = tonumber(req.params.media_id)
   if not media_id then return 404, { detail = "Media not found." } end
   return serve_media_bytes_response(req, media_id, true)
+end
+
+-- ---------------------------------------------------------------------------
+-- Zip downloads (StudioPage.jsx's "Download selected" and
+-- CollectionsPage.jsx's "Download collection" -- both confirmed
+-- live-404ing, and the zip-building capability they need didn't exist
+-- anywhere in this codebase yet, unlike most other gaps this session which
+-- were "recover the existing logic." Shells out to the system `zip` binary
+-- via os.execute/os.tmpname, the same convention media_files.lua already
+-- uses for ffmpeg/ImageMagick calls (see its "ffmpeg-backed thumbnail"
+-- section) -- no Lua zip library is installed (checked: neither `zip` nor
+-- `minizip` rocks are available), and this matches how every other
+-- shell-out in this codebase already works rather than introducing a new
+-- technique.
+-- ---------------------------------------------------------------------------
+
+local function zip_shell_quote(s)
+  return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
+-- Writes each accessible item's bytes to a scratch temp dir, zips it with
+-- the system `zip` binary, reads the result back into memory, and cleans up
+-- -- returns the zip bytes, or nil if nothing was downloadable (private and
+-- not owned, downloads disabled and not owned, or bytes missing). Mirrors
+-- serve_media_bytes_response's own per-item visibility/downloads_enabled
+-- gating, just skipping rather than 403ing the whole batch over one
+-- inaccessible item.
+local function build_media_zip(items, viewer_id)
+  local tmp_dir = os.tmpname()
+  os.remove(tmp_dir)
+  os.execute("mkdir -p " .. zip_shell_quote(tmp_dir))
+
+  local file_paths = {}
+  for _, item in ipairs(items) do
+    local owner = viewer_id and tostring(item.user_id) == tostring(viewer_id)
+    local visible = item.visibility ~= "private" or owner
+    local allowed = db.tobool(item.downloads_enabled) or owner
+    if visible and allowed then
+      local content = resolve_media_bytes(item)
+      if content then
+        local safe_base = tostring(item.original_filename or ("media-" .. item.id)):gsub("[/\\]", "_")
+        local path = tmp_dir .. "/" .. tostring(item.id) .. "-" .. safe_base
+        local f = io.open(path, "wb")
+        if f then
+          f:write(content)
+          f:close()
+          file_paths[#file_paths + 1] = path
+        end
+      end
+    end
+  end
+
+  if #file_paths == 0 then
+    os.execute("rm -rf " .. zip_shell_quote(tmp_dir))
+    return nil
+  end
+
+  local zip_path = tmp_dir .. ".zip"
+  local quoted_paths = {}
+  for _, p in ipairs(file_paths) do quoted_paths[#quoted_paths + 1] = zip_shell_quote(p) end
+  local cmd = "cd " .. zip_shell_quote(tmp_dir) .. " && zip -j -q " .. zip_shell_quote(zip_path)
+    .. " " .. table.concat(quoted_paths, " ") .. " </dev/null >/dev/null 2>&1"
+  local ok = os.execute(cmd)
+  local success = (ok == 0 or ok == true)
+
+  local zip_bytes = nil
+  if success then
+    local f = io.open(zip_path, "rb")
+    if f then
+      zip_bytes = f:read("*a")
+      f:close()
+    end
+  end
+  os.execute("rm -rf " .. zip_shell_quote(tmp_dir))
+  os.remove(zip_path)
+  return zip_bytes
+end
+
+-- POST /api/media/download-batch -- confirmed live-404ing: StudioPage.jsx's
+-- "Download selected" bulk action has always called this.
+function M.download_media_batch(req)
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  local rl_status, rl_body = ratelimit.check("download_batch:" .. (viewer_id or client_ip(req)), 30, 3600)
+  if rl_status then return rl_status, rl_body end
+
+  local payload = json_body(req)
+  local ids = {}
+  if type(payload.media_ids) == "table" then
+    for _, id in ipairs(payload.media_ids) do
+      local n = tonumber(id)
+      if n then ids[#ids + 1] = n end
+    end
+  end
+  if #ids == 0 then return 400, { detail = "No posts selected." } end
+  if #ids > 50 then return 400, { detail = "Select 50 or fewer posts at a time." } end
+
+  local items = {}
+  for _, id in ipairs(ids) do
+    local item = fetch_media_by_id(id, viewer_id or "0")
+    if item and nn(item.deleted_at) == nil then
+      item.is_adult = db.tobool(item.is_adult)
+      items[#items + 1] = item
+    end
+  end
+
+  local zip_bytes = build_media_zip(items, viewer_id)
+  if not zip_bytes then return 404, { detail = "None of the selected posts could be downloaded." } end
+  return 200, zip_bytes, {
+    ["Content-Type"] = "application/zip",
+    ["Content-Disposition"] = 'attachment; filename="gallery-selection.zip"',
+  }
+end
+
+-- GET /api/collections/:collection_id/download -- confirmed live-404ing:
+-- CollectionsPage.jsx has always called this. Delegates access control
+-- entirely to M.collection_detail (private-collection 404 gating, smart-
+-- collection filter resolution) rather than duplicating it.
+function M.download_collection(req)
+  local status, body = M.collection_detail(req)
+  if status ~= 200 then return status, body end
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  -- body.media went through arr() inside collection_detail, which returns
+  -- the special cjson.empty_array sentinel (not a real table) for an empty
+  -- list -- `#` on that userdata errors, so normalize back to {} here.
+  local items = type(body.media) == "table" and body.media or {}
+  if #items == 0 then return 404, { detail = "This collection has no downloadable posts." } end
+
+  local zip_bytes = build_media_zip(items, viewer_id)
+  if not zip_bytes then return 404, { detail = "None of the posts in this collection could be downloaded." } end
+
+  local raw_name = tostring((body.collection and body.collection.name) or "collection")
+  local safe_name = raw_name:gsub("[^%w%-_ ]", ""):gsub("%s+", "-"):sub(1, 60)
+  if safe_name == "" then safe_name = "collection" end
+  return 200, zip_bytes, {
+    ["Content-Type"] = "application/zip",
+    ["Content-Disposition"] = string.format('attachment; filename="%s.zip"', safe_name),
+  }
 end
 
 function M.serve_media_preview(req)
