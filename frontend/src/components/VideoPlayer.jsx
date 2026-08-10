@@ -174,31 +174,73 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     };
   }, [scheduleHide]);
 
-  // On src change: save position/playing state, reload, restore after canplay
+  // On src change: save position/playing state, (re)attach the stream,
+  // restore after canplay. `src` now points at a real HLS playlist
+  // (master.m3u8 for adaptive, or a specific quality's own playlist.m3u8),
+  // not a single progressively-downloaded file — Safari plays that
+  // natively via <video src>, but Chrome/Firefox have no built-in HLS
+  // support at all, hence hls.js: it demuxes segments into a MediaSource
+  // buffer and dispatches the SAME native media events (canplay,
+  // durationchange, waiting, timeupdate...) this component already
+  // listens for above, so only the *attachment* mechanism differs — the
+  // rest of this component doesn't need to know which path is active.
+  const hlsRef = useRef(null);
   const prevSrcRef = useRef(src);
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || !src) return;
+    let cancelled = false;
     setError(null);
     setBufferingLong(false);
     if (bufferingTimerRef.current) { clearTimeout(bufferingTimerRef.current); bufferingTimerRef.current = null; }
-    if (prevSrcRef.current && prevSrcRef.current !== src) {
-      // Quality switch — preserve playback position
+
+    const isQualitySwitch = Boolean(prevSrcRef.current && prevSrcRef.current !== src);
+    let pendingRestore = null;
+    if (isQualitySwitch) {
       const savedTime = video.currentTime || 0;
       const wasPlaying = !video.paused;
-      if (savedTime > 0 || wasPlaying) {
-        pendingRestoreRef.current = { time: savedTime, wasPlaying };
-      }
+      if (savedTime > 0 || wasPlaying) pendingRestore = { time: savedTime, wasPlaying };
       video.pause();
-      video.load();
     } else {
-      // First load or same src
       setCurrentTime(0);
       setBuffered(0);
       setPlaying(false);
     }
+    if (pendingRestore) pendingRestoreRef.current = pendingRestore;
     prevSrcRef.current = src;
+
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+
+    const isHlsSrc = src.includes(".m3u8");
+    const hasNativeHls = video.canPlayType("application/vnd.apple.mpegurl") !== "";
+    if (isHlsSrc && !hasNativeHls) {
+      // Deferred so pages with no video playing never pay hls.js's bundle
+      // cost — only actually loaded once a real HLS source needs it.
+      import("hls.js").then(({ default: Hls }) => {
+        if (cancelled || !Hls.isSupported() || videoRef.current !== video) return;
+        const hls = new Hls({ enableWorker: true });
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (!data.fatal) return;
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) setError("Network error — check your connection and try again.");
+          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) setError("Decoding error — the video format may not be supported.");
+          else setError("Playback error — the video could not be loaded.");
+        });
+        hls.loadSource(src);
+        hls.attachMedia(video);
+        hlsRef.current = hls;
+      });
+    } else {
+      video.src = src;
+      video.load();
+    }
+
+    return () => { cancelled = true; };
   }, [src]);
+
+  useEffect(() => () => { if (hlsRef.current) hlsRef.current.destroy(); }, []);
 
   // Sync loop attribute on video element when state changes
   useEffect(() => {
@@ -418,7 +460,6 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
       <video
         ref={videoRef}
         className="vp-video"
-        src={src}
         poster={poster}
         playsInline
         preload="metadata"

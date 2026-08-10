@@ -89,13 +89,20 @@ struct MediaDetailView: View {
         .onDisappear { videoController?.pause() }
     }
 
+    /// Real HLS instead of a single Range-served file: AVPlayer has native
+    /// HLS support, so this is purely a URL swap. "original" points at the
+    /// master playlist for genuine adaptive bitrate (AVPlayer auto-switches
+    /// renditions on network conditions); picking an explicit quality from
+    /// the selector forces that one rendition's own media playlist instead.
     private func videoQualityURL(_ media: MediaItem, quality: String) -> URL? {
         guard let urlString = media.url, var components = URLComponents(string: urlString) else { return nil }
-        var items = (components.queryItems ?? []).filter { $0.name != "quality" }
-        if quality != "original" && !quality.isEmpty {
-            items.append(URLQueryItem(name: "quality", value: quality))
-        }
-        components.queryItems = items.isEmpty ? nil : items
+        let accessToken = (components.queryItems ?? []).first { $0.name == "access" }?.value
+        guard components.path.hasSuffix("/file") else { return nil }
+        let base = String(components.path.dropLast("/file".count))
+        components.path = (quality == "original" || quality.isEmpty)
+            ? base + "/hls/master.m3u8"
+            : base + "/hls/\(quality)/playlist.m3u8"
+        components.queryItems = accessToken.map { [URLQueryItem(name: "access", value: $0)] }
         return components.url
     }
 

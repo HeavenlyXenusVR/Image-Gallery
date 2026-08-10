@@ -162,10 +162,36 @@ export function imageQualityUrl(item, quality = "medium") {
   return withQuery(item.preview_url || thumbUrl(item, 1280), { size: "detail" });
 }
 
-export function videoQualityUrl(item, quality = "original") {
+// Lightweight muted/looping grid-card hover previews use a plain <video>
+// tag with no hls.js attached (spinning up a full HLS instance per card
+// in a scrollable grid would be wasteful) -- these keep using the
+// original single-file, Range-served endpoint rather than HLS.
+export function videoPreviewUrl(item, quality = "low") {
   if (!item || item.locked) return "";
-  if (!quality || quality === "original" || quality === "high") return item.url || "";
   return withQuery(item.url || "", { quality });
+}
+
+// Real HLS instead of a single Range-served file: "original"/"high" (no
+// explicit quality) points at the master playlist for genuine adaptive
+// bitrate (the player auto-switches renditions on network conditions);
+// picking an explicit quality from the selector forces that one
+// rendition's own media playlist instead. VideoPlayer.jsx feeds this
+// straight into hls.js (or native <video> on Safari, which supports HLS
+// out of the box).
+export function videoQualityUrl(item, quality = "original") {
+  if (!item || item.locked || !item.url) return "";
+  try {
+    const absolute = /^https?:\/\//i.test(item.url);
+    const parsed = new URL(item.url, window.location.origin);
+    if (!parsed.pathname.endsWith("/file")) return item.url;
+    const base = parsed.pathname.slice(0, -"/file".length);
+    parsed.pathname = (!quality || quality === "original" || quality === "high")
+      ? `${base}/hls/master.m3u8`
+      : `${base}/hls/${quality}/playlist.m3u8`;
+    return absolute ? parsed.toString() : parsed.pathname + parsed.search + parsed.hash;
+  } catch (_error) {
+    return item.url;
+  }
 }
 
 export function replaceMedia(rows, updated) {

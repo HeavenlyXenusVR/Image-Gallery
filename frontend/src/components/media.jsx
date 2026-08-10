@@ -4,7 +4,7 @@ import { Bookmark, Copy, Download, ExternalLink, Film, FolderPlus, Heart, Image 
 import { apiFetch, clearApiCache } from "../api.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
 import { formatBytes, formatDate, numberish } from "../utils/format.js";
-import { isGifMedia, isPerfLiteRuntime, mediaImageSources, thumbUrl, videoQualityUrl } from "../utils/media.js";
+import { isGifMedia, isPerfLiteRuntime, mediaImageSources, thumbUrl, videoPreviewUrl } from "../utils/media.js";
 import { Avatar, EmptyState, ResilientImage, SkeletonGrid, StatsRow } from "./ui.jsx";
 
 function subcategoryNames(item) {
@@ -39,7 +39,7 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
   const thumb = useMemo(() => (item.media_kind === "video" ? thumbUrl(item, 420) : thumbUrl(item)), [item]);
   const mutedPreview = ctx.settings.muted_previews !== false;
   const liveVideoPreview = item.media_kind === "video" && ctx.settings.autoplay_previews && item.url && !isPerfLiteRuntime();
-  const previewSrc = useMemo(() => (liveVideoPreview ? videoQualityUrl(item, "low") : ""), [liveVideoPreview, item]);
+  const previewSrc = useMemo(() => (liveVideoPreview ? videoPreviewUrl(item, "low") : ""), [liveVideoPreview, item]);
   const categoryLine = useMemo(() => [item.category_name || "Unsorted", ...subcategoryNames(item)].filter(Boolean).join(" / "), [item]);
   const imageSources = useMemo(() => mediaImageSources(item, { width: eager ? 720 : 640, previewSize: "detail" }), [item, eager]);
   const videoThumbSources = useMemo(() => mediaImageSources(item, { width: 420, previewSize: "card" }), [item]);
