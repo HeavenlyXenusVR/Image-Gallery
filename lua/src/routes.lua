@@ -5959,10 +5959,23 @@ local function video_quality_cache_path(media_id, quality, digest_seed)
   return M.settings.uploads_dir .. "/_video_cache/" .. tostring(media_id) .. "_" .. quality .. "_" .. key .. ".mp4"
 end
 
+local VIDEO_TRANSCODE_PENDING_STALE_SECONDS = 5 * 60
+
 -- Returns (transcoded_bytes, "video/mp4") on success, or (nil) to signal
 -- "serve the original instead" (quality is "original", no ffmpeg profile
--- for that quality name, the file is too large to transcode, or the
--- transcode itself failed).
+-- for that quality name, the file is too large to transcode, or a
+-- transcode isn't cached yet).
+--
+-- The transcode itself now always runs as a DETACHED background process
+-- rather than inline: running it inline blocked copas' single-threaded
+-- loop for the whole transcode (measured live: 6+ seconds for a 40MB->
+-- 720p pass, during which a concurrent, completely unrelated request from
+-- another client timed out with zero bytes received). A cache miss now
+-- falls through to serving the original immediately (still Range/206-
+-- servable, so playback still starts instantly) while ffmpeg runs
+-- detached; the requested quality becomes available near-instantly, via
+-- the cache-hit path below, for every request after that -- including a
+-- retry/reload of this same video by the same viewer a moment later.
 local function ensure_video_quality_cache(media_id, item, content, quality)
   local profile = VIDEO_QUALITY_PROFILES[quality]
   if not profile then return nil end
@@ -5979,38 +5992,49 @@ local function ensure_video_quality_cache(media_id, item, content, quality)
     if bytes and #bytes > 0 then return bytes, "video/mp4" end
   end
 
-  os.execute("mkdir -p " .. shell_quote(M.settings.uploads_dir .. "/_video_cache"))
-  local src = os.tmpname()
-  local f = assert(io.open(src, "wb"))
-  f:write(content)
-  f:close()
-
-  local tmp_dst = cache_file .. ".tmp." .. tostring(math.random(100000, 999999)) .. ".mp4"
-  local scale_filter = string.format("scale='min(%d,iw)':-2:flags=lanczos", profile.max_width)
-  local cmd = string.format(
-    "%s -y -hide_banner -loglevel error -i %s -map 0:v:0 -map 0:a:0? -vf %s -c:v libx264 -preset %s -crf %d "
-      .. "-profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s -movflags +faststart -f mp4 %s </dev/null >/dev/null 2>&1",
-    ffmpeg_bin(), shell_quote(src), shell_quote(scale_filter),
-    profile.preset, profile.crf, profile.profile, profile.audio_bitrate, shell_quote(tmp_dst)
-  )
-  local ok = os.execute(cmd)
-  local success = (ok == 0 or ok == true)
-  os.remove(src)
-
-  if not success then
-    os.remove(tmp_dst)
-    return nil
+  -- A ".pending" marker (its content is just the unix timestamp it was
+  -- created at) records that a background job is already in flight for
+  -- this exact (media_id, quality, content digest), so a burst of
+  -- requests before the first transcode finishes doesn't launch a pile of
+  -- duplicate ffmpeg processes. Filesystem-based rather than an in-memory
+  -- Lua table so it's automatically correct even across a server restart
+  -- mid-transcode; a max age guards against a marker orphaned by a
+  -- process that died without cleaning up after itself.
+  local pending_marker = cache_file .. ".pending"
+  local pf = io.open(pending_marker, "rb")
+  local pending_age = nil
+  if pf then
+    pending_age = tonumber(pf:read("*a"))
+    pf:close()
   end
-  local tf = io.open(tmp_dst, "rb")
-  if not tf then return nil end
-  local bytes = tf:read("*a")
-  tf:close()
-  if not bytes or #bytes == 0 then
-    os.remove(tmp_dst)
-    return nil
+  local already_pending = pending_age and (os.time() - pending_age) < VIDEO_TRANSCODE_PENDING_STALE_SECONDS
+
+  if not already_pending then
+    os.execute("mkdir -p " .. shell_quote(M.settings.uploads_dir .. "/_video_cache"))
+    local src = cache_file .. ".src." .. tostring(math.random(100000, 999999)) .. ".bin"
+    local f = assert(io.open(src, "wb"))
+    f:write(content)
+    f:close()
+
+    local marker = assert(io.open(pending_marker, "wb"))
+    marker:write(tostring(os.time()))
+    marker:close()
+
+    local tmp_dst = cache_file .. ".tmp." .. tostring(math.random(100000, 999999)) .. ".mp4"
+    local scale_filter = string.format("scale='min(%d,iw)':-2:flags=lanczos", profile.max_width)
+    local cmd = string.format(
+      "( %s -y -hide_banner -loglevel error -i %s -map 0:v:0 -map 0:a:0? -vf %s -c:v libx264 -preset %s -crf %d "
+        .. "-profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s -movflags +faststart -f mp4 %s "
+        .. "&& mv -f %s %s; rm -f %s %s %s ) </dev/null >/dev/null 2>&1 &",
+      ffmpeg_bin(), shell_quote(src), shell_quote(scale_filter),
+      profile.preset, profile.crf, profile.profile, profile.audio_bitrate, shell_quote(tmp_dst),
+      shell_quote(tmp_dst), shell_quote(cache_file),
+      shell_quote(src), shell_quote(pending_marker), shell_quote(tmp_dst)
+    )
+    os.execute(cmd)
   end
-  os.rename(tmp_dst, cache_file)
-  return bytes, "video/mp4"
+
+  return nil
 end
 
 -- Adds real HTTP Range/206 support. Previously flagged as a KNOWN
