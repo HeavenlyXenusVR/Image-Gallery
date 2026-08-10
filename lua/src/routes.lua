@@ -6054,6 +6054,193 @@ local function ensure_video_quality_cache(media_id, item, content, quality)
   return nil
 end
 
+-- ---------------------------------------------------------------------------
+-- Real HLS adaptive streaming. Range/206 (below) gets a player playing
+-- almost instantly and buffering progressively, but it's still one fixed
+-- rendition per request -- no seamless quality switching, and a quality
+-- change means abandoning the current connection and re-requesting the
+-- whole file at a different rendition. This gives real segmented,
+-- progressively-encoded HLS: ffmpeg is launched detached (same pattern as
+-- ensure_video_quality_cache above) with `-f hls`, which writes the
+-- .m3u8 playlist and .ts segments to disk INCREMENTALLY as it encodes --
+-- a client can start playing segment 0 while segment 4 is still being
+-- encoded, and AVPlayer/hls.js re-poll the (still-growing) playlist for
+-- new segments exactly like a live stream, dropping the trailing
+-- #EXT-X-ENDLIST tag in automatically once ffmpeg reaches end of input.
+-- "original" quality uses `-c copy` (remux only, no re-encode) so it's
+-- available almost immediately regardless of source length.
+-- ---------------------------------------------------------------------------
+
+local HLS_SEGMENT_SECONDS = 6
+
+local function media_content_digest_seed(media_id, item)
+  local sha_row = db.fetchone("SELECT content_sha256 FROM media_items WHERE id=%s", tostring(media_id))
+  return (sha_row and nn(sha_row.content_sha256)) or item.updated_at or item.created_at or tostring(media_id)
+end
+
+local function hls_variant_dir(media_id, quality, digest_seed)
+  local key = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(tostring(digest_seed))):sub(1, 16)
+  return M.settings.uploads_dir .. "/_hls_cache/" .. tostring(media_id) .. "_" .. quality .. "_" .. key
+end
+
+-- Returns the variant's cache directory (which may not have any segments
+-- in it yet -- see the bounded poll in M.serve_hls_playlist) or nil if
+-- this quality isn't offered at all for this file.
+local function ensure_hls_variant(media_id, item, content, quality)
+  if quality ~= "original" and not VIDEO_QUALITY_PROFILES[quality] then return nil end
+  if #content > VIDEO_TRANSCODE_SIZE_LIMIT then return nil end
+
+  local digest_seed = media_content_digest_seed(media_id, item)
+  local dir = hls_variant_dir(media_id, quality, digest_seed)
+
+  if io.open(dir .. "/playlist.m3u8", "rb") then return dir end
+
+  -- Same filesystem-based ".pending" dedup as ensure_video_quality_cache.
+  local pending_marker = dir .. ".pending"
+  local pf = io.open(pending_marker, "rb")
+  local pending_age = pf and tonumber(pf:read("*a")) or nil
+  if pf then pf:close() end
+  if pending_age and (os.time() - pending_age) < VIDEO_TRANSCODE_PENDING_STALE_SECONDS then
+    return dir
+  end
+
+  os.execute("mkdir -p " .. shell_quote(dir))
+  local src = dir .. "/source.bin"
+  local f = assert(io.open(src, "wb"))
+  f:write(content)
+  f:close()
+
+  local marker = assert(io.open(pending_marker, "wb"))
+  marker:write(tostring(os.time()))
+  marker:close()
+
+  local codec_args
+  if quality == "original" then
+    codec_args = "-c copy"
+  else
+    local profile = VIDEO_QUALITY_PROFILES[quality]
+    local scale_filter = string.format("scale='min(%d,iw)':-2:flags=lanczos", profile.max_width)
+    codec_args = string.format(
+      "-vf %s -c:v libx264 -preset %s -crf %d -profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s",
+      shell_quote(scale_filter), profile.preset, profile.crf, profile.profile, profile.audio_bitrate
+    )
+  end
+
+  -- hls_flags temp_file: each playlist rewrite happens via write-then-
+  -- rename, so a concurrent read of playlist.m3u8 (M.serve_hls_playlist,
+  -- possibly mid-encode) never sees a torn/partial write.
+  local cmd = string.format(
+    "( %s -y -hide_banner -loglevel error -i %s -map 0:v:0 -map 0:a:0? %s "
+      .. "-f hls -hls_time %d -hls_list_size 0 -hls_playlist_type vod -hls_flags independent_segments+temp_file "
+      .. "-hls_segment_filename %s %s "
+      .. "; rm -f %s %s ) </dev/null >/dev/null 2>&1 &",
+    ffmpeg_bin(), shell_quote(src), codec_args, HLS_SEGMENT_SECONDS,
+    shell_quote(dir .. "/seg_%05d.ts"), shell_quote(dir .. "/playlist.m3u8"),
+    shell_quote(src), shell_quote(pending_marker)
+  )
+  os.execute(cmd)
+  return dir
+end
+
+-- Shared by all three HLS routes below: 404s (not 403 -- matches this
+-- file's "don't leak existence" convention elsewhere) on anything that
+-- would also 404/403 through the regular file-serving path.
+local function hls_check_access(req, media_id)
+  local auth = auth_optional(req)
+  local viewer_id = auth and tostring(auth.id) or nil
+  local item = fetch_media_by_id(media_id, viewer_id or "0")
+  if not item or nn(item.deleted_at) ~= nil then return nil, 404, { detail = "Media not found." } end
+  item.is_adult = db.tobool(item.is_adult)
+  local owner = viewer_id and tostring(item.user_id) == tostring(viewer_id)
+  if item.visibility == "private" and not owner then return nil, 403, { detail = "This post is private." } end
+  if item.is_adult and not adult_file_allowed(req, media_id, req.query.access, viewer_id) then
+    return nil, 403, { detail = "Age verification required for this 18+ post." }
+  end
+  if item.media_kind ~= "video" then return nil, 404, { detail = "Not a video." } end
+  return item
+end
+
+local HLS_BANDWIDTH_BY_QUALITY = { ["1080p"] = 5000000, ["720p"] = 2800000, ["480p"] = 1400000, ["144p"] = 300000 }
+
+function M.serve_hls_master(req)
+  local media_id = tonumber(req.params.media_id)
+  if not media_id then return 404, { detail = "Media not found." } end
+  local item, status, body = hls_check_access(req, media_id)
+  if not item then return status, body end
+
+  local access_qs = req.query and nn(req.query.access) and ("?access=" .. req.query.access) or ""
+  local lines = { "#EXTM3U", "#EXT-X-VERSION:6" }
+  -- Original first: no re-encode needed (fast remux), so it's always the
+  -- quickest to become available and is a sane default rendition even
+  -- for a source too large to offer any transcoded quality for.
+  lines[#lines + 1] = '#EXT-X-STREAM-INF:BANDWIDTH=8000000,NAME="Original"'
+  lines[#lines + 1] = string.format("/api/media/%d/hls/original/playlist.m3u8%s", media_id, access_qs)
+  for _, quality in ipairs({ "1080p", "720p", "480p", "144p" }) do
+    lines[#lines + 1] = string.format('#EXT-X-STREAM-INF:BANDWIDTH=%d,NAME="%s"', HLS_BANDWIDTH_BY_QUALITY[quality], quality)
+    lines[#lines + 1] = string.format("/api/media/%d/hls/%s/playlist.m3u8%s", media_id, quality, access_qs)
+  end
+  return 200, table.concat(lines, "\n") .. "\n",
+    { ["Content-Type"] = "application/vnd.apple.mpegurl", ["Cache-Control"] = "no-cache" }
+end
+
+function M.serve_hls_playlist(req)
+  local media_id = tonumber(req.params.media_id)
+  local quality = normalize_video_quality(req.params.quality)
+  if not media_id then return 404, { detail = "Media not found." } end
+  local item, status, body = hls_check_access(req, media_id)
+  if not item then return status, body end
+
+  local content = resolve_media_bytes(item)
+  if not content then return 404, { detail = "File is missing." } end
+
+  local dir = ensure_hls_variant(media_id, item, content, quality)
+  if not dir then return 404, { detail = "This quality is not available for this video." } end
+  content = nil -- done with the full blob; let it go before the poll loop below
+
+  -- Bounded, yielding wait for the first segment(s): a cold cache means
+  -- the background ffmpeg job was JUST launched a moment ago by the call
+  -- above, so the playlist file may not have its first #EXTINF entry
+  -- written yet. copas.sleep yields to the scheduler on each iteration
+  -- (confirmed: coroutine_yield under the hood) so other in-flight
+  -- requests are serviced during this wait, unlike the multi-minute
+  -- fully-synchronous transcode this replaces.
+  local playlist_path = dir .. "/playlist.m3u8"
+  local waited = 0
+  while waited < 8 do
+    local f = io.open(playlist_path, "rb")
+    if f then
+      local text = f:read("*a")
+      f:close()
+      if text and text:find("#EXTINF", 1, true) then
+        return 200, text, { ["Content-Type"] = "application/vnd.apple.mpegurl", ["Cache-Control"] = "no-cache" }
+      end
+    end
+    local copas_ok, copas = pcall(require, "copas")
+    if copas_ok then copas.sleep(0.25) end
+    waited = waited + 0.25
+  end
+  return 503, { detail = "This video is still starting up -- try again in a moment." }
+end
+
+function M.serve_hls_segment(req)
+  local media_id = tonumber(req.params.media_id)
+  local quality = normalize_video_quality(req.params.quality)
+  local segment = req.params.segment
+  if not media_id or not segment or not segment:match("^seg_%d+%.ts$") then
+    return 404, { detail = "Not found." }
+  end
+  local item, status, body = hls_check_access(req, media_id)
+  if not item then return status, body end
+
+  local digest_seed = media_content_digest_seed(media_id, item)
+  local dir = hls_variant_dir(media_id, quality, digest_seed)
+  local f = io.open(dir .. "/" .. segment, "rb")
+  if not f then return 404, { detail = "Segment not found." } end
+  local bytes = f:read("*a")
+  f:close()
+  return 200, bytes, { ["Content-Type"] = "video/mp2t", ["Cache-Control"] = "public, max-age=86400" }
+end
+
 -- Adds real HTTP Range/206 support. Previously flagged as a KNOWN
 -- LIMITATION (see this section's header comment above): httpd.lua always
 -- wrote one Content-Length-framed body with no partial-content path, so

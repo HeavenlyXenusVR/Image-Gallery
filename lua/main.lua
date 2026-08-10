@@ -121,6 +121,13 @@ httpd.route("DELETE", "/api/comments/:comment_id", routes.delete_comment)
 httpd.route("GET", "/api/media/:media_id/thumb", routes.serve_media_thumb)
 httpd.route("GET", "/api/media/:media_id/file", routes.serve_media_file)
 httpd.route("GET", "/api/media/:media_id/preview", routes.serve_media_preview)
+httpd.route("GET", "/api/media/:media_id/hls/master.m3u8", routes.serve_hls_master)
+-- ":quality/playlist.m3u8" MUST be registered before ":quality/:segment" --
+-- both are 4 segments deep, and the wildcard :segment pattern would
+-- otherwise greedily match the literal "playlist.m3u8" too (same
+-- first-match-wins ordering trap noted above for /api/media/:media_id).
+httpd.route("GET", "/api/media/:media_id/hls/:quality/playlist.m3u8", routes.serve_hls_playlist)
+httpd.route("GET", "/api/media/:media_id/hls/:quality/:segment", routes.serve_hls_segment)
 httpd.route("GET", "/api/media/:media_id/download", routes.download_media)
 httpd.route("GET", "/api/users/:user_id/avatar", routes.serve_user_avatar)
 
