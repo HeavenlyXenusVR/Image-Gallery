@@ -956,6 +956,16 @@ function M.list_media(req)
   }
   local params = { viewer0, viewer0 }
 
+  -- Hide posts from anyone the viewer has blocked or muted -- genuinely new
+  -- enforcement (see should_suppress_notification's comment further down:
+  -- "mute" was storable via the block/mute endpoint and shown in Settings,
+  -- but nothing ever actually filtered on it, including block itself never
+  -- being applied to feed visibility, only to DMs/follows/mentions).
+  if viewer_id then
+    clauses[#clauses + 1] = "m.user_id NOT IN (SELECT blocked_id FROM user_blocks WHERE blocker_id=%s)"
+    params[#params + 1] = viewer0
+  end
+
   if media_kind == "image" or media_kind == "video" then
     clauses[#clauses + 1] = "m.media_kind=%s"; params[#params + 1] = media_kind
   end
@@ -1106,6 +1116,12 @@ local function fetch_media_feed(req, viewer_id, extra_clause, extra_params, orde
     "(m.publish_at IS NULL OR m.publish_at <= now() OR m.user_id=%s)",
   }
   local params = { viewer0, viewer0 }
+  -- Same block/mute feed-hiding as list_media (see its own comment) --
+  -- applies here too since this backs the following/liked/trending feeds.
+  if viewer_id then
+    clauses[#clauses + 1] = "m.user_id NOT IN (SELECT blocked_id FROM user_blocks WHERE blocker_id=%s)"
+    params[#params + 1] = viewer0
+  end
   if extra_clause then
     clauses[#clauses + 1] = extra_clause
     for _, p in ipairs(extra_params or {}) do params[#params + 1] = p end
@@ -3505,6 +3521,27 @@ local NOTIFICATION_KINDS = {
   message = true, mention = true, reply = true, reaction = true, saved_search = true,
 }
 
+-- True if `recipient_id` has blocked OR muted `actor_id` (either kind, not
+-- bidirectional like is_blocked_either_way below -- muting someone is a
+-- one-way "don't show me them" preference, it shouldn't also suppress
+-- notifications the other person would get about the muter). Genuinely new
+-- (not a git-history recovery): "mute" has been storable via
+-- POST /api/users/:id/block since block_user() was ported, and shown in
+-- Settings' "Blocked & Muted" list, but nothing ever actually consulted it
+-- anywhere -- confirmed via a full grep for "mute"/"is_muted" across this
+-- file, and confirmed the concept never existed in the original Python
+-- backend either (this file's own stale comment claiming to mirror a
+-- Python is_muted() was aspirational, not real -- there's no such function
+-- in git history).
+local function should_suppress_notification(recipient_id, actor_id)
+  if not recipient_id or not actor_id then return false end
+  local row = db.fetchone(
+    "SELECT 1 FROM user_blocks WHERE blocker_id=%s AND blocked_id=%s LIMIT 1",
+    tostring(recipient_id), tostring(actor_id)
+  )
+  return row ~= nil
+end
+
 -- Mirrors app/db/notifications.py's create_notification(): silently skips
 -- self-notifications and unknown kinds rather than erroring, since callers
 -- (like send_direct_message below) don't want a notification-table hiccup
@@ -3512,6 +3549,7 @@ local NOTIFICATION_KINDS = {
 create_notification = function(recipient_id, actor_id, kind, media_id, preview)
   if not NOTIFICATION_KINDS[kind] then return end
   if actor_id and tostring(actor_id) == tostring(recipient_id) then return end
+  if actor_id and should_suppress_notification(recipient_id, actor_id) then return end
   preview = preview and trim(preview):sub(1, 160) or nil
   if preview == "" then preview = nil end
   db.execute(
