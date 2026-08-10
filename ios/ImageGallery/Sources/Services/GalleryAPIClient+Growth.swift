@@ -97,6 +97,37 @@ extension GalleryAPIClient {
     }
 }
 
+// MARK: - Scoped read-only API keys
+
+struct APIKey: Decodable, Identifiable {
+    var id: Int
+    var label: String
+    var createdAt: String?
+    var lastUsedAt: String?
+    var revokedAt: String?
+}
+
+extension GalleryAPIClient {
+    struct APIKeyCreateBody: Encodable { var label: String }
+    struct APIKeyCreateResponse: Decodable { var id: Int; var label: String; var key: String; var createdAt: String? }
+    private struct APIKeysResponse: Decodable { var apiKeys: [APIKey] }
+
+    func apiKeys() async throws -> [APIKey] {
+        let response: APIKeysResponse = try await requestJSON("/api/me/api-keys")
+        return response.apiKeys
+    }
+
+    /// The raw `key` is only ever returned here, at creation time -- it
+    /// can't be recovered later, only the hash persists server-side.
+    func createAPIKey(label: String) async throws -> APIKeyCreateResponse {
+        try await requestJSON("/api/me/api-keys", body: APIKeyCreateBody(label: label.isEmpty ? "API key" : label))
+    }
+
+    func revokeAPIKey(id: Int) async throws {
+        try await requestVoid("/api/me/api-keys/\(id)", method: "DELETE")
+    }
+}
+
 // MARK: - Zip downloads
 
 extension GalleryAPIClient {

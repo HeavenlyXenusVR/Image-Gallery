@@ -3,6 +3,7 @@ import { Ban, Bell, Check, Download, Eye, KeyRound, Mail, Palette, Save, ShieldC
 import { apiFetch, apiFetchBlob, clearApiCache, downloadBlob } from "../api.js";
 import { Avatar, ChipRow, EmptyState, Page, RequireLogin, UserMini } from "../components/ui.jsx";
 import { profileClassName, profileStyle } from "../utils/appearance.js";
+import { formatDate } from "../utils/format.js";
 
 function profileFromUser(user, settings) {
   return {
@@ -41,6 +42,10 @@ export function SettingsPage({ ctx }) {
   const [blocks, setBlocks] = useState([]);
   const [savedSearches, setSavedSearches] = useState([]);
   const [exporting, setExporting] = useState(false);
+  const [apiKeys, setApiKeys] = useState([]);
+  const [apiKeyLabel, setApiKeyLabel] = useState("");
+  const [creatingApiKey, setCreatingApiKey] = useState(false);
+  const [newApiKey, setNewApiKey] = useState(null);
 
   const refreshBlocks = useCallback(async () => {
     try {
@@ -60,10 +65,48 @@ export function SettingsPage({ ctx }) {
     }
   }, []);
 
+  const refreshApiKeys = useCallback(async () => {
+    try {
+      const data = await apiFetch("/api/me/api-keys");
+      setApiKeys(data.api_keys || []);
+    } catch (_error) {
+      // Non-critical background read.
+    }
+  }, []);
+
   useEffect(() => {
     refreshBlocks();
     refreshSavedSearches();
-  }, [refreshBlocks, refreshSavedSearches]);
+    refreshApiKeys();
+  }, [refreshBlocks, refreshSavedSearches, refreshApiKeys]);
+
+  async function createApiKey(event) {
+    event.preventDefault();
+    setCreatingApiKey(true);
+    try {
+      const data = await apiFetch("/api/me/api-keys", {
+        method: "POST",
+        body: JSON.stringify({ label: apiKeyLabel.trim() || "API key" }),
+      });
+      setNewApiKey(data.key);
+      setApiKeyLabel("");
+      refreshApiKeys();
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    } finally {
+      setCreatingApiKey(false);
+    }
+  }
+
+  async function revokeApiKey(keyId) {
+    try {
+      await apiFetch(`/api/me/api-keys/${keyId}`, { method: "DELETE" });
+      refreshApiKeys();
+      ctx.showToast("API key revoked.", "success");
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    }
+  }
 
   async function deleteSavedSearch(searchId) {
     try {
@@ -728,6 +771,41 @@ export function SettingsPage({ ctx }) {
             <div className="form-actions settings-actions">
               <button type="button" onClick={exportMyData} disabled={exporting}><Download size={16} />{exporting ? "Preparing..." : "Download my data"}</button>
             </div>
+          </div>
+          <div className="side-box stacked-form settings-form-card">
+            <h2><KeyRound size={18} /> API Keys</h2>
+            <p>Scoped, read-only keys for your own scripts/bots (e.g. a personal RSS feed at <code>/feed/me.xml?key=...</code>). Never grants write access or your login session.</p>
+            {newApiKey ? (
+              <div className="notice info api-key-reveal">
+                <p>Copy this now — it won't be shown again.</p>
+                <code>{newApiKey}</code>
+                <div className="form-actions settings-actions">
+                  <button type="button" onClick={() => { navigator.clipboard?.writeText(newApiKey); ctx.showToast("Copied.", "success"); }}>Copy</button>
+                  <button type="button" onClick={() => setNewApiKey(null)}>Done</button>
+                </div>
+              </div>
+            ) : null}
+            {apiKeys.length ? (
+              <div className="check-stack">
+                {apiKeys.map((key) => (
+                  <div className="friend-request" key={key.id}>
+                    <span>
+                      {key.label}
+                      {key.revoked_at ? <small> — revoked</small> : key.last_used_at ? <small> — last used {formatDate(key.last_used_at)}</small> : <small> — never used</small>}
+                    </span>
+                    {!key.revoked_at ? (
+                      <button type="button" className="icon-button" onClick={() => revokeApiKey(key.id)} title="Revoke"><Trash2 size={16} /></button>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState title="No API keys yet" />
+            )}
+            <form className="two-col" onSubmit={createApiKey}>
+              <input value={apiKeyLabel} onChange={(event) => setApiKeyLabel(event.target.value)} placeholder="Label (e.g. My RSS reader)" maxLength={80} />
+              <button type="submit" disabled={creatingApiKey}>{creatingApiKey ? "Creating..." : "New key"}</button>
+            </form>
           </div>
         </div>
       </section>

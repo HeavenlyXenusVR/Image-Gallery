@@ -1451,6 +1451,17 @@ textarea:focus {
   color: #ffd6d6;
 }
 
+.api-key-reveal code {
+  display: block;
+  padding: 8px 10px;
+  margin: 6px 0;
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
 .empty-state {
   display: grid;
   place-items: center;

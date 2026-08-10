@@ -176,6 +176,8 @@ struct SettingsView: View {
                 }
             }
 
+            APIKeysSection()
+
             Section("Your Data") {
                 Button {
                     Task {
