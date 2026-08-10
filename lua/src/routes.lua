@@ -127,10 +127,22 @@ local function decode_user(row)
   row.show_friends = db.tobool(row.show_friends)
   row.adult_content_consent = db.tobool(row.adult_content_consent)
   row.totp_enabled = row.totp_enabled_at ~= nil and row.totp_enabled_at ~= cjson.null
+  -- arr(), not a bare `{}` fallback: cjson.encode(empty_lua_table) always
+  -- serializes as a JSON object ({}), never an array ([]) -- confirmed
+  -- directly (luajit -e "print(cjson.encode({}))" prints "{}"), since Lua
+  -- has no distinct empty-array type for it to infer from. Any user with no
+  -- featured tags (the common case) was sending featured_tags as a JSON
+  -- OBJECT instead of an array, which is a strict decode failure for any
+  -- client expecting an array (iOS's GalleryUser.featuredTags: [String]?
+  -- throws on `{}` instead of decoding an empty list) -- and since
+  -- GalleryUser is embedded in most social endpoints (profiles, followers/
+  -- following, friends, blocks, search, group members), one such user
+  -- anywhere in a list response corrupted the whole response's decode.
   if row.featured_tags and row.featured_tags ~= cjson.null then
-    row.featured_tags = cjson.decode(row.featured_tags) or {}
+    local ok, decoded = pcall(cjson.decode, row.featured_tags)
+    row.featured_tags = (ok and type(decoded) == "table") and arr(decoded) or arr({})
   else
-    row.featured_tags = {}
+    row.featured_tags = arr({})
   end
   if row.user_settings and row.user_settings ~= cjson.null then
     row.user_settings = cjson.decode(row.user_settings) or {}
@@ -734,10 +746,18 @@ local function decode_media_row(row, viewer_can_open_adult, req)
   row.public_profile = db.tobool(row.public_profile)
   row.liked_by_me = db.tobool(row.liked_by_me)
   row.bookmarked_by_me = db.tobool(row.bookmarked_by_me)
+  -- arr(), not a bare `{}` fallback -- see decode_user's featured_tags
+  -- comment for why: an untagged post (extremely common) would otherwise
+  -- send tags as a JSON object ({}) instead of an array ([]), which is a
+  -- hard decode failure for any client expecting an array there -- and
+  -- since this is the per-item decoder every feed/list endpoint calls, one
+  -- untagged post anywhere in a page of results corrupted that entire
+  -- response's decode for API clients with a strict [String] tags field.
   if row.tags and row.tags ~= cjson.null then
-    row.tags = cjson.decode(row.tags) or {}
+    local ok, decoded = pcall(cjson.decode, row.tags)
+    row.tags = (ok and type(decoded) == "table") and arr(decoded) or arr({})
   else
-    row.tags = {}
+    row.tags = arr({})
   end
   return with_urls(req, row, viewer_can_open_adult)
 end
