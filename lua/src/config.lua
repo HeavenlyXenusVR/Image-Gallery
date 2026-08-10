@@ -118,6 +118,13 @@ function M.load()
     ai_timeout_seconds = env_int("GALLERY_AI_TIMEOUT_SECONDS", 45),
 
     telegram_bot_token = env("GALLERY_TELEGRAM_BOT_TOKEN") or env("TELEGRAM_BOT_TOKEN", ""),
+    -- Discord bot token for DM-based account verification (discord_bot.lua)
+    -- -- distinct from the per-creator discord_webhook_url setting (that's
+    -- outbound-only, to a channel; this is a real bot that can open a DM
+    -- with any user who shares a server with it). Blank by default: every
+    -- discord_bot.lua call gracefully no-ops/reports "not configured yet"
+    -- until this is set, same convention as telegram_bot_token above.
+    discord_bot_token = env("GALLERY_DISCORD_BOT_TOKEN", ""),
     telegram_allowed_chat_ids = (function()
       local raw = env_csv("GALLERY_TELEGRAM_ALLOWED_CHAT_IDS")
       if #raw == 0 then raw = env_csv("TELEGRAM_ALLOWED_CHAT_IDS") end

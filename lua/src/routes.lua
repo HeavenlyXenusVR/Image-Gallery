@@ -33,6 +33,8 @@ local user_settings = require("user_settings")
 local gallery_looks = require("gallery_looks")
 local colorutil = require("colorutil")
 local discord_webhook = require("discord_webhook")
+local discord_bot = require("discord_bot")
+local auth_lib = require("auth")
 local ai_metadata = require("ai_metadata")
 
 -- Attaches computed accent_contrast_text/accent_gradient onto a decoded
@@ -112,6 +114,7 @@ local USER_PUBLIC_COLUMNS = [[
   email, email_verified_at, avatar_path, avatar_file_id, avatar_mime_type, avatar_original_filename, public_profile,
   show_liked_count, show_collections, show_recent_uploads, show_friends,
   birthdate, age_verified_at, adult_content_consent, totp_enabled_at,
+  discord_user_id, discord_username, discord_verified_at,
   user_settings, created_at, updated_at, last_seen_at,
   banned_at, banned_until, ban_reason
 ]]
@@ -2217,6 +2220,155 @@ function M.export_account(req)
     ["Content-Type"] = "application/json; charset=utf-8",
     ["Content-Disposition"] = string.format('attachment; filename="image-gallery-export-%s.json"', viewer0),
   }
+end
+
+-- ---------------------------------------------------------------------------
+-- Discord account verification. Genuinely new feature (there's no email
+-- verification equivalent to recover from git history -- the frontend never
+-- had one either): confirms account ownership via Discord instead of email,
+-- using the same CSPRNG code + hash helpers (auth_lib.verification_code()/
+-- verification_token_hash()) this codebase already has (originally written
+-- for a since-unbuilt email flow, per their own doc comments in auth.lua).
+--
+-- Two delivery methods for the same code:
+--   "dm"      -- via discord_bot.lua's real bot (needs GALLERY_DISCORD_BOT_TOKEN
+--                configured, and the user must share a Discord server with
+--                the bot -- Discord doesn't allow bots to DM strangers).
+--   "webhook" -- posts to the user's own already-configured
+--                discord_webhook_url (user_settings, the same per-creator
+--                setting upload notifications already use) -- works today,
+--                no bot needed.
+-- ---------------------------------------------------------------------------
+
+local DISCORD_VERIFY_TTL_SECONDS = 600
+local DISCORD_VERIFY_MAX_ATTEMPTS = 5
+
+function M.discord_verify_status(req)
+  local user, session, status, body = current_user(req)
+  if not user then return status, body end
+  local pending = db.fetchone(
+    "SELECT method, expires_at, (now() > expires_at) AS is_expired FROM discord_verifications WHERE user_id=%s",
+    user.id
+  )
+  local pending_out = nil
+  if pending and not db.tobool(pending.is_expired) then
+    pending_out = { method = pending.method, expires_at = pending.expires_at }
+  end
+  return 200, {
+    verified = nn(user.discord_verified_at) ~= nil,
+    discord_username = nn(user.discord_username),
+    discord_user_id = nn(user.discord_user_id),
+    pending = pending_out,
+    dm_available = discord_bot.enabled(),
+  }
+end
+
+function M.discord_verify_start(req)
+  local user, session, status, body = current_user(req)
+  if not user then return status, body end
+  local rl_status, rl_body = ratelimit.check("discord_verify:" .. user.id, 5, 3600)
+  if rl_status then return rl_status, rl_body end
+
+  local payload = json_body(req)
+  local method = nn(payload.method)
+  if method ~= "dm" and method ~= "webhook" then
+    return 400, { detail = 'method must be "dm" or "webhook".' }
+  end
+
+  local code = auth_lib.verification_code()
+  local target
+
+  if method == "dm" then
+    if not discord_bot.enabled() then
+      return 400, { detail = "Discord verification isn't configured on this server yet." }
+    end
+    target = tostring(nn(payload.discord_user_id) or ""):match("^%d+$")
+    if not target then
+      return 400, {
+        detail = "Enter a valid Discord User ID (numbers only -- in Discord, enable "
+          .. "Settings > Advanced > Developer Mode, then right-click your name and Copy User ID).",
+      }
+    end
+    local send_ok, send_err = discord_bot.send_dm(
+      target, "Your Image Gallery verification code is: " .. code .. "\nIt expires in 10 minutes."
+    )
+    if not send_ok then return 400, { detail = send_err } end
+  else
+    local webhook_url = user.user_settings and user.user_settings.discord_webhook_url
+    if not discord_webhook.is_valid_url(webhook_url) then
+      return 400, { detail = "Set a Discord webhook URL under Settings > Integrations first." }
+    end
+    target = webhook_url
+    discord_webhook.send(webhook_url, { {
+      title = "Image Gallery verification code",
+      description = "Code: **" .. code .. "**\nExpires in 10 minutes. Enter it on the Settings page.",
+      color = 0x37c9a7,
+    } })
+  end
+
+  db.execute(
+    [[
+      INSERT INTO discord_verifications (user_id, code_hash, method, target, attempts, expires_at)
+      VALUES (%s, %s, %s, %s, 0, now() + interval '10 minutes')
+      ON CONFLICT (user_id) DO UPDATE SET
+        code_hash=EXCLUDED.code_hash, method=EXCLUDED.method, target=EXCLUDED.target,
+        attempts=0, expires_at=EXCLUDED.expires_at, created_at=now()
+    ]],
+    user.id, auth_lib.verification_token_hash(code), method, target:sub(1, 255)
+  )
+
+  return 200, { ok = true, method = method, expires_in_seconds = DISCORD_VERIFY_TTL_SECONDS }
+end
+
+function M.discord_verify_confirm(req)
+  local user, session, status, body = current_user(req)
+  if not user then return status, body end
+  local payload = json_body(req)
+  local code = trim(tostring(nn(payload.code) or ""))
+  if code == "" then return 400, { detail = "Enter the code you received." } end
+
+  local pending = db.fetchone(
+    "SELECT method, target, code_hash, attempts, (now() > expires_at) AS is_expired FROM discord_verifications WHERE user_id=%s",
+    user.id
+  )
+  if not pending then return 400, { detail = "No verification in progress -- start over." } end
+  if db.toint(pending.attempts, 0) >= DISCORD_VERIFY_MAX_ATTEMPTS or db.tobool(pending.is_expired) then
+    db.execute("DELETE FROM discord_verifications WHERE user_id=%s", user.id)
+    return 400, { detail = "That code expired or had too many incorrect attempts -- start over." }
+  end
+
+  if auth_lib.verification_token_hash(code) ~= pending.code_hash then
+    db.execute("UPDATE discord_verifications SET attempts=attempts+1 WHERE user_id=%s", user.id)
+    return 400, { detail = "Incorrect code." }
+  end
+
+  if pending.method == "dm" then
+    local discord_username = discord_bot.get_user(pending.target)
+    db.execute(
+      "UPDATE users SET discord_user_id=%s, discord_username=%s, discord_verified_at=now() WHERE id=%s",
+      pending.target, discord_username, user.id
+    )
+  else
+    db.execute("UPDATE users SET discord_verified_at=now() WHERE id=%s", user.id)
+  end
+  db.execute("DELETE FROM discord_verifications WHERE user_id=%s", user.id)
+
+  local refreshed = get_user(user.id)
+  refreshed.site_owner = is_site_owner(refreshed)
+  return 200, { user = with_derived_accent(refreshed) }
+end
+
+function M.discord_unlink(req)
+  local user, session, status, body = current_user(req)
+  if not user then return status, body end
+  db.execute(
+    "UPDATE users SET discord_user_id=NULL, discord_username=NULL, discord_verified_at=NULL WHERE id=%s",
+    user.id
+  )
+  db.execute("DELETE FROM discord_verifications WHERE user_id=%s", user.id)
+  local refreshed = get_user(user.id)
+  refreshed.site_owner = is_site_owner(refreshed)
+  return 200, { user = with_derived_accent(refreshed) }
 end
 
 -- Mirrors _normalize_upload_tag()/_parse_tags().

@@ -34,6 +34,10 @@ export function SettingsPage({ ctx }) {
   const [totpCode, setTotpCode] = useState("");
   const [totpRecoveryCodes, setTotpRecoveryCodes] = useState(null);
   const [totpDisablePassword, setTotpDisablePassword] = useState("");
+  const [discordStatus, setDiscordStatus] = useState(null);
+  const [discordUserId, setDiscordUserId] = useState("");
+  const [discordCode, setDiscordCode] = useState("");
+  const [discordBusy, setDiscordBusy] = useState(false);
   const [blocks, setBlocks] = useState([]);
   const [savedSearches, setSavedSearches] = useState([]);
   const [exporting, setExporting] = useState(false);
@@ -108,6 +112,67 @@ export function SettingsPage({ ctx }) {
   useEffect(() => {
     refreshTotpStatus();
   }, [refreshTotpStatus]);
+
+  const refreshDiscordStatus = useCallback(async () => {
+    try {
+      setDiscordStatus(await apiFetch("/api/me/discord/verify/status"));
+    } catch (_error) {
+      // Non-critical background read; start/confirm surface their own errors.
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshDiscordStatus();
+  }, [refreshDiscordStatus]);
+
+  async function startDiscordVerify(method) {
+    setDiscordBusy(true);
+    try {
+      const data = await apiFetch("/api/me/discord/verify/start", {
+        method: "POST",
+        body: JSON.stringify(method === "dm" ? { method, discord_user_id: discordUserId.trim() } : { method }),
+      });
+      ctx.showToast(`Code sent via ${data.method === "dm" ? "Discord DM" : "your Discord webhook"}.`, "success");
+      refreshDiscordStatus();
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    } finally {
+      setDiscordBusy(false);
+    }
+  }
+
+  async function confirmDiscordVerify(event) {
+    event.preventDefault();
+    setDiscordBusy(true);
+    try {
+      const data = await apiFetch("/api/me/discord/verify/confirm", {
+        method: "POST",
+        body: JSON.stringify({ code: discordCode }),
+      });
+      ctx.setSessionUser(data.user);
+      setDiscordCode("");
+      ctx.showToast("Discord verified.", "success");
+      refreshDiscordStatus();
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    } finally {
+      setDiscordBusy(false);
+    }
+  }
+
+  async function unlinkDiscord() {
+    setDiscordBusy(true);
+    try {
+      const data = await apiFetch("/api/me/discord/unlink", { method: "POST" });
+      ctx.setSessionUser(data.user);
+      ctx.showToast("Discord unlinked.", "success");
+      refreshDiscordStatus();
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    } finally {
+      setDiscordBusy(false);
+    }
+  }
 
   // Only re-initialize form state when the logged-in user's identity changes
   // (login, logout, or switch). Background refreshMe polls update ctx.user every
@@ -487,6 +552,58 @@ export function SettingsPage({ ctx }) {
             {prefs.discord_webhook_url && !/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(prefs.discord_webhook_url) ? (
               <p className="field-hint field-hint-error">Must start with https://discord.com/api/webhooks/ — create one in your Discord server's Integrations settings.</p>
             ) : null}
+          </div>
+            <div className="settings-cluster">
+            <div className="settings-cluster-head"><h3>Discord Verification</h3><p>Confirm this account belongs to you via Discord — by DM (if the bot is enabled) or by posting a code to your webhook above.</p></div>
+            {discordStatus?.verified ? (
+              <div className="discord-verify-status">
+                <Check size={16} />
+                <span>Verified{discordStatus.discord_username ? ` as @${discordStatus.discord_username}` : ""}.</span>
+                <button type="button" onClick={unlinkDiscord} disabled={discordBusy}>Unlink</button>
+              </div>
+            ) : (
+              <>
+                <div className="two-col">
+                  <label className="field">
+                    <span>Discord User ID <small>(for a DM code)</small></span>
+                    <input
+                      value={discordUserId}
+                      onChange={(event) => setDiscordUserId(event.target.value.replace(/[^0-9]/g, ""))}
+                      placeholder="123456789012345678"
+                      disabled={discordBusy}
+                    />
+                  </label>
+                  <div className="field">
+                    <span>&nbsp;</span>
+                    <button type="button" onClick={() => startDiscordVerify("dm")} disabled={discordBusy || !discordUserId.trim() || discordStatus?.dm_available === false}>
+                      Send code via DM
+                    </button>
+                  </div>
+                </div>
+                {discordStatus && discordStatus.dm_available === false ? (
+                  <p className="field-hint">DM verification isn't configured on this server yet — use the webhook method below instead.</p>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => startDiscordVerify("webhook")}
+                  disabled={discordBusy || !prefs.discord_webhook_url || !/^https:\/\/(discord|discordapp)\.com\/api\/webhooks\//.test(prefs.discord_webhook_url)}
+                >
+                  Send code to my webhook
+                </button>
+                {discordStatus?.pending ? (
+                  <form className="two-col" onSubmit={confirmDiscordVerify}>
+                    <label className="field">
+                      <span>Enter the code ({discordStatus.pending.method === "dm" ? "sent via DM" : "posted to your webhook"})</span>
+                      <input value={discordCode} onChange={(event) => setDiscordCode(event.target.value)} maxLength={8} disabled={discordBusy} />
+                    </label>
+                    <div className="field">
+                      <span>&nbsp;</span>
+                      <button type="submit" disabled={discordBusy || !discordCode.trim()}>Confirm</button>
+                    </div>
+                  </form>
+                ) : null}
+              </>
+            )}
           </div>
             <div className="settings-cluster">
             <div className="settings-cluster-head"><h3>Advanced</h3><p>Power-user customization. Custom CSS only ever changes what <em>you</em> see while signed in — it never applies to anyone viewing your profile or posts.</p></div>

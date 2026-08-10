@@ -16,6 +16,7 @@ local pages_feeds = require("pages_feeds")
 local settings = config.load()
 routes.settings = settings
 db.init(settings)
+require("discord_bot").init(settings)
 
 -- CORS: mirror app/main.py's allow-listed origins + regex fallback for
 -- ephemeral tunnel hosts (Cloudflare/ngrok/pinggy). httpd.lua's CORS support
@@ -67,6 +68,10 @@ httpd.route("POST", "/api/me/avatar", routes.update_avatar)
 httpd.route("POST", "/api/me/age-verification", routes.verify_age)
 httpd.route("POST", "/api/me/password", routes.change_password)
 httpd.route("GET", "/api/me/export", routes.export_account)
+httpd.route("GET", "/api/me/discord/verify/status", routes.discord_verify_status)
+httpd.route("POST", "/api/me/discord/verify/start", routes.discord_verify_start)
+httpd.route("POST", "/api/me/discord/verify/confirm", routes.discord_verify_confirm)
+httpd.route("POST", "/api/me/discord/unlink", routes.discord_unlink)
 httpd.route("GET", "/api/appearance/presets", routes.appearance_presets)
 
 httpd.route("GET", "/api/categories", routes.list_categories)

@@ -869,6 +869,17 @@ body[data-background-ready="1"].bg-prev-visible .app-shell::after {
   color: #e5484d;
 }
 
+.discord-verify-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+}
+
+.discord-verify-status button {
+  margin-left: auto;
+}
+
 input,
 select,
 textarea {
