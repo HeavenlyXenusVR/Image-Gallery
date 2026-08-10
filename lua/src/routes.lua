@@ -2075,6 +2075,150 @@ local function safe_extension(filename, mime_type)
   return ext == ".jpe" and ".jpg" or ext
 end
 
+-- POST /api/me/avatar, /api/me/age-verification, /api/me/password,
+-- GET /api/me/export -- all four recovered from git history
+-- (9986ab5^:app/routers/account.py) and confirmed live-404ing: the React
+-- Settings page has always called these, but none were ever ported to Lua.
+-- (email change/verify, also called by SettingsPage.jsx, never existed even
+-- in the Python backend -- genuinely new work needing an email-sending
+-- decision, left for a separate pass rather than guessed at here.) Placed
+-- here (rather than up near update_profile/update_settings, its more
+-- natural neighbors) because update_avatar needs sniff_magic/safe_extension/
+-- sodium, all locals not yet in scope up there.
+
+function M.update_avatar(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local upload = (req.files or {}).file
+  if not upload or not upload.content or upload.content == "" then
+    return 400, { detail = "Upload is empty." }
+  end
+  if #upload.content > 5 * 1024 * 1024 then
+    return 413, { detail = "Avatars must be 5MB or smaller." }
+  end
+  local rl_status, rl_body = ratelimit.check("avatar:" .. user.id, 20, 3600)
+  if rl_status then return rl_status, rl_body end
+
+  local sniffed_mime, media_kind = sniff_magic(upload.content)
+  if not sniffed_mime or media_kind ~= "image" then return 400, { detail = "Avatar must be an image." } end
+  local original_filename = ((upload.filename or "avatar"):match("([^/\\]+)$") or "avatar"):sub(1, 255)
+  if not safe_extension(original_filename, sniffed_mime) then
+    return 400, { detail = "Unsupported file extension." }
+  end
+  local sha256 = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(upload.content))
+
+  local file_id, err = media_files.save_avatar_file(user.id, upload.content, sha256, sniffed_mime, original_filename)
+  if not file_id then return 500, { detail = "Avatar upload failed: " .. tostring(err) } end
+
+  local refreshed = get_user(user.id)
+  refreshed.site_owner = is_site_owner(refreshed)
+  return 200, { user = with_derived_accent(refreshed) }
+end
+
+function M.verify_age(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local payload = json_body(req)
+  if not db.tobool(payload.confirm_over_18) then
+    return 400, { detail = "Confirm that you are 18 or older to continue." }
+  end
+  local birthdate = nn(payload.birthdate)
+  if not birthdate or not tostring(birthdate):match("^%d%d%d%d%-%d%d%-%d%d$") then
+    return 400, { detail = "Birthdate must use YYYY-MM-DD." }
+  end
+  -- Single round trip: validate + compute age in Postgres rather than
+  -- hand-rolling date math in Lua.
+  local row = db.fetchone(
+    "SELECT (%s::date > CURRENT_DATE) AS in_future, date_part('year', age(CURRENT_DATE, %s::date)) AS age_years",
+    birthdate, birthdate
+  )
+  if not row then return 400, { detail = "Invalid birthdate." } end
+  if db.tobool(row.in_future) then return 400, { detail = "Birthdate cannot be in the future." } end
+  if db.toint(row.age_years, 0) < 18 then
+    return 403, { detail = "You must be 18 or older to view 18+ posts." }
+  end
+
+  db.execute(
+    "UPDATE users SET birthdate=%s, age_verified_at=now(), adult_content_consent=true WHERE id=%s",
+    birthdate, tostring(user.id)
+  )
+  local refreshed = get_user(user.id)
+  refreshed.site_owner = is_site_owner(refreshed)
+  return 200, { user = with_derived_accent(refreshed) }
+end
+
+function M.change_password(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local payload = json_body(req)
+  local old_password = tostring(nn(payload.old_password) or "")
+  local new_password = tostring(nn(payload.new_password) or "")
+  if #new_password < 8 then
+    return 400, { detail = "New password must be at least 8 characters." }
+  end
+  local row = db.fetchone("SELECT password_hash FROM users WHERE id=%s", user.id)
+  if not row or not gauth.verify_password_hash(old_password, row.password_hash) then
+    return 401, { detail = "Current password is incorrect." }
+  end
+  db.execute("UPDATE users SET password_hash=%s WHERE id=%s", gauth.password_hash(new_password), user.id)
+  return 200, { ok = true }
+end
+
+function M.export_account(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local viewer0 = tostring(user.id)
+
+  local profile = get_user(viewer0)
+  profile.password_hash = nil
+  profile.totp_secret = nil
+  profile.totp_recovery_codes = nil
+
+  local media = db.fetchall(
+    "SELECT id, title, description, tags, media_kind, visibility, views, downloads, created_at FROM media_items WHERE user_id=%s ORDER BY created_at DESC",
+    viewer0
+  )
+  local collections = db.fetchall(
+    "SELECT id, name, description, is_public, is_smart, created_at FROM media_collections WHERE user_id=%s ORDER BY created_at DESC",
+    viewer0
+  )
+  local following = db.fetchall(
+    "SELECT u.id, u.username FROM user_follows f JOIN users u ON u.id = f.followed_id WHERE f.follower_id=%s",
+    viewer0
+  )
+  local followers = db.fetchall(
+    "SELECT u.id, u.username FROM user_follows f JOIN users u ON u.id = f.follower_id WHERE f.followed_id=%s",
+    viewer0
+  )
+  local likes = db.fetchall("SELECT media_id FROM media_likes WHERE user_id=%s", viewer0)
+  local bookmarks = db.fetchall("SELECT media_id FROM media_bookmarks WHERE user_id=%s", viewer0)
+  local comments = db.fetchall(
+    "SELECT media_id, body, created_at FROM media_comments WHERE user_id=%s ORDER BY created_at DESC",
+    viewer0
+  )
+  local saved_searches = db.fetchall(
+    "SELECT name, filter_json, created_at FROM saved_searches WHERE user_id=%s ORDER BY created_at DESC",
+    viewer0
+  )
+
+  local payload = {
+    exported_at = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+    profile = profile,
+    media = arr(media),
+    collections = arr(collections),
+    following = arr(following),
+    followers = arr(followers),
+    likes = arr(likes),
+    bookmarks = arr(bookmarks),
+    comments = arr(comments),
+    saved_searches = arr(saved_searches),
+  }
+  return 200, cjson.encode(payload), {
+    ["Content-Type"] = "application/json; charset=utf-8",
+    ["Content-Disposition"] = string.format('attachment; filename="image-gallery-export-%s.json"', viewer0),
+  }
+end
+
 -- Mirrors _normalize_upload_tag()/_parse_tags().
 local function normalize_upload_tag(value)
   local cleaned = tostring(value or ""):match("^%s*(.-)%s*$"):gsub("^#+", ""):gsub("%s+", "-")

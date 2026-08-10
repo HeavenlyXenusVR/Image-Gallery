@@ -172,6 +172,36 @@ function M.save_media_file(opts)
   return final
 end
 
+-- POST /api/me/avatar's storage write. Mirrors app/db/account.py's
+-- save_avatar_file(): unlike media_files (chunked, for potentially huge
+-- video files), user_avatar_files.content is a single bytea column --
+-- avatars are capped small (5MB) so chunking isn't needed. Recovered from
+-- git history (9986ab5^:app/db/account.py) -- the table/columns
+-- (user_avatar_files, users.avatar_file_id/avatar_path/avatar_mime_type/
+-- avatar_original_filename) already existed and were already read by
+-- M.serve_user_avatar (routes.lua), but nothing ever wrote to them: POST
+-- /api/me/avatar was never ported, confirmed live-404ing.
+function M.save_avatar_file(user_id, content, sha256, mime_type, original_filename)
+  local row, err = db.fetchone(
+    [[
+      INSERT INTO user_avatar_files (user_id, sha256, mime_type, original_filename, file_size, content)
+      VALUES (%s, %s, %s, %s, %s, %s)
+      ON CONFLICT (user_id, sha256) DO UPDATE SET created_at = now()
+      RETURNING id
+    ]],
+    tostring(user_id), sha256, mime_type:sub(1, 120), original_filename:sub(1, 255), tostring(#content), bytea_literal(content)
+  )
+  if not row then return nil, err end
+  local file_id = db.toint(row.id, row.id)
+
+  local ok, uerr = db.execute(
+    "UPDATE users SET avatar_file_id=%s, avatar_path=%s, avatar_mime_type=%s, avatar_original_filename=%s WHERE id=%s",
+    tostring(file_id), "avatar-db://" .. tostring(file_id), mime_type:sub(1, 120), original_filename:sub(1, 255), tostring(user_id)
+  )
+  if not ok then return nil, uerr end
+  return file_id
+end
+
 -- ---------------------------------------------------------------------------
 -- Legacy on-disk fallback (mirrors _legacy_upload_path in app/routers/_shared.py)
 -- ---------------------------------------------------------------------------
