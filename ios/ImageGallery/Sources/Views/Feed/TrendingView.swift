@@ -39,6 +39,9 @@ struct TrendingView: View {
                 ContentUnavailableCompat(title: "Nothing trending yet", systemImage: "flame")
                     .padding(.top, 60)
             }
+
+            LeaderboardSection()
+                .padding(.top, 8)
         }
         .navigationTitle("Trending")
         .refreshable { await load() }
@@ -66,5 +69,84 @@ struct TrendingView: View {
             guard requestedDays == days else { return }
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+/// "Top creators" ranking, shown below the trending grid — same relationship
+/// the web app's TrendingPage.jsx has (a Leaderboard section under the
+/// trending posts). Self-contained fetch/state, same pattern as
+/// `TrendingRailView`.
+private struct LeaderboardSection: View {
+    @State private var entries: [LeaderboardEntry] = []
+    @State private var window = "30d"
+    @State private var isLoading = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Top creators", systemImage: "trophy.fill")
+                    .font(.headline)
+                    .foregroundStyle(.yellow)
+                Spacer()
+                Picker("Window", selection: $window) {
+                    Text("7d").tag("7d")
+                    Text("30d").tag("30d")
+                    Text("All").tag("all")
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 160)
+                .onChange(of: window) { _ in Task { await load() } }
+            }
+            .padding(.horizontal)
+
+            if isLoading {
+                ProgressView().frame(maxWidth: .infinity).padding()
+            } else if entries.isEmpty {
+                Text("No creator activity in this window yet.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                        NavigationLink(destination: ProfileView(username: entry.username)) {
+                            HStack(spacing: 10) {
+                                Text("\(index + 1)")
+                                    .font(.footnote.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 20, alignment: .trailing)
+                                AvatarView(urlString: entry.userAvatarUrl, fallbackInitial: String(entry.username.prefix(1)), shape: .circle, size: 28)
+                                Text(entry.displayName ?? entry.username)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text("\(entry.totalViews) views · \(entry.totalLikes) likes")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal)
+                            .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        let requestedWindow = window
+        isLoading = true
+        do {
+            let fetched = try await GalleryAPIClient.shared.leaderboard(window: requestedWindow)
+            guard requestedWindow == window else { return }
+            entries = fetched
+        } catch {
+            guard requestedWindow == window else { return }
+            entries = []
+        }
+        isLoading = false
     }
 }

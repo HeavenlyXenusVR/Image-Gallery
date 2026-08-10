@@ -48,6 +48,12 @@ struct FeedView: View {
                 }
                 .accessibilityLabel("Collections")
             }
+            ToolbarItem(placement: .topBarLeading) {
+                NavigationLink(destination: FollowingLikedView()) {
+                    Image(systemName: "person.2")
+                }
+                .accessibilityLabel("Following and liked")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showingFilters = true

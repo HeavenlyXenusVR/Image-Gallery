@@ -6,6 +6,8 @@ struct StudioView: View {
     @State private var showingBulkDeleteConfirm = false
     @State private var showingBulkTagPrompt = false
     @State private var bulkTagInput = ""
+    @State private var downloadURL: URL?
+    @State private var showingDownloadShare = false
 
     private let columns = [GridItem(.adaptive(minimum: 150), spacing: 12)]
 
@@ -29,6 +31,7 @@ struct StudioView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 StudioStatsHeader(items: viewModel.items)
+                StudioAnalyticsSection()
                 StudioFilterChipsRow(selected: $filter)
 
                 if let errorMessage = viewModel.errorMessage {
@@ -61,6 +64,11 @@ struct StudioView: View {
         .safeAreaInset(edge: .bottom) {
             if viewModel.isSelecting && !viewModel.selectedIds.isEmpty {
                 bulkActionBar
+            }
+        }
+        .sheet(isPresented: $showingDownloadShare) {
+            if let downloadURL {
+                ShareSheet(activityItems: [downloadURL])
             }
         }
         .refreshable { await viewModel.load() }
@@ -105,6 +113,21 @@ struct StudioView: View {
                 Label("Add tag", systemImage: "tag")
             }
             .accessibilityLabel("Add a tag to selected items")
+            Button {
+                Task {
+                    if let url = await viewModel.downloadSelected() {
+                        downloadURL = url
+                        showingDownloadShare = true
+                    }
+                }
+            } label: {
+                if viewModel.isDownloading {
+                    ProgressView()
+                } else {
+                    Label("Download", systemImage: "arrow.down.circle")
+                }
+            }
+            .accessibilityLabel("Download selected items")
             Button(role: .destructive) {
                 Haptics.warning()
                 showingBulkDeleteConfirm = true

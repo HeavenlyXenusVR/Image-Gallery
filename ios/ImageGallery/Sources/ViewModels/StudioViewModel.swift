@@ -9,6 +9,7 @@ final class StudioViewModel: ObservableObject {
     @Published var isSelecting = false
     @Published var selectedIds: Set<Int> = []
     @Published var isBulkWorking = false
+    @Published var isDownloading = false
 
     private let api = GalleryAPIClient.shared
 
@@ -68,6 +69,25 @@ final class StudioViewModel: ObservableObject {
         } catch {
             if !error.isCancellation { errorMessage = error.localizedDescription }
             Haptics.error()
+        }
+    }
+
+    /// Downloads the selected items as a zip and writes it to a temp file for
+    /// `ShareSheet` to present -- same shape as `SettingsViewModel.exportData()`.
+    func downloadSelected() async -> URL? {
+        guard !selectedIds.isEmpty else { return nil }
+        isDownloading = true
+        defer { isDownloading = false }
+        do {
+            let data = try await api.downloadMediaBatch(ids: Array(selectedIds))
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("gallery-selection.zip")
+            try data.write(to: url)
+            Haptics.success()
+            return url
+        } catch {
+            if !error.isCancellation { errorMessage = error.localizedDescription }
+            Haptics.error()
+            return nil
         }
     }
 

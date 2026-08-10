@@ -149,6 +149,9 @@ struct CollectionDetailView: View {
     @State private var media: [MediaItem] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var isDownloading = false
+    @State private var downloadURL: URL?
+    @State private var showingDownloadShare = false
 
     private let columns = [GridItem(.adaptive(minimum: 100), spacing: 8)]
 
@@ -168,11 +171,31 @@ struct CollectionDetailView: View {
             .padding()
         }
         .navigationTitle(collection?.name ?? "Collection")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    Task { await downloadCollection() }
+                } label: {
+                    if isDownloading {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "arrow.down.circle")
+                    }
+                }
+                .accessibilityLabel("Download collection")
+                .disabled(isDownloading || media.isEmpty)
+            }
+        }
         .overlay {
             if isLoading {
                 ProgressView()
             } else if media.isEmpty && errorMessage == nil {
                 ContentUnavailableCompat(title: "No media in this collection", systemImage: "folder")
+            }
+        }
+        .sheet(isPresented: $showingDownloadShare) {
+            if let downloadURL {
+                ShareSheet(activityItems: [downloadURL])
             }
         }
         .refreshable { await load() }
@@ -189,6 +212,23 @@ struct CollectionDetailView: View {
             errorMessage = nil
         } catch {
             errorMessage = "Couldn't load this collection: \(error.localizedDescription)"
+        }
+    }
+
+    private func downloadCollection() async {
+        isDownloading = true
+        defer { isDownloading = false }
+        do {
+            let data = try await GalleryAPIClient.shared.downloadCollection(id: collectionId)
+            let safeName = (collection?.name ?? "collection").replacingOccurrences(of: "[^A-Za-z0-9-_ ]", with: "", options: .regularExpression)
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(safeName.isEmpty ? "collection" : safeName).zip")
+            try data.write(to: url)
+            downloadURL = url
+            showingDownloadShare = true
+            Haptics.success()
+        } catch {
+            errorMessage = "Couldn't download this collection: \(error.localizedDescription)"
+            Haptics.error()
         }
     }
 }
