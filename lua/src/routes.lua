@@ -6204,6 +6204,18 @@ function M.serve_hls_playlist(req)
   -- (confirmed: coroutine_yield under the hood) so other in-flight
   -- requests are serviced during this wait, unlike the multi-minute
   -- fully-synchronous transcode this replaces.
+  -- ffmpeg writes segment lines as bare relative filenames ("seg_00000.ts")
+  -- with no awareness of the request's own ?access= token -- fine for a
+  -- non-adult video (M.serve_hls_segment only checks that token when
+  -- item.is_adult), but an adult-gated post needs every segment request
+  -- to carry it too, and relative-URL resolution doesn't inherit a
+  -- parent playlist's query string. Rewritten here rather than relying on
+  -- AVURLAssetHTTPHeaderFieldsKey propagating to segment requests, which
+  -- this app has already hit real inconsistency with for redirects/Range
+  -- requests -- and web's plain <video> tag can't attach custom headers
+  -- to sub-resource requests at all regardless.
+  local access_qs = req.query and nn(req.query.access) and ("?access=" .. req.query.access) or nil
+
   local playlist_path = dir .. "/playlist.m3u8"
   local waited = 0
   while waited < 8 do
@@ -6212,6 +6224,13 @@ function M.serve_hls_playlist(req)
       local text = f:read("*a")
       f:close()
       if text and text:find("#EXTINF", 1, true) then
+        if access_qs then
+          -- Escape any literal "%" in the token itself so gsub's
+          -- replacement-string parser doesn't mistake it for a
+          -- backreference/escape sequence.
+          local safe_access_qs = access_qs:gsub("%%", "%%%%")
+          text = text:gsub("(seg_%d+%.ts)", "%1" .. safe_access_qs)
+        end
         return 200, text, { ["Content-Type"] = "application/vnd.apple.mpegurl", ["Cache-Control"] = "no-cache" }
       end
     end
