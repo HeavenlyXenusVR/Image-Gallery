@@ -1,10 +1,60 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Eye, Flame, Heart, Lock } from "lucide-react";
-import { cachedApiFetch } from "../api.js";
+import { Eye, Flame, Heart, Lock, Sparkles } from "lucide-react";
+import { apiFetch, cachedApiFetch } from "../api.js";
 import { ResilientImage } from "./ui.jsx";
 import { mediaImageSources } from "../utils/media.js";
 import { numberish } from "../utils/format.js";
+
+// "On this day" -- GET /api/me/memories has existed on the backend since
+// 2026-08-03 (see TODO.md) but never had UI on either the web or iOS app
+// until now. Self-contained (own fetch, logged-in only, renders nothing
+// when there's nothing from today in past years) same shape as
+// DiscoverTrending below.
+export function DiscoverMemories({ ctx }) {
+  const [items, setItems] = useState(null);
+
+  useEffect(() => {
+    if (!ctx?.user) { setItems([]); return undefined; }
+    let cancelled = false;
+    apiFetch("/api/me/memories")
+      .then((data) => { if (!cancelled) setItems(data.media || []); })
+      .catch(() => { if (!cancelled) setItems([]); });
+    return () => { cancelled = true; };
+  }, [ctx?.user]);
+
+  if (!items || !items.length) return null;
+
+  return (
+    <section className="discover-memories">
+      <div className="discover-trending-head">
+        <h2><Sparkles size={18} />On this day</h2>
+      </div>
+      <div className="trending-rail">
+        {items.map((item) => <MemoryCard key={item.id} item={item} />)}
+      </div>
+    </section>
+  );
+}
+
+function MemoryCard({ item }) {
+  const sources = mediaImageSources(item, { width: 360, previewSize: "card" });
+  const yearsAgo = item.years_ago;
+  return (
+    <Link className="trending-rail-card" to={`/media/${item.id}`}>
+      <span className="trending-rank">{yearsAgo ? `${yearsAgo}y ago` : ""}</span>
+      {item.locked ? (
+        <div className="video-thumb-placeholder"><Lock size={22} /></div>
+      ) : (
+        <ResilientImage sources={sources} alt={item.title || ""} loading="lazy" decoding="async" fallback={<div className="video-thumb-placeholder" />} />
+      )}
+      <div className="trending-rail-copy">
+        <strong>{item.title || "Untitled"}</strong>
+        <span><Heart size={12} />{numberish(item.likes || item.like_count)}</span>
+      </div>
+    </Link>
+  );
+}
 
 // Self-contained (own fetch) trending strip for the Discover front page: the
 // single hottest post as a big spotlight banner, then the rest of the week's

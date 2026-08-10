@@ -43,6 +43,7 @@ struct MediaItem: Codable, Identifiable, Hashable {
     var subcategoryNames: [String]?
     var createdAt: String?
     var deletedAt: String?
+    var yearsAgo: Int?
 
     var isVideo: Bool { mediaKind == "video" }
 

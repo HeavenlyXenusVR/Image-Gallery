@@ -19,6 +19,13 @@ extension GalleryAPIClient {
         let response: MediaListResponse = try await requestJSON("/api/me/likes", query: ["limit": String(limit), "offset": String(offset)])
         return response.media
     }
+
+    /// "On this day" -- has existed on the backend since 2026-08-03 but had
+    /// no client anywhere (web or iOS) until now.
+    func memories() async throws -> [MediaItem] {
+        let response: MediaListResponse = try await requestJSON("/api/me/memories")
+        return response.media
+    }
 }
 
 // MARK: - Creator leaderboard

@@ -4745,7 +4745,8 @@ textarea:focus {
   box-shadow: none;
 }
 
-.discover-trending {
+.discover-trending,
+.discover-memories {
   display: grid;
   gap: 12px;
 }

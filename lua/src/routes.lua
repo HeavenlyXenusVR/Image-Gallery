@@ -4516,6 +4516,12 @@ local function get_public_profile(req, username, viewer_id)
       row.following_count = nil
     end
     if row.show_joined_date_raw == "false" then row.created_at = nil end
+    -- show_friends already gated the friends LIST (M.profile_page's
+    -- list_profile_friends call), but not this raw count -- same partial-
+    -- leak pattern as the three fields above, just missed in that pass
+    -- since it's driven by an existing column rather than a settings-blob
+    -- lookup.
+    if not db.tobool(row.show_friends) then row.friend_count = nil end
   end
   row.show_follow_counts_raw = nil
   row.show_joined_date_raw = nil

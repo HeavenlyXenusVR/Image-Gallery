@@ -17,6 +17,7 @@ struct FeedView: View {
                 searchField
 
                 if !isFiltering {
+                    MemoriesRailView()
                     TrendingRailView()
                 }
 

@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Bell, Columns2, Grid2X2, RefreshCw, Save, Search, SlidersHorizontal, Sparkles, X as XIcon } from "lucide-react";
 import { apiFetch, cachedApiFetch, clearApiCache, toQuery } from "../api.js";
 import { PAGE_SIZE } from "../config.js";
-import { CategoryPills, DiscoverTrending } from "../components/discover.jsx";
+import { CategoryPills, DiscoverMemories, DiscoverTrending } from "../components/discover.jsx";
 import { MediaGrid } from "../components/media.jsx";
 import { Notice, Page, TagCloud } from "../components/ui.jsx";
 import { preloadMediaAssets, replaceMedia } from "../utils/media.js";
@@ -309,6 +309,7 @@ export function DiscoverPage({ ctx }) {
         />
       </label>
 
+      {!filterChips.length ? <DiscoverMemories ctx={ctx} /> : null}
       {!filterChips.length ? <DiscoverTrending /> : null}
 
       <CategoryPills
