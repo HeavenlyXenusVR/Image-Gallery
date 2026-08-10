@@ -77,10 +77,16 @@ function M.send_dm(discord_user_id, content)
     return false, "Could not open a DM with that account -- make sure you share a server with the bot and allow direct messages from server members."
   end
 
-  local ok2, code2 = api_call("POST", "/channels/" .. channel.id .. "/messages", { content = content })
+  local ok2, code2, err_payload = api_call("POST", "/channels/" .. channel.id .. "/messages", { content = content })
   local status2 = tonumber(code2) or 0
   if not ok2 or status2 < 200 or status2 >= 300 then
-    return false, "Discord rejected the message: " .. tostring(code2)
+    -- Surface Discord's actual reason (e.g. code 50278 "no mutual guilds")
+    -- rather than a bare status code -- confirmed live that the generic
+    -- "Discord rejected the message: 403" told the user nothing actionable,
+    -- while the real payload explains exactly what to fix (the bot and
+    -- that account need to share at least one server).
+    local reason = err_payload and err_payload.message
+    return false, reason and ("Discord rejected the message: " .. reason) or ("Discord rejected the message: " .. tostring(code2))
   end
   return true, nil
 end
