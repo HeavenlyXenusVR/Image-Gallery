@@ -6,6 +6,10 @@ import SwiftUI
 /// left no way to see a photo/video at full quality/size.
 struct FullScreenMediaView: View {
     let media: MediaItem
+    /// Passed in from `MediaDetailView` so opening fullscreen doesn't spin up
+    /// a second, disconnected `AVPlayer` -- both presentations play through
+    /// this one controller.
+    var videoController: VideoPlayerController?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -13,8 +17,8 @@ struct FullScreenMediaView: View {
             Color.black.ignoresSafeArea()
 
             Group {
-                if media.isVideo, let urlString = media.url, let url = URL(string: urlString) {
-                    AuthenticatedVideoPlayer(url: url)
+                if media.isVideo, let videoController {
+                    AuthenticatedVideoPlayer(controller: videoController)
                 } else if let urlString = media.url, let url = URL(string: urlString) {
                     ZoomableAsyncImage(url: url)
                 }

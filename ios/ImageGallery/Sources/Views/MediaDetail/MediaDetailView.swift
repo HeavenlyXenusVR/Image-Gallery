@@ -6,6 +6,16 @@ struct MediaDetailView: View {
     @State private var showingReport = false
     @State private var showingAgeVerification = false
     @State private var showingFullScreen = false
+    @State private var videoController: VideoPlayerController?
+    @State private var videoQuality = "original"
+
+    private static let qualityOptions: [(String, String)] = [
+        ("original", "Original"),
+        ("1080p", "1080p HD"),
+        ("720p", "720p"),
+        ("480p", "480p"),
+        ("144p", "144p"),
+    ]
 
     init(mediaId: Int) {
         _viewModel = StateObject(wrappedValue: MediaDetailViewModel(mediaId: mediaId))
@@ -59,14 +69,76 @@ struct MediaDetailView: View {
         }
         .navigationTitle(viewModel.media?.title ?? "Media")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await viewModel.load() }
+        .task {
+            await viewModel.load()
+            setUpVideoControllerIfNeeded()
+        }
         .sheet(isPresented: $showingReport) { ReportSheet(viewModel: viewModel) }
         .sheet(isPresented: $showingAgeVerification, onDismiss: { Task { await viewModel.load() } }) { AgeVerificationView() }
         .fullScreenCover(isPresented: $showingFullScreen) {
             if let media = viewModel.media {
-                FullScreenMediaView(media: media)
+                FullScreenMediaView(media: media, videoController: videoController)
             }
         }
+        .onChange(of: viewModel.media?.id) { _ in
+            videoQuality = "original"
+            videoController = nil
+            setUpVideoControllerIfNeeded()
+        }
+        .onAppear { setUpVideoControllerIfNeeded() }
+        .onDisappear { videoController?.pause() }
+    }
+
+    private func videoQualityURL(_ media: MediaItem, quality: String) -> URL? {
+        guard let urlString = media.url, var components = URLComponents(string: urlString) else { return nil }
+        var items = (components.queryItems ?? []).filter { $0.name != "quality" }
+        if quality != "original" && !quality.isEmpty {
+            items.append(URLQueryItem(name: "quality", value: quality))
+        }
+        components.queryItems = items.isEmpty ? nil : items
+        return components.url
+    }
+
+    private func setUpVideoControllerIfNeeded() {
+        guard videoController == nil, let media = viewModel.media, media.isVideo else { return }
+        guard let url = videoQualityURL(media, quality: videoQuality) else { return }
+        videoController = VideoPlayerController(url: url)
+    }
+
+    private func changeQuality(_ quality: String, media: MediaItem) {
+        guard quality != videoQuality else { return }
+        videoQuality = quality
+        guard let controller = videoController, let url = videoQualityURL(media, quality: quality) else { return }
+        controller.setURL(url)
+    }
+
+    @ViewBuilder
+    private var qualityMenu: some View {
+        Menu {
+            ForEach(Self.qualityOptions, id: \.0) { value, label in
+                Button {
+                    if let media = viewModel.media { changeQuality(value, media: media) }
+                } label: {
+                    if videoQuality == value {
+                        Label(label, systemImage: "checkmark")
+                    } else {
+                        Text(label)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "slider.horizontal.3")
+                Text(Self.qualityOptions.first { $0.0 == videoQuality }?.1 ?? "Original")
+            }
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
+            .foregroundStyle(.white)
+        }
+        .padding(8)
+        .accessibilityLabel("Video quality")
     }
 
     @ViewBuilder
@@ -79,13 +151,16 @@ struct MediaDetailView: View {
             }
             .frame(maxWidth: .infinity, minHeight: 220)
             .softCard()
-        } else if media.isVideo, let urlString = media.url, let url = URL(string: urlString) {
+        } else if media.isVideo, let player = videoController {
             ZStack(alignment: .topTrailing) {
-                AuthenticatedVideoPlayer(url: url)
+                AuthenticatedVideoPlayer(controller: player)
                     .frame(height: 260)
                     .clipShape(RoundedRectangle(cornerRadius: Metrics.Radius.md, style: .continuous))
                     .cardShadow()
-                expandButton
+                HStack(spacing: 4) {
+                    qualityMenu
+                    expandButton
+                }
             }
         } else if let urlString = media.previewUrl?.nilIfEmpty ?? media.url, let url = URL(string: urlString) {
             // `previewUrl` is a server-resized/recompressed WEBP (capped at

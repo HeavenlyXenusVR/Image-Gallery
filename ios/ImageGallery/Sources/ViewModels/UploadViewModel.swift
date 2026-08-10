@@ -57,12 +57,14 @@ final class UploadViewModel: ObservableObject {
 
     private let api = GalleryAPIClient.shared
 
-    /// A conservative client-side sanity cap, kept just under the backend's
-    /// own (server-configurable, default 3GB) limit. Videos stream from disk
-    /// (see `PickedVideoFile` and `GalleryAPIClient.upload`'s `.fileURL`
-    /// case) rather than being held in memory, so this is no longer bounded
-    /// by RAM the way it was when everything went through `Data`.
-    static let maxClientUploadBytes = 3 * 1024 * 1024 * 1024
+    /// No independent client-side cap -- this just mirrors whatever the
+    /// backend is actually configured to accept (`ServerConfig`, fetched from
+    /// `/api/health`), the same way the web app's upload page reads
+    /// `MAX_UPLOAD_BYTES` from live config instead of hardcoding its own
+    /// number. Videos stream from disk (see `PickedVideoFile` and
+    /// `GalleryAPIClient.upload`'s `.fileURL` case) rather than being held in
+    /// memory, so raising this doesn't cost RAM.
+    private var maxClientUploadBytes: Int { ServerConfig.shared.maxUploadBytes }
 
     func loadCategories() async {
         categories = (try? await api.categories()) ?? []
@@ -85,9 +87,9 @@ final class UploadViewModel: ObservableObject {
                     errorMessage = "Could not read that file. Try picking it again."
                     return
                 }
-                if fileSize > Self.maxClientUploadBytes {
+                if fileSize > maxClientUploadBytes {
                     try? FileManager.default.removeItem(at: file.url)
-                    let limitMB = Self.maxClientUploadBytes / (1024 * 1024)
+                    let limitMB = maxClientUploadBytes / (1024 * 1024)
                     errorMessage = "That file is too large to upload from the app (over \(limitMB)MB). Try a shorter clip or a smaller export, or upload it from the web app instead."
                     return
                 }
@@ -100,8 +102,8 @@ final class UploadViewModel: ObservableObject {
                     errorMessage = "Could not read that file. Try picking it again."
                     return
                 }
-                if data.count > Self.maxClientUploadBytes {
-                    let limitMB = Self.maxClientUploadBytes / (1024 * 1024)
+                if data.count > maxClientUploadBytes {
+                    let limitMB = maxClientUploadBytes / (1024 * 1024)
                     errorMessage = "That file is too large to upload from the app (over \(limitMB)MB). Try a shorter clip or a smaller export, or upload it from the web app instead."
                     return
                 }

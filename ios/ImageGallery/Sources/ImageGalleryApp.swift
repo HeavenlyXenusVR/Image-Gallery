@@ -47,6 +47,7 @@ struct RootView: View {
             await session.bootstrap()
             await biometricLock.attemptUnlock()
             updatePolling()
+            await ServerConfig.shared.refresh()
         }
         .onChange(of: session.currentUser?.id) { _ in
             updatePolling()
