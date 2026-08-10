@@ -75,7 +75,7 @@ struct MediaDetailView: View {
             }
             .frame(maxWidth: .infinity, minHeight: 220)
             .softCard()
-        } else if media.isVideo, let urlString = media.url, let url = videoDetailURL(from: urlString) {
+        } else if media.isVideo, let urlString = media.url, let url = URL(string: urlString) {
             ZStack(alignment: .topTrailing) {
                 AuthenticatedVideoPlayer(url: url)
                     .frame(height: 260)
@@ -104,16 +104,6 @@ struct MediaDetailView: View {
                 expandButton
             }
         }
-    }
-
-    // The backend now pre-warms a 720p cache in the background (on upload,
-    // and on this post's first /api/media/{id} fetch — see
-    // _queue_video_quality_warmup in media_streaming.py), so this should hit
-    // an already-transcoded, Range-capable file instead of racing a live
-    // transcode the way the original (removed) attempt at this did.
-    private func videoDetailURL(from urlString: String) -> URL? {
-        let separator = urlString.contains("?") ? "&" : "?"
-        return URL(string: "\(urlString)\(separator)quality=720p")
     }
 
     private var expandButton: some View {
