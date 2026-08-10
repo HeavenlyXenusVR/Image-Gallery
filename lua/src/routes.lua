@@ -2,26 +2,23 @@
 -- in main.lua. Each handler receives httpd.lua's `req` table and returns
 -- (status, body_table_or_string, extra_headers).
 --
--- Scope note (last updated 2026-08-01): health/auth/categories/media
--- browsing+upload/social(likes,comments,bookmarks,reactions)/collections/
--- direct messages/site-owner admin+moderation/Discord upload webhooks/AI
--- vision status+training-export are all ported. Still NOT ported:
---   * The LLM-calling AI classification/analysis pipeline itself
---     (app/ai_metadata.py, ~2150 lines: OpenAI/Gemini/Ollama prompt
---     construction + heuristic fallback) that powers auto_ai on upload and
---     POST /api/media/analyze -- upload_media() below always requires an
---     explicit title/category instead of falling back to AI analysis.
---   * Telegram bot integration (app/telegram.py + whatever gallery-specific
---     command handlers are wired to it) -- a long-running polling
---     background service, architecturally distinct from this file's
---     request/response handlers.
---   * Possible-duplicate perceptual-hash detection, background AI
---     learning, saved-search match notifications, multi-subcategory arrays,
---     and video thumb/quality cache warmup (see upload_media()'s own
---     header comment).
---   * Admin storage dashboard / orphan-cache-purge endpoints (filesystem
---     walk of the on-disk thumb/video cache dirs; see the admin section's
---     header comment).
+-- Scope note (last updated 2026-08-10): this comment badly lagged reality
+-- for a long time -- AI classification, Telegram, possible-duplicate
+-- detection, saved-search notifications, and the admin storage/orphan-purge
+-- endpoints were all already implemented below despite previously being
+-- listed here as "NOT ported." Current real gaps, confirmed by actually
+-- grepping for them rather than trusting this comment:
+--   * Email verification/change (POST /api/me/email, /api/me/email/verify)
+--     -- called by SettingsPage.jsx but never built, not even in the
+--     original Python backend. Needs an email-sending decision (SMTP
+--     provider) before it can be built; deliberately not guessed at.
+--     Discord-based account verification (routes below, "Discord account
+--     verification" section) covers the same "prove you own this account"
+--     need without that dependency.
+--   * Background AI learning (the periodic pass that turned curated
+--     gallery metadata into new training examples) and the Ollama/
+--     OpenAI-compatible vision provider backends (only Gemini is wired) --
+--     both background-only, no user-facing surface; see TODO.md.
 
 local cjson = require("cjson.safe")
 local db = require("db")
