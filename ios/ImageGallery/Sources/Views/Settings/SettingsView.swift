@@ -20,6 +20,15 @@ struct SettingsView: View {
     @State private var loadedAppearance = false
     @State private var showingLogoutConfirm = false
     @State private var searchPendingDelete: SavedSearch?
+    @State private var oldPassword = ""
+    @State private var newPassword = ""
+    @State private var isChangingPassword = false
+    @State private var passwordMessage: String?
+    @State private var discordStatus: DiscordVerifyStatus?
+    @State private var discordUserId = ""
+    @State private var discordCode = ""
+    @State private var isDiscordBusy = false
+    @State private var discordMessage: String?
 
     var body: some View {
         Form {
@@ -89,6 +98,52 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Change Password") {
+                SecureField("Current password", text: $oldPassword)
+                SecureField("New password (8+ characters)", text: $newPassword)
+                if let passwordMessage {
+                    Text(passwordMessage).font(.caption).foregroundStyle(.secondary)
+                }
+                Button {
+                    Task { await changePassword() }
+                } label: {
+                    if isChangingPassword {
+                        ProgressView()
+                    } else {
+                        Text("Change Password")
+                    }
+                }
+                .disabled(isChangingPassword || oldPassword.isEmpty || newPassword.count < 8)
+            }
+
+            Section("Discord Verification") {
+                if discordStatus?.verified == true {
+                    HStack {
+                        Label(
+                            discordStatus?.discordUsername.map { "Verified as @\($0)" } ?? "Verified",
+                            systemImage: "checkmark.seal.fill"
+                        )
+                        Spacer()
+                        Button("Unlink", role: .destructive) { Task { await unlinkDiscord() } }
+                    }
+                } else {
+                    TextField("Discord User ID (for a DM code)", text: $discordUserId)
+                        .keyboardType(.numberPad)
+                    Button("Send Code via DM") { Task { await startDiscordVerify(method: "dm") } }
+                        .disabled(isDiscordBusy || discordUserId.isEmpty || discordStatus?.dmAvailable == false)
+                    Button("Send Code to My Webhook") { Task { await startDiscordVerify(method: "webhook") } }
+                        .disabled(isDiscordBusy)
+                    if let pending = discordStatus?.pending {
+                        TextField("Enter code (\(pending.method == "dm" ? "sent via DM" : "posted to your webhook"))", text: $discordCode)
+                        Button("Confirm") { Task { await confirmDiscordVerify() } }
+                            .disabled(isDiscordBusy || discordCode.isEmpty)
+                    }
+                }
+                if let discordMessage {
+                    Text(discordMessage).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
             Section("Saved Searches") {
                 if viewModel.savedSearches.isEmpty {
                     Text("No saved searches yet").foregroundStyle(.secondary)
@@ -149,6 +204,7 @@ struct SettingsView: View {
             await viewModel.loadAll()
             loadAppearanceFromCurrentUser()
             biometricLockEnabled = biometricLock.isEnabled
+            discordStatus = try? await GalleryAPIClient.shared.discordVerifyStatus()
         }
         .onChange(of: session.currentUser?.id) { _ in
             loadAppearanceFromCurrentUser()
@@ -226,6 +282,64 @@ struct SettingsView: View {
             session.setCurrentUser(user)
         } catch {
             viewModel.errorMessage = error.localizedDescription
+        }
+    }
+
+    private func changePassword() async {
+        isChangingPassword = true
+        defer { isChangingPassword = false }
+        passwordMessage = nil
+        do {
+            try await GalleryAPIClient.shared.changePassword(oldPassword: oldPassword, newPassword: newPassword)
+            oldPassword = ""
+            newPassword = ""
+            passwordMessage = "Password changed."
+        } catch {
+            passwordMessage = error.localizedDescription
+        }
+    }
+
+    private func refreshDiscordStatus() async {
+        discordStatus = try? await GalleryAPIClient.shared.discordVerifyStatus()
+    }
+
+    private func startDiscordVerify(method: String) async {
+        isDiscordBusy = true
+        defer { isDiscordBusy = false }
+        discordMessage = nil
+        do {
+            let response = try await GalleryAPIClient.shared.discordVerifyStart(method: method, discordUserId: method == "dm" ? discordUserId : nil)
+            discordMessage = "Code sent via \(response.method == "dm" ? "Discord DM" : "your Discord webhook")."
+            await refreshDiscordStatus()
+        } catch {
+            discordMessage = error.localizedDescription
+        }
+    }
+
+    private func confirmDiscordVerify() async {
+        isDiscordBusy = true
+        defer { isDiscordBusy = false }
+        do {
+            let user = try await GalleryAPIClient.shared.discordVerifyConfirm(code: discordCode)
+            session.setCurrentUser(user)
+            discordCode = ""
+            discordMessage = "Discord verified."
+            await refreshDiscordStatus()
+        } catch {
+            discordMessage = error.localizedDescription
+        }
+    }
+
+    private func unlinkDiscord() async {
+        isDiscordBusy = true
+        defer { isDiscordBusy = false }
+        do {
+            let user = try await GalleryAPIClient.shared.discordUnlink()
+            session.setCurrentUser(user)
+            discordMessage = "Discord unlinked."
+            await refreshDiscordStatus()
+        } catch {
+            discordMessage = error.localizedDescription
         }
     }
 }

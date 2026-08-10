@@ -4,7 +4,7 @@ import Foundation
 struct MediaListResponse: Decodable { var media: [MediaItem] }
 struct MediaResponse: Decodable { var media: MediaItem }
 struct DuplicateMatch: Decodable, Identifiable { var id: Int; var title: String?; var thumbUrl: String?; var distance: Int? }
-struct MediaUploadResponse: Decodable { var media: MediaItem; var possibleDuplicates: [DuplicateMatch]? }
+struct MediaUploadResponse: Decodable { var media: MediaItem; var possibleDuplicates: [DuplicateMatch]?; var possibleSiteDuplicates: [DuplicateMatch]? }
 struct MediaDetailResponse: Decodable {
     var media: MediaItem
     var comments: [Comment]?
@@ -165,6 +165,7 @@ extension GalleryAPIClient {
         var downloadsEnabled: Bool
         var autoAI: Bool
         var publishAt: String?
+        var checkSiteDuplicates: Bool = false
     }
 
     private func uploadForm(_ fields: UploadFields) -> [String: String] {
@@ -181,6 +182,7 @@ extension GalleryAPIClient {
         ]
         if let categoryId = fields.categoryId { form["category_id"] = String(categoryId) }
         if let publishAt = fields.publishAt, !publishAt.isEmpty { form["publish_at"] = publishAt }
+        if fields.checkSiteDuplicates { form["check_site_duplicates"] = "true" }
         return form
     }
 

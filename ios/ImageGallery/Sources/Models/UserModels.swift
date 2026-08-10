@@ -33,6 +33,9 @@ struct GalleryUser: Codable, Identifiable, Hashable {
     var mediaCount: Int?
     var bannedAt: String?
     var banReason: String?
+    var discordUserId: String?
+    var discordUsername: String?
+    var discordVerifiedAt: String?
     var userSettings: UserSettings?
 
     static func == (lhs: GalleryUser, rhs: GalleryUser) -> Bool { lhs.id == rhs.id }

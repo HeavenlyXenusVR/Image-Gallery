@@ -315,6 +315,24 @@ final class GalleryAPIClient {
         try validate(response, data: data)
         return data
     }
+
+    /// POST-with-JSON-body variant of `download` (e.g. the batch zip
+    /// download, which needs to send the selected media ids) -- same
+    /// request-building as `requestJSON`'s POST overload, just returning the
+    /// raw response bytes instead of decoding JSON.
+    func downloadPOST<B: Encodable>(_ path: String, body: B, requiresAuth: Bool = true) async throws -> Data {
+        let (data, response) = try await sendWithRetry(
+            buildRequest: {
+                var request = try baseRequest(path: path, method: "POST", query: nil, requiresAuth: requiresAuth)
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.httpBody = try encoder.encode(body)
+                return request
+            },
+            perform: { try await session.data(for: $0) }
+        )
+        try validate(response, data: data)
+        return data
+    }
 }
 
 private struct ErrorPayload: Decodable {
