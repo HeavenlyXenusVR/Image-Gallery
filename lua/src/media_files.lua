@@ -212,6 +212,56 @@ function M.save_media_file(opts)
   return final
 end
 
+local function shell_quote_early(s)
+  return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
+
+-- Content-addressed on-disk storage: `<uploads_dir>/media/<sha[1:2]>/<sha>.<ext>`.
+-- Replaces the bytea/media_file_chunks path above for new uploads --
+-- confirmed live (2026-08-10) that storing multi-hundred-MB videos as
+-- Postgres bytea meant every read (serving, transcoding, thumbnailing, AI
+-- analysis) had to first pull the whole blob back into a Lua string, and
+-- LuaJIT's GC does a stop-the-world sweep proportional to live heap size
+-- (250-380ms observed with ~1.5GB resident vs ~1ms with a few MB) -- on
+-- top of the plain OS memory pressure of holding it twice (once as the
+-- upload's own buffer, once again as the hex-encoded INSERT payload).
+-- Postgres's own docs discourage bytea for this size range for the same
+-- reason: "file systems are much better equipped to handle files of that
+-- magnitude." Returns a `storage_path` (relative, for media_items.storage_path
+-- -- NOT a media_file_id/db:// row; resolve_media_bytes() already falls
+-- back to this exact layout via legacy_upload_path(), unchanged) instead of
+-- a media_files row.
+function M.save_media_file_to_disk(uploads_dir, opts)
+  local ext = opts.ext or (opts.original_filename or ""):match("(%.[^./\\]+)$") or ".bin"
+  local prefix = opts.sha256:sub(1, 2)
+  local rel_dir = "media/" .. prefix
+  local rel_path = rel_dir .. "/" .. opts.sha256 .. ext
+  uploads_dir = uploads_dir:gsub("/+$", "")
+  local full_dir = uploads_dir .. "/" .. rel_dir
+  local full_path = uploads_dir .. "/" .. rel_path
+
+  local existing = io.open(full_path, "rb")
+  if existing then
+    existing:close()
+    return { storage_path = rel_path, duplicate = true }
+  end
+
+  os.execute("mkdir -p " .. shell_quote_early(full_dir))
+  -- Write-then-rename so a concurrent reader (or a crash mid-write) never
+  -- sees a partial file at the final path.
+  local tmp_path = full_path .. ".tmp." .. tostring(math.random(100000, 999999))
+  local f, ferr = io.open(tmp_path, "wb")
+  if not f then return nil, "Could not open destination file: " .. tostring(ferr) end
+  f:write(opts.content)
+  f:close()
+  local ok, rerr = os.rename(tmp_path, full_path)
+  if not ok then
+    os.remove(tmp_path)
+    return nil, "Could not finalize stored file: " .. tostring(rerr)
+  end
+  return { storage_path = rel_path, duplicate = false }
+end
+
 -- POST /api/me/avatar's storage write. Mirrors app/db/account.py's
 -- save_avatar_file(): unlike media_files (chunked, for potentially huge
 -- video files), user_avatar_files.content is a single bytea column --

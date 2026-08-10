@@ -2616,7 +2616,8 @@ local function finalize_upload(req, user, content, original_filename, form)
   local sniffed_mime, media_kind = sniff_magic(content)
   finalize_upload_debug_mark("sniff_magic done", debug_t0)
   if not sniffed_mime then return 400, { detail = "Unsupported or invalid file bytes." } end
-  if not safe_extension(original_filename, sniffed_mime) then
+  local safe_ext = safe_extension(original_filename, sniffed_mime)
+  if not safe_ext then
     return 400, { detail = "Unsupported file extension." }
   end
 
@@ -2707,15 +2708,11 @@ local function finalize_upload(req, user, content, original_filename, form)
     or {}
   finalize_upload_debug_mark("moderation/fingerprint/dupes done", debug_t0)
 
-  local media_file, save_err = media_files.save_media_file({
-    user_id = user.id,
+  local media_file, save_err = media_files.save_media_file_to_disk(M.settings.uploads_dir, {
     content = content,
     sha256 = sha256,
-    mime_type = sniffed_mime,
+    ext = safe_ext,
     original_filename = original_filename,
-    media_kind = media_kind,
-    file_size = #content,
-    chunk_bytes = M.settings.db_blob_chunk_bytes,
   })
   finalize_upload_debug_mark("save_media_file done", debug_t0)
   if not media_file then return 500, { detail = "Could not store uploaded file: " .. tostring(save_err) } end
@@ -2732,7 +2729,7 @@ local function finalize_upload(req, user, content, original_filename, form)
     ]],
     tostring(user.id), tostring(category_id), subcategory_id and tostring(subcategory_id) or nil,
     title, description, cjson.encode(arr(tags)), media_kind, sniffed_mime, original_filename,
-    "db://media/" .. tostring(media_file.id), tostring(#content), tostring(media_file.id), sha256,
+    media_file.storage_path, tostring(#content), nil, sha256,
     visibility, comments_enabled, downloads_enabled,
     moderation.is_adult, moderation.adult_marked_by_user, moderation.adult_marked_by_ai,
     moderation.moderation_status, tostring(moderation.moderation_score), moderation.moderation_reason,
