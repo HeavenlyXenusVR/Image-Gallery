@@ -3652,6 +3652,222 @@ function M.send_direct_message(req)
 end
 
 -- ---------------------------------------------------------------------------
+-- Group messaging. Genuinely new (not a git-history recovery like the DM
+-- functions above) -- MessagesPage.jsx's "New group" UI has always called
+-- GET/POST /api/threads and GET/POST /api/threads/:id/messages, but neither
+-- the endpoints nor the underlying tables (message_groups/
+-- message_group_members/group_messages -- see
+-- scripts/pg_add_message_groups.sql) existed until now: confirmed via git
+-- history that no hits for "api/threads"/"message_groups" exist anywhere in
+-- the removed Python app/ tree either.
+-- ---------------------------------------------------------------------------
+
+local function group_membership_row(group_id, user_id)
+  return db.fetchone(
+    "SELECT 1 FROM message_group_members WHERE group_id=%s AND user_id=%s",
+    tostring(group_id), tostring(user_id)
+  )
+end
+
+-- Shared by list_groups/create_group: builds one thread-shaped row for a
+-- single group from the given viewer's perspective. display_name falls back
+-- to a comma-joined list of the OTHER members when the group has no
+-- explicit name -- same idea as how most chat apps title an unnamed group.
+local function decode_group_thread(group_id, viewer_id)
+  local group = db.fetchone("SELECT id, name, created_by, created_at FROM message_groups WHERE id=%s", tostring(group_id))
+  if not group then return nil end
+  local members = db.fetchall(
+    [[
+      SELECT u.id, u.username,
+             CASE WHEN u.public_profile THEN u.display_name ELSE u.username END AS display_name
+      FROM message_group_members gm JOIN users u ON u.id = gm.user_id
+      WHERE gm.group_id = %s
+      ORDER BY gm.joined_at ASC
+    ]],
+    tostring(group_id)
+  )
+  for _, m in ipairs(members) do m.id = db.toint(m.id, m.id) end
+
+  local display_name = nn(group.name)
+  if not display_name then
+    local other_names = {}
+    for _, m in ipairs(members) do
+      if tostring(m.id) ~= tostring(viewer_id) then other_names[#other_names + 1] = m.display_name end
+    end
+    display_name = #other_names > 0 and table.concat(other_names, ", ") or "Group"
+  end
+
+  local last = db.fetchone(
+    "SELECT body FROM group_messages WHERE group_id=%s ORDER BY created_at DESC LIMIT 1",
+    tostring(group_id)
+  )
+
+  return {
+    id = db.toint(group.id, group.id),
+    name = nn(group.name),
+    display_name = display_name,
+    last_message = last and last.body or nil,
+    members = arr(members),
+  }
+end
+
+function M.list_groups(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local group_ids = db.fetchall(
+    [[
+      SELECT gm.group_id FROM message_group_members gm
+      JOIN message_groups g ON g.id = gm.group_id
+      WHERE gm.user_id = %s
+      ORDER BY g.created_at DESC
+    ]],
+    user.id
+  )
+  local threads = {}
+  for _, row in ipairs(group_ids) do
+    local thread = decode_group_thread(row.group_id, user.id)
+    if thread then threads[#threads + 1] = thread end
+  end
+  return 200, { threads = arr(threads) }
+end
+
+function M.create_group(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local payload = json_body(req)
+  local requested_ids = {}
+  if type(payload.member_ids) == "table" then
+    for _, id in ipairs(payload.member_ids) do
+      local n = tonumber(id)
+      if n and tostring(n) ~= tostring(user.id) then requested_ids[#requested_ids + 1] = n end
+    end
+  end
+  -- Dedup + drop anyone blocked either way with the creator -- silently, so
+  -- the group still forms with whoever's left rather than erroring the
+  -- whole request over one bad invite (mirrors send_direct_message's own
+  -- is_blocked_either_way check, just non-fatal here since this is a
+  -- multi-member create, not a single-recipient send).
+  local seen, member_ids = {}, {}
+  for _, id in ipairs(requested_ids) do
+    if not seen[id] and not is_blocked_either_way(user.id, id) then
+      seen[id] = true
+      member_ids[#member_ids + 1] = id
+    end
+  end
+  if #member_ids == 0 then
+    return 400, { detail = "Add at least one other member to start a group." }
+  end
+
+  local name = nn(payload.name)
+  if name then
+    name = trim(name):sub(1, 120)
+    if name == "" then name = nil end
+  end
+
+  local row, err = db.fetchone(
+    "INSERT INTO message_groups (name, created_by) VALUES (%s, %s) RETURNING id",
+    name, user.id
+  )
+  if not row then return 500, { detail = "Could not create group: " .. tostring(err) } end
+  local group_id = db.toint(row.id, row.id)
+
+  db.execute("INSERT INTO message_group_members (group_id, user_id) VALUES (%s, %s)", tostring(group_id), user.id)
+  for _, member_id in ipairs(member_ids) do
+    db.execute(
+      "INSERT INTO message_group_members (group_id, user_id) VALUES (%s, %s) ON CONFLICT DO NOTHING",
+      tostring(group_id), tostring(member_id)
+    )
+  end
+
+  return 200, { thread = decode_group_thread(group_id, user.id) }
+end
+
+function M.group_messages(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local group_id = tonumber(req.params.group_id)
+  if not group_id then return 404, { detail = "Group not found." } end
+  if not group_membership_row(group_id, user.id) then return 404, { detail = "Group not found." } end
+
+  local limit = tonumber(req.query.limit) or 80
+  local rows = db.fetchall(
+    [[
+      SELECT msg.id, msg.group_id, msg.sender_id, msg.body, msg.created_at,
+             u.username, u.display_name, u.avatar_path AS user_avatar_path, u.profile_color, u.public_profile
+      FROM group_messages msg
+      JOIN users u ON u.id = msg.sender_id
+      WHERE msg.group_id = %s
+      ORDER BY msg.created_at DESC, msg.id DESC
+      LIMIT %s
+    ]],
+    tostring(group_id), tostring(math.max(1, math.min(limit, 200)))
+  )
+  local ordered = {}
+  for i = #rows, 1, -1 do
+    local row = rows[i]
+    row.id = db.toint(row.id, row.id)
+    row.group_id = db.toint(row.group_id, row.group_id)
+    row.sender_id = db.toint(row.sender_id, row.sender_id)
+    row.public_profile = db.tobool(row.public_profile)
+    if row.user_avatar_path and row.user_avatar_path ~= cjson.null then
+      row.user_avatar_path = request_origin(req) .. "/api/users/" .. row.sender_id .. "/avatar"
+    else
+      row.user_avatar_path = nil
+    end
+    ordered[#ordered + 1] = row
+  end
+  return 200, { messages = arr(ordered) }
+end
+
+function M.send_group_message(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+  local group_id = tonumber(req.params.group_id)
+  if not group_id then return 404, { detail = "Group not found." } end
+  if not group_membership_row(group_id, user.id) then return 404, { detail = "Group not found." } end
+
+  local payload = json_body(req)
+  local cleaned = trim(nn(payload.body) or ""):gsub("%s+", " ")
+  if cleaned == "" then return 400, { detail = "Message cannot be empty." } end
+  if #cleaned > 2000 then return 400, { detail = "Message must be 2000 characters or fewer." } end
+
+  local row = db.fetchone(
+    "INSERT INTO group_messages (group_id, sender_id, body) VALUES (%s, %s, %s) RETURNING id",
+    tostring(group_id), user.id, cleaned
+  )
+  if not row then return 500, { detail = "Could not send message." } end
+
+  local message = db.fetchone(
+    [[
+      SELECT msg.id, msg.group_id, msg.sender_id, msg.body, msg.created_at,
+             u.username, u.display_name, u.avatar_path AS user_avatar_path, u.profile_color, u.public_profile
+      FROM group_messages msg JOIN users u ON u.id = msg.sender_id
+      WHERE msg.id = %s
+    ]],
+    tostring(db.toint(row.id, row.id))
+  )
+  message.id = db.toint(message.id, message.id)
+  message.group_id = db.toint(message.group_id, message.group_id)
+  message.sender_id = db.toint(message.sender_id, message.sender_id)
+  message.public_profile = db.tobool(message.public_profile)
+  if message.user_avatar_path and message.user_avatar_path ~= cjson.null then
+    message.user_avatar_path = request_origin(req) .. "/api/users/" .. message.sender_id .. "/avatar"
+  else
+    message.user_avatar_path = nil
+  end
+
+  local other_members = db.fetchall(
+    "SELECT user_id FROM message_group_members WHERE group_id=%s AND user_id != %s",
+    tostring(group_id), user.id
+  )
+  for _, m in ipairs(other_members) do
+    create_notification(m.user_id, user.id, "message", nil, cleaned)
+  end
+
+  return 200, { message = message }
+end
+
+-- ---------------------------------------------------------------------------
 -- Collections. Mirrors app/routers/collections.py + the collection-related
 -- half of app/db/feed_collections.py (following_feed/liked_media/saved
 -- searches are a different router's territory and NOT covered here).

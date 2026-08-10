@@ -155,6 +155,13 @@ httpd.route("GET", "/api/messages/threads", routes.message_threads)
 httpd.route("GET", "/api/messages/:user_id", routes.direct_messages)
 httpd.route("POST", "/api/messages/:user_id", routes.send_direct_message)
 
+-- Group messaging (see routes.lua's "Group messaging" section). Register
+-- the shorter path first, matching this file's established convention.
+httpd.route("GET", "/api/threads", routes.list_groups)
+httpd.route("POST", "/api/threads", routes.create_group)
+httpd.route("GET", "/api/threads/:group_id/messages", routes.group_messages)
+httpd.route("POST", "/api/threads/:group_id/messages", routes.send_group_message)
+
 -- "/suggestions" MUST be registered before "/api/collections/:collection_id".
 httpd.route("GET", "/api/collections/suggestions", routes.collection_suggestions)
 httpd.route("GET", "/api/collections", routes.list_collections)
