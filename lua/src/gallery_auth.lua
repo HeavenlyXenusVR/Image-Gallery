@@ -41,6 +41,25 @@ M.extract_bearer_token = base.extract_bearer_token
 local SESSION_COOKIE_NAME = "image_gallery_session"
 M.SESSION_COOKIE_NAME = SESSION_COOKIE_NAME
 
+-- Builds the Set-Cookie header value for the session cookie. The frontend
+-- (GitHub Pages) and the API (gallery.xenusanimations.studio, behind the
+-- Cloudflare tunnel) are different origins, so this is a cross-site cookie:
+-- without `SameSite=None; Secure` browsers (Chrome/Firefox/Safari all
+-- default bare cookies to SameSite=Lax) silently refuse to store or send
+-- it on cross-site fetches. That meant login "worked" (Set-Cookie came
+-- back 200) but every subsequent authenticated request looked logged-out
+-- to the browser -- surfacing as 403s on private/adult media, broken
+-- personalized routes, and Chrome's devtools flagging the cookie as
+-- rejected. `Secure` requires HTTPS, which the tunnel terminates as, so
+-- it's always safe to set here.
+function M.session_cookie(token, max_age_seconds)
+  local attrs = "Path=/; HttpOnly; Secure; SameSite=None"
+  if max_age_seconds then
+    return SESSION_COOKIE_NAME .. "=" .. token .. "; " .. attrs .. "; Max-Age=" .. max_age_seconds
+  end
+  return SESSION_COOKIE_NAME .. "=" .. token .. "; " .. attrs
+end
+
 -- issue_token(secret, user, ttl_seconds) -> opaque bearer token string.
 -- Mirrors app/auth.py's issue_token(): payload is {id, username, display_name}.
 function M.issue_token(secret, user, ttl_seconds)

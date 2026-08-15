@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { Bookmark, ChevronLeft, ChevronRight, Copy, Download, Heart, Link as LinkIcon, Lock, MessageCircle, Reply, Tag, Trash2, X as XIcon } from "lucide-react";
+import { Bookmark, ChevronLeft, ChevronRight, Copy, Download, Heart, Image as ImageIcon, Link as LinkIcon, Lock, MessageCircle, Reply, Tag, Trash2, X as XIcon } from "lucide-react";
 import { apiFetch } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
@@ -352,9 +352,20 @@ export function MediaDetailPage({ ctx }) {
           <div className="section-head"><h2>More like this</h2></div>
           <div className="similar-media-rail">
             {similar.map((item) => (
-              <Link className="profile-media-mini" to={`/media/${item.id}`} key={item.id}>
-                <ResilientImage sources={[item.thumb_url, item.preview_url].filter(Boolean)} diagnostics={{ mediaId: item.id, mediaKind: item.media_kind, context: "similar-media" }} alt="" loading="lazy" decoding="async" />
-                <span>{item.title || "Untitled"}</span>
+              <Link className={`profile-media-mini ${item.locked ? "is-locked" : ""}`} to={`/media/${item.id}`} key={item.id}>
+                {item.locked ? (
+                  <div className="video-thumb-placeholder"><Lock size={28} /></div>
+                ) : (
+                  <ResilientImage
+                    sources={[item.thumb_url, item.preview_url].filter(Boolean)}
+                    diagnostics={{ mediaId: item.id, mediaKind: item.media_kind, context: "similar-media" }}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                    fallback={<div className="video-thumb-placeholder"><ImageIcon size={28} /></div>}
+                  />
+                )}
+                <span>{item.locked ? "18+ content" : (item.title || "Untitled")}</span>
               </Link>
             ))}
           </div>

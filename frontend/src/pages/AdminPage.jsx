@@ -388,7 +388,7 @@ function SiteSettingsTab({ ctx }) {
     try {
       const data = await apiFetch("/api/admin/site-settings", { method: "PATCH", body: JSON.stringify(form) });
       setForm((current) => ({ ...current, ...data.settings }));
-      clearApiCache("site-announcement");
+      clearApiCache("/api/site/announcement");
       showToast("Site settings saved.", "success");
     } catch (error) {
       showToast(error.message, "error");

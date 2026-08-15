@@ -131,22 +131,26 @@ export function DiscoverPage({ ctx }) {
     }
   }, [pageSize]);
 
-  // Filter change → reset and reload
+  // Filter change → reset and reload. Debounced so typing in the search box
+  // or the uploader/size/date text fields doesn't fire an API call per keystroke.
   useEffect(() => {
-    pageRef.current = 1;
-    setHasNext(false);
     setLoading(true);
-    setError("");
-    setItems([]);
-    loadMedia({ page: 1, append: false });
+    const timer = window.setTimeout(() => {
+      pageRef.current = 1;
+      setHasNext(false);
+      setError("");
+      setItems([]);
+      loadMedia({ page: 1, append: false });
 
-    const next = { ...filters };
-    Object.keys(next).forEach((key) => {
-      if (next[key] === "" || (key === "adult" && next[key] === "show") || (key === "sort" && next[key] === "new")) {
-        delete next[key];
-      }
-    });
-    setSearchParams(next, { replace: true });
+      const next = { ...filters };
+      Object.keys(next).forEach((key) => {
+        if (next[key] === "" || (key === "adult" && next[key] === "show") || (key === "sort" && next[key] === "new")) {
+          delete next[key];
+        }
+      });
+      setSearchParams(next, { replace: true });
+    }, 300);
+    return () => window.clearTimeout(timer);
   }, [filters]); // intentionally omit loadMedia/setSearchParams — stable refs
 
   // Infinite scroll sentinel

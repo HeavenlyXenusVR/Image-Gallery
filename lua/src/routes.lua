@@ -320,7 +320,7 @@ function M.register(req)
     token = token,
     email_verification_sent = false,
     email_error = nil,
-  }, { ["Set-Cookie"] = gauth.SESSION_COOKIE_NAME .. "=" .. token .. "; Path=/; HttpOnly; Max-Age=" .. M.settings.api_token_ttl_seconds }
+  }, { ["Set-Cookie"] = gauth.session_cookie(token, M.settings.api_token_ttl_seconds) }
 end
 
 function M.login(req)
@@ -366,7 +366,7 @@ function M.login(req)
     return 200, { needs_2fa = true, pending_token = pending }
   end
   local token = gauth.issue_token(M.settings.session_secret, user, M.settings.api_token_ttl_seconds)
-  return 200, { user = user, token = token }, { ["Set-Cookie"] = gauth.SESSION_COOKIE_NAME .. "=" .. token .. "; Path=/; HttpOnly; Max-Age=" .. M.settings.api_token_ttl_seconds }
+  return 200, { user = user, token = token }, { ["Set-Cookie"] = gauth.session_cookie(token, M.settings.api_token_ttl_seconds) }
 end
 
 function M.verify_2fa(req)
@@ -383,11 +383,11 @@ function M.verify_2fa(req)
   local user = get_user(user_id)
   if not user then return 404, { detail = "Account not found." } end
   local token = gauth.issue_token(M.settings.session_secret, user, M.settings.api_token_ttl_seconds)
-  return 200, { user = user, token = token }, { ["Set-Cookie"] = gauth.SESSION_COOKIE_NAME .. "=" .. token .. "; Path=/; HttpOnly; Max-Age=" .. M.settings.api_token_ttl_seconds }
+  return 200, { user = user, token = token }, { ["Set-Cookie"] = gauth.session_cookie(token, M.settings.api_token_ttl_seconds) }
 end
 
 function M.logout(req)
-  return 200, { ok = true }, { ["Set-Cookie"] = gauth.SESSION_COOKIE_NAME .. "=; Path=/; HttpOnly; Max-Age=0" }
+  return 200, { ok = true }, { ["Set-Cookie"] = gauth.session_cookie("", 0) }
 end
 
 function M.me(req)
@@ -722,7 +722,18 @@ local function with_urls(req, row, adult_allowed)
     else
       row.preview_url = row.thumb_url
     end
-    if row.is_adult and adult_allowed then
+    -- Always attach the capability token, not just for adult posts: plain
+    -- <img>/<video src> tags don't send credentials cross-origin (no
+    -- `crossorigin` attribute is set anywhere in the frontend, and adding
+    -- one would require the media routes to send CORS headers too), so a
+    -- private post's byte-serving routes never saw the owner's session
+    -- cookie and 403'd even for the post's own owner viewing their own
+    -- gallery. This JSON row was only handed to `row` after auth_optional's
+    -- cookie check already passed (see M.list_media/M.media_detail's
+    -- callers), so re-granting the same access via a URL-embedded token is
+    -- not a privilege escalation -- it's carrying forward a decision
+    -- already made, exactly like the pre-existing adult-content token did.
+    do
       local token = gauth.media_access_token(M.settings.session_secret, media_id)
       row.url = append_query(row.url, "access", token)
       if row.preview_url then row.preview_url = append_query(row.preview_url, "access", token) end
@@ -4652,12 +4663,59 @@ function M.search_users(req)
     viewer0, viewer0, viewer0, viewer0, viewer0, q, needle, viewer0, needle, viewer0, needle, viewer0, needle,
     q, tostring(limit)
   )
+  -- Batch friend_status lookups: previously one db.fetchone() per result row
+  -- (N+1). Fetch every friend_requests row touching the viewer and any result
+  -- user in a single query, then resolve status per-user in Lua.
+  local statuses = {}
+  if viewer_id and #rows > 0 then
+    local placeholders = {}
+    local ids = {}
+    for i, row in ipairs(rows) do
+      placeholders[i] = "%s"
+      ids[i] = tostring(row.id)
+    end
+    local in_list = table.concat(placeholders, ", ")
+    local fr_rows = db.fetchall(
+      string.format(
+        [[
+          SELECT requester_id, addressee_id, status
+          FROM friend_requests
+          WHERE (requester_id=%%s AND addressee_id IN (%s)) OR (addressee_id=%%s AND requester_id IN (%s))
+          ORDER BY CASE status
+            WHEN 'accepted' THEN 1 WHEN 'pending' THEN 2 WHEN 'declined' THEN 3 WHEN 'cancelled' THEN 4 ELSE 5
+          END, created_at DESC
+        ]],
+        in_list, in_list
+      ),
+      viewer0, unpack(ids), viewer0, unpack(ids)
+    )
+    for _, fr in ipairs(fr_rows) do
+      local other_id = tostring(fr.requester_id) == viewer0 and tostring(fr.addressee_id) or tostring(fr.requester_id)
+      -- Rows are already ordered by priority/recency, same as the old
+      -- per-pair LIMIT 1 query -- keep only the first (best) row per user.
+      if not statuses[other_id] then
+        if fr.status == "declined" or fr.status == "cancelled" then
+          statuses[other_id] = "none"
+        elseif fr.status == "accepted" then
+          statuses[other_id] = "friends"
+        else
+          statuses[other_id] = tostring(fr.requester_id) == viewer0 and "pending_out" or "pending_in"
+        end
+      end
+    end
+  end
   for _, row in ipairs(rows) do
     decode_user(row)
     row.media_count = db.toint(row.media_count, 0)
     row.follower_count = db.toint(row.follower_count, 0)
     row.followed_by_me = db.tobool(row.followed_by_me)
-    row.friend_status = viewer_id and friend_status(viewer_id, row.id) or "none"
+    if not viewer_id then
+      row.friend_status = "none"
+    elseif tostring(viewer_id) == tostring(row.id) then
+      row.friend_status = "self"
+    else
+      row.friend_status = statuses[tostring(row.id)] or "none"
+    end
     with_user_urls(req, row)
   end
   return 200, { users = arr(rows), limit = limit }
@@ -5925,6 +5983,15 @@ local function adult_file_allowed(req, media_id, access, viewer_id)
   return viewer_adult_allowed(viewer_id)
 end
 
+-- Same capability-token fallback as adult_file_allowed, for private posts:
+-- lets the post's own owner load it via a plain <img>/<video src> tag (no
+-- cookie sent cross-origin) as long as the URL came from a `with_urls`
+-- response their own session was already allowed to see.
+local function private_file_allowed(media_id, access, owner)
+  if owner then return true end
+  return access ~= nil and access ~= "" and access == gauth.media_access_token(M.settings.session_secret, media_id)
+end
+
 -- Resolves what to actually serve for a media item: DB blob (preferred) or
 -- legacy on-disk file. Returns (content_bytes, mime_type) or (nil, nil) if
 -- genuinely missing -- callers must 404 cleanly on the latter, not crash
@@ -6212,7 +6279,9 @@ local function hls_check_access(req, media_id)
   if not item or nn(item.deleted_at) ~= nil then return nil, 404, { detail = "Media not found." } end
   item.is_adult = db.tobool(item.is_adult)
   local owner = viewer_id and tostring(item.user_id) == tostring(viewer_id)
-  if item.visibility == "private" and not owner then return nil, 403, { detail = "This post is private." } end
+  if item.visibility == "private" and not private_file_allowed(media_id, req.query.access, owner) then
+    return nil, 403, { detail = "This post is private." }
+  end
   if item.is_adult and not adult_file_allowed(req, media_id, req.query.access, viewer_id) then
     return nil, 403, { detail = "Age verification required for this 18+ post." }
   end
@@ -6371,7 +6440,9 @@ local function serve_media_bytes_response(req, media_id, as_download, quality)
   if not item or nn(item.deleted_at) ~= nil then return 404, { detail = "Media not found." } end
   item.is_adult = db.tobool(item.is_adult)
   local owner = viewer_id and tostring(item.user_id) == tostring(viewer_id)
-  if item.visibility == "private" and not owner then return 403, { detail = "This post is private." } end
+  if item.visibility == "private" and not private_file_allowed(media_id, req.query.access, owner) then
+    return 403, { detail = "This post is private." }
+  end
   if as_download and not db.tobool(item.downloads_enabled) and not owner then
     return 403, { detail = "Downloads are disabled for this post." }
   end
@@ -6607,7 +6678,9 @@ function M.serve_media_preview(req)
   if not item or nn(item.deleted_at) ~= nil then return 404, { detail = "Media not found." } end
   item.is_adult = db.tobool(item.is_adult)
   local owner = viewer_id and tostring(item.user_id) == tostring(viewer_id)
-  if item.visibility == "private" and not owner then return 403, { detail = "This post is private." } end
+  if item.visibility == "private" and not private_file_allowed(media_id, req.query.access, owner) then
+    return 403, { detail = "This post is private." }
+  end
   if item.is_adult and not adult_file_allowed(req, media_id, req.query.access, viewer_id) then
     return 403, { detail = "Age verification required for this 18+ post." }
   end

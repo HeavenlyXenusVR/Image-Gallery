@@ -4,6 +4,41 @@ import { Download, Eye, Folder, Heart, Lock, LogIn, MessageCircle, Sparkles } fr
 import { formatDate, initials, numberish } from "../utils/format.js";
 import { reportMediaLoadDiagnostic } from "../utils/media.js";
 
+// ─── Liquid Glass ──────────────────────────────────────────────────────────
+// Apple-style "Liquid Glass": backdrop blur+saturate (in CSS, see the
+// `.liquid-glass` rules in styles.css) plus two things plain CSS can't do
+// alone -- edge refraction (an SVG feDisplacementMap, referenced from CSS
+// via `filter: url(#liquid-glass-refraction)`) and a mouse-reactive
+// specular highlight (a radial-gradient pseudo-element positioned by the
+// --glass-x/--glass-y custom properties this pointermove handler sets).
+// Deliberately reserved for a handful of floating/elevated surfaces (the
+// topbar, primary CTA buttons, the lightbox modal + its floating controls,
+// dashboard stat tiles) rather than applied broadly -- live blur+displacement
+// is real GPU cost per surface.
+export function GlassFilterDefs() {
+  return (
+    <svg aria-hidden="true" focusable="false" style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }}>
+      <filter id="liquid-glass-refraction" x="-20%" y="-20%" width="140%" height="140%">
+        <feTurbulence type="fractalNoise" baseFrequency="0.009 0.012" numOctaves="1" seed="7" result="noise" />
+        <feDisplacementMap in="SourceGraphic" in2="noise" scale="14" xChannelSelector="R" yChannelSelector="G" />
+      </filter>
+    </svg>
+  );
+}
+
+// Attach as onPointerMove on any `.liquid-glass` element to drive its
+// specular-highlight position. Deliberately NOT animated via requestAnimationFrame
+// or state -- setting a CSS custom property directly on the DOM node skips
+// React's render cycle entirely, and only opacity/background-position (not
+// filter/backdrop-filter) respond to it, so this never triggers a repaint of
+// the expensive blur/displacement layer itself.
+export function glassPointerMove(event) {
+  const el = event.currentTarget;
+  const rect = el.getBoundingClientRect();
+  el.style.setProperty("--glass-x", `${event.clientX - rect.left}px`);
+  el.style.setProperty("--glass-y", `${event.clientY - rect.top}px`);
+}
+
 export function Page({ title, eyebrow, lede = "", actions, className = "", children }) {
   return (
     <div className={`page ${className}`.trim()}>
@@ -170,7 +205,11 @@ export function UserMini({ user }) {
 }
 
 export function Metric({ label, value }) {
-  return <article className="metric"><strong>{numberish(value)}</strong><span>{label}</span></article>;
+  return (
+    <article className="metric liquid-glass" onPointerMove={glassPointerMove}>
+      <strong>{numberish(value)}</strong><span>{label}</span>
+    </article>
+  );
 }
 
 export function Notice({ kind = "info", children }) {

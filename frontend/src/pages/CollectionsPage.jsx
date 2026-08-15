@@ -142,8 +142,10 @@ export function CollectionsPage({ ctx }) {
       clearApiCache();
       ctx.showToast(`Added ${item.title || "post"} to ${selected.name}.`, "success");
       setPicker((current) => ({ ...current, results: current.results.filter((row) => Number(row.id) !== Number(item.id)) }));
-      await openCollection(selected.id, { fresh: true });
-      await loadCollections({ fresh: true });
+      await Promise.all([
+        openCollection(selected.id, { fresh: true }),
+        loadCollections({ fresh: true }),
+      ]);
     } catch (addError) {
       ctx.showToast(addError.message, "error");
     } finally {

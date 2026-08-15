@@ -154,7 +154,24 @@ local function origin_allowed(origin)
   return false
 end
 
+-- Baseline security headers, applied to every response. Nothing here is
+-- environment-specific (unlike CORS) so it's safe to hardcode: this backend
+-- is only ever reached over HTTPS in production (the Cloudflare tunnel
+-- terminates TLS in front of it), and there's no legitimate reason for this
+-- API/gallery to be framed by another site or have the browser MIME-sniff
+-- its responses.
+local function apply_security_headers(headers_out)
+  -- Pins HTTPS for a year including subdomains, and opts into the browser
+  -- preload list -- closes the window where a plain http:// first request
+  -- could be intercepted before ever seeing a redirect.
+  headers_out["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+  headers_out["X-Content-Type-Options"] = "nosniff"
+  headers_out["X-Frame-Options"] = "DENY"
+  headers_out["Referrer-Policy"] = "strict-origin-when-cross-origin"
+end
+
 local function apply_cors(headers_out, req_headers)
+  apply_security_headers(headers_out)
   local origin = req_headers["origin"]
   if origin_allowed(origin) then
     headers_out["Access-Control-Allow-Origin"] = origin

@@ -2574,7 +2574,8 @@ textarea:focus {
   text-decoration: none;
 }
 
-.profile-media-mini img {
+.profile-media-mini img,
+.profile-media-mini .video-thumb-placeholder {
   width: 72px;
   aspect-ratio: 4 / 3;
   border-radius: calc(var(--radius) - 2px);
@@ -5430,6 +5431,100 @@ textarea:focus {
   background: transparent;
   color: inherit;
   cursor: pointer;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Liquid Glass -- reserved for a handful of floating/elevated surfaces
+   (topbar, primary CTA buttons, the lightbox modal + its round controls,
+   dashboard stat tiles), not applied broadly: live blur + SVG displacement
+   is real per-surface GPU cost. Pairs with GlassFilterDefs/glassPointerMove
+   in ui.jsx (the refraction filter def + specular-highlight pointer
+   tracking). Deliberately additive-only (blur/saturate/refraction upgrade
+   + a specular pseudo-element) rather than resetting `background`/`border`/
+   `box-shadow`, so it layers onto each target's own existing styling
+   instead of fighting it in the cascade.
+   ───────────────────────────────────────────────────────────────────── */
+.liquid-glass {
+  position: relative;
+  isolation: isolate;
+  /* Promotes to its own compositor layer so the browser doesn't repaint
+     the (expensive) blur+displacement on every scroll/hover of a sibling.
+     Never animate `filter`/`backdrop-filter` on this element -- animate
+     opacity/transform instead (see the ::after specular highlight below,
+     and .liquid-glass:active's transform), which the compositor can move
+     without re-running the filter. */
+  transform: translateZ(0);
+  will-change: transform;
+  backdrop-filter: blur(16px) saturate(180%) url(#liquid-glass-refraction);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+}
+
+.liquid-glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(140px circle at var(--glass-x, 50%) var(--glass-y, 50%), color-mix(in srgb, #ffffff 35%, transparent), transparent 65%);
+  opacity: 0;
+  transition: opacity var(--motion-med);
+}
+
+.liquid-glass:hover::after,
+.liquid-glass:focus-within::after {
+  opacity: 1;
+}
+
+/* Surfaces that had no inset highlight of their own get one, without
+   touching their existing border-color/box-shadow (nav-item/.metric
+   define a plain 1px border and no shadow; the lightbox's round controls
+   define neither). .lb-panel already has its own drop-shadow + inset
+   highlight (see .lb-panel above) so it's deliberately not listed here --
+   adding a second inset would just double up on the same edge. */
+.topbar.liquid-glass,
+.nav-item.accent.liquid-glass,
+.metric.liquid-glass,
+.lb-close.liquid-glass,
+.lb-nav.liquid-glass {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #ffffff 20%, transparent), inset 0 -1px 0 color-mix(in srgb, #000000 16%, transparent);
+}
+
+/* .liquid-glass's own `position: relative` (needed so its ::after specular
+   overlay sizes to it) would otherwise clobber these elements' own
+   required position values -- sticky for the topbar, absolute for the
+   lightbox's floating round controls -- since a same-specificity
+   single-class rule later in the file wins ties. Restore them explicitly. */
+.topbar.liquid-glass {
+  position: sticky;
+}
+
+.lb-close.liquid-glass,
+.lb-nav.liquid-glass {
+  position: absolute;
+}
+
+/* Live blur+displacement is real GPU cost, and the refraction filter warps
+   the exact pixels a prefers-reduced-transparency user asked to see
+   plainly -- honor the OS setting with a solid fallback rather than a
+   merely-lighter blur. Mirrors the existing .perf-lite opt-out below,
+   which already strips other blur effects for low-power devices. */
+@media (prefers-reduced-transparency: reduce) {
+  .liquid-glass {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .liquid-glass::after {
+    display: none;
+  }
+}
+
+.perf-lite .liquid-glass {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.perf-lite .liquid-glass::after {
+  display: none;
 }
 
 .group-avatar {

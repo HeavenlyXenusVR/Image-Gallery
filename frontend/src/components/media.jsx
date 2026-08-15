@@ -208,6 +208,7 @@ export function MediaControls({ ctx, media, onChanged }) {
     if (!window.confirm("Delete this post? This cannot be undone from here.")) return;
     try {
       await apiFetch(`/api/media/${media.id}`, { method: "DELETE" });
+      clearApiCache();
       ctx.showToast("Post deleted.", "success");
       onChanged(null);
     } catch (error) {
@@ -218,6 +219,7 @@ export function MediaControls({ ctx, media, onChanged }) {
   async function restore() {
     try {
       const data = await apiFetch(`/api/media/${media.id}/restore`, { method: "POST" });
+      clearApiCache();
       onChanged(data.media);
       ctx.showToast("Post restored.", "success");
     } catch (error) {
@@ -258,6 +260,7 @@ export function StudioItem({ ctx, item, onChanged, onRemoved, selected = false, 
     if (!window.confirm("Delete this post? This cannot be undone from here.")) return;
     try {
       await apiFetch(`/api/media/${item.id}`, { method: "DELETE" });
+      clearApiCache();
       onRemoved(item.id);
     } catch (error) {
       ctx.showToast(error.message, "error");

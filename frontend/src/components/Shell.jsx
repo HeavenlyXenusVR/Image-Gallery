@@ -3,7 +3,7 @@ import { Link, NavLink } from "react-router-dom";
 import { AlertTriangle, Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Moon, Settings, ShieldAlert, Sparkles, Sun, SunMoon, TrendingUp, Upload, UserPlus, Users, X as XIcon } from "lucide-react";
 import { cachedApiFetch } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
-import { Avatar } from "./ui.jsx";
+import { Avatar, GlassFilterDefs, glassPointerMove } from "./ui.jsx";
 import { NotificationBell } from "./NotificationBell.jsx";
 
 const THEME_ICONS = { dark: Moon, light: Sun, "": SunMoon };
@@ -47,6 +47,7 @@ export function Shell({ ctx, children, className = "", style }) {
 
   return (
     <div className={`app-shell ${className}`.trim()} style={style}>
+      <GlassFilterDefs />
       {site?.announcement_active && site.announcement_message && !bannerDismissed ? (
         <div className={`site-announcement-banner level-${site.announcement_level || "info"}`}>
           <span>{site.announcement_message}</span>
@@ -55,7 +56,7 @@ export function Shell({ ctx, children, className = "", style }) {
           </button>
         </div>
       ) : null}
-      <header className="topbar">
+      <header className="topbar liquid-glass" onPointerMove={glassPointerMove}>
         <Link className="brand" to="/">
           <span className="brand-mark"><ImageIcon size={18} /></span>
           <span className="brand-copy">
@@ -114,7 +115,12 @@ export function Shell({ ctx, children, className = "", style }) {
 
 function NavItem({ to, icon: Icon, label, accent = false }) {
   return (
-    <NavLink className={({ isActive }) => `nav-item ${isActive ? "active" : ""} ${accent ? "accent" : ""}`} to={to} end={to === "/"}>
+    <NavLink
+      className={({ isActive }) => `nav-item ${isActive ? "active" : ""} ${accent ? "accent liquid-glass" : ""}`}
+      to={to}
+      end={to === "/"}
+      onPointerMove={accent ? glassPointerMove : undefined}
+    >
       <Icon size={18} />
       <span>{label}</span>
     </NavLink>

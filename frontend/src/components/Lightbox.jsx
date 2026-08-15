@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { Bookmark, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Heart, X } from "lucide-react";
 import { apiFetch } from "../api.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
-import { Avatar, ChipRow, ResilientImage, StatsRow } from "./ui.jsx";
+import { Avatar, ChipRow, glassPointerMove, ResilientImage, StatsRow } from "./ui.jsx";
 import { VideoPlayer } from "./VideoPlayer.jsx";
 import { isGifMedia, mediaImageSources, thumbUrl, videoQualityUrl } from "../utils/media.js";
 
@@ -107,18 +107,18 @@ export function Lightbox({ ctx }) {
       aria-modal="true"
       aria-label="Media preview"
     >
-      <div className="lb-panel" onClick={(e) => e.stopPropagation()}>
-        <button className="lb-close icon-button" type="button" onClick={closeLightbox} aria-label="Close preview">
+      <div className="lb-panel liquid-glass" onClick={(e) => e.stopPropagation()} onPointerMove={glassPointerMove}>
+        <button className="lb-close icon-button liquid-glass" type="button" onClick={closeLightbox} aria-label="Close preview" onPointerMove={glassPointerMove}>
           <X size={18} />
         </button>
 
         {canPrev && (
-          <button className="lb-nav lb-nav-prev" type="button" onClick={() => goTo(currentIndex - 1)} aria-label="Previous media">
+          <button className="lb-nav lb-nav-prev liquid-glass" type="button" onClick={() => goTo(currentIndex - 1)} aria-label="Previous media" onPointerMove={glassPointerMove}>
             <ChevronLeft size={24} />
           </button>
         )}
         {canNext && (
-          <button className="lb-nav lb-nav-next" type="button" onClick={() => goTo(currentIndex + 1)} aria-label="Next media">
+          <button className="lb-nav lb-nav-next liquid-glass" type="button" onClick={() => goTo(currentIndex + 1)} aria-label="Next media" onPointerMove={glassPointerMove}>
             <ChevronRight size={24} />
           </button>
         )}

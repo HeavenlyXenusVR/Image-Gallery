@@ -63,6 +63,9 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
   const pendingRestoreRef = useRef(null); // { time, wasPlaying }
   const bufferingTimerRef = useRef(null);
   const durationRef = useRef(0);
+  // Native-HLS (Safari) retry counter for transient network errors — see
+  // onError's code===2 branch below for why this exists.
+  const nativeNetworkRetriesRef = useRef(0);
 
   // ─── Auto-play tracking ──────────────────────────────────────────────────────
   // Set to true once the user has clicked play; thereafter onCanPlay will resume.
@@ -101,6 +104,7 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     const onCanPlay = () => {
       setBuffering(false);
       setBufferingLong(false);
+      nativeNetworkRetriesRef.current = 0;
       if (bufferingTimerRef.current) { clearTimeout(bufferingTimerRef.current); bufferingTimerRef.current = null; }
       // Restore seek position after quality switch
       if (pendingRestoreRef.current) {
@@ -118,7 +122,24 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     const onError = () => {
       const vid = videoRef.current;
       const code = vid?.error?.code;
-      if (code === 2) setError("Network error — check your connection and try again.");
+      if (code === 2) {
+        // MEDIA_ERR_NETWORK — on Safari's native HLS path (no hls.js
+        // involved) this is what a transient 503 from the still-transcoding
+        // HLS playlist route (see routes.lua's serve_hls_playlist) surfaces
+        // as. Retry the load a few times with backoff before giving up,
+        // same rationale as hls.js's startLoad() recovery in the branch
+        // below for the non-Safari path.
+        if (nativeNetworkRetriesRef.current < 4) {
+          nativeNetworkRetriesRef.current += 1;
+          setTimeout(() => {
+            if (videoRef.current !== vid) return;
+            vid.load();
+            if (shouldAutoPlayRef.current) vid.play().catch(() => {});
+          }, 500 * nativeNetworkRetriesRef.current);
+          return;
+        }
+        setError("Network error — check your connection and try again.");
+      }
       else if (code === 3) setError("Decoding error — the video format may not be supported.");
       else if (code === 4) {
         // MEDIA_ERR_SRC_NOT_SUPPORTED — Firefox rejects non-browser-safe formats.
@@ -192,6 +213,7 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     let cancelled = false;
     setError(null);
     setBufferingLong(false);
+    nativeNetworkRetriesRef.current = 0;
     if (bufferingTimerRef.current) { clearTimeout(bufferingTimerRef.current); bufferingTimerRef.current = null; }
 
     const isQualitySwitch = Boolean(prevSrcRef.current && prevSrcRef.current !== src);
@@ -222,12 +244,41 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
       import("hls.js").then(({ default: Hls }) => {
         if (cancelled || !Hls.isSupported() || videoRef.current !== video) return;
         const hls = new Hls({ enableWorker: true });
+        // The backend's playlist/segment routes 503 with "still starting
+        // up" while a quality's HLS variant is mid-transcode (see
+        // M.serve_hls_playlist's bounded poll in routes.lua) — that is a
+        // routine, expected, retryable condition, not a real failure. Naive
+        // "any fatal error -> permanent error banner" handling turned every
+        // one of those transient 503s into a broken player, even though
+        // hls.js itself ships recovery APIs for exactly this: startLoad()
+        // re-kicks the network loader, recoverMediaError() re-attaches on a
+        // decode error. Only give up (and show the banner) after repeated
+        // recovery attempts for the same error type, capped and backed off
+        // so a genuinely dead stream doesn't retry forever.
+        let networkRetries = 0;
+        let mediaRetries = 0;
+        const MAX_RETRIES = 4;
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal) return;
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) setError("Network error — check your connection and try again.");
-          else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) setError("Decoding error — the video format may not be supported.");
-          else setError("Playback error — the video could not be loaded.");
+          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+            if (networkRetries < MAX_RETRIES) {
+              networkRetries += 1;
+              setTimeout(() => { if (!cancelled) hls.startLoad(); }, 500 * networkRetries);
+              return;
+            }
+            setError("Network error — check your connection and try again.");
+          } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            if (mediaRetries < MAX_RETRIES) {
+              mediaRetries += 1;
+              hls.recoverMediaError();
+              return;
+            }
+            setError("Decoding error — the video format may not be supported.");
+          } else {
+            setError("Playback error — the video could not be loaded.");
+          }
         });
+        hls.on(Hls.Events.MANIFEST_PARSED, () => { networkRetries = 0; mediaRetries = 0; });
         hls.loadSource(src);
         hls.attachMedia(video);
         hlsRef.current = hls;
