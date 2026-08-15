@@ -17,6 +17,56 @@ const REMOTE_ORIGIN_RECOVERY_POLL_MS = 5_000;
 // GET and the console fills with duplicate fetches of the same file.
 const FORCE_REFRESH_MIN_INTERVAL_MS = 4_000;
 
+// Debug/testing aid: a scoped read-only API key (see M.resolve_api_key /
+// auth_optional() in routes.lua) can be handed to the SPA via `?key=gk_...`
+// on the FIRST page load, letting an automated tool (or the account owner
+// on a browser the extension can't reach) render logged-in pages for
+// layout/rendering checks without ever touching a password or session
+// cookie. Picked up once here, stashed in sessionStorage, and stripped
+// from the visible URL so it doesn't linger in the address bar/history.
+// This is NOT a general auth mechanism: it only reaches the read-only
+// surface auth_optional() resolves server-side (GET/detail/media-serving
+// routes) -- every mutation route authenticates via a real cookie/bearer
+// session directly and 401s regardless of this key, so nothing rendered
+// this way can actually save/delete/upload anything.
+const DEBUG_API_KEY_STORAGE = "image_gallery_debug_api_key";
+
+function pickUpDebugApiKeyFromUrl() {
+  if (typeof window === "undefined") return;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const urlKey = params.get("key");
+    if (!urlKey || !urlKey.startsWith("gk_")) return;
+    sessionStorage.setItem(DEBUG_API_KEY_STORAGE, urlKey);
+    params.delete("key");
+    const cleaned = window.location.pathname + (params.toString() ? `?${params}` : "") + window.location.hash;
+    window.history.replaceState(null, "", cleaned);
+  } catch (_error) {
+    // Storage/history can be unavailable in hardened browser contexts.
+  }
+}
+pickUpDebugApiKeyFromUrl();
+
+function debugApiKey() {
+  try {
+    return sessionStorage.getItem(DEBUG_API_KEY_STORAGE) || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function withDebugApiKey(url) {
+  const key = debugApiKey();
+  if (!key) return url;
+  try {
+    const parsed = new URL(url, window.location.origin);
+    if (!parsed.searchParams.has("key")) parsed.searchParams.set("key", key);
+    return parsed.toString();
+  } catch (_error) {
+    return url;
+  }
+}
+
 const memoryCache = new Map();
 const inFlightFetches = new Map();
 let remoteOriginPromise = null;
@@ -77,9 +127,9 @@ export function clearApiCache(prefix = "") {
 }
 
 export function apiUrl(path) {
-  if (/^https?:\/\//i.test(path)) return path;
+  if (/^https?:\/\//i.test(path)) return withDebugApiKey(path);
   const normalized = path.startsWith("/") ? path : `/${path}`;
-  return `${currentApiOrigin()}${normalized}`;
+  return withDebugApiKey(`${currentApiOrigin()}${normalized}`);
 }
 
 export async function apiFetch(path, options = {}) {

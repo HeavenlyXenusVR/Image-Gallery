@@ -193,6 +193,22 @@ end
 -- on failure. auth_payload is the decoded token {id, username, display_name}.
 local function current_user(req)
   local auth = gauth.require_auth(req.headers, parse_cookies(req), M.settings.session_secret, M.settings.api_token_ttl_seconds)
+  if not auth and req.method == "GET" then
+    -- Scoped read-only API keys (see M.resolve_api_key/auth_optional
+    -- further down this file) may satisfy any READ request that would
+    -- otherwise need a real login -- Studio, Settings, Messages, Friends,
+    -- Admin dashboards, etc. -- so the account owner (or a tool acting on
+    -- their explicit behalf) can view their own logged-in UI for layout/
+    -- rendering checks without a real session. Gated strictly on GET: a
+    -- POST/PUT/PATCH/DELETE mutation never reaches this fallback, so a
+    -- key can make pages RENDER as logged in but can never actually
+    -- save/delete/upload/admin-act as the user.
+    local key = req.query and nn(req.query.key)
+    if key then
+      local user_id = M.resolve_api_key(key)
+      if user_id then auth = { id = user_id } end
+    end
+  end
   if not auth then return nil, nil, 401, { detail = "Login required" } end
   local user = get_user(auth.id)
   if is_actively_banned(user) then
@@ -4700,6 +4716,22 @@ function M.search_users(req)
       ids[i] = tostring(row.id)
     end
     local in_list = table.concat(placeholders, ", ")
+    -- Build one flat params table and unpack() it exactly once, in the
+    -- tail position: Lua only expands unpack()/a multi-value expression
+    -- to multiple values when it's the LAST argument in a call -- every
+    -- earlier occurrence silently truncates to its first element. Calling
+    -- unpack(ids) twice in the same db.fetchall(...) argument list (as
+    -- this did before) meant the first occurrence collapsed to a single
+    -- value, so db.fetchall got 7 params for a 10-placeholder query and
+    -- pg.lua's string.format() blew up with "bad argument #8" -- confirmed
+    -- live via /api/users/search for any authenticated viewer with at
+    -- least one result, i.e. this broke user search for every logged-in
+    -- user, silently (never caught before since no prior testing had a
+    -- real session to reach this branch).
+    local fr_params = { viewer0 }
+    for _, id in ipairs(ids) do fr_params[#fr_params + 1] = id end
+    fr_params[#fr_params + 1] = viewer0
+    for _, id in ipairs(ids) do fr_params[#fr_params + 1] = id end
     local fr_rows = db.fetchall(
       string.format(
         [[
@@ -4712,7 +4744,7 @@ function M.search_users(req)
         ]],
         in_list, in_list
       ),
-      viewer0, unpack(ids), viewer0, unpack(ids)
+      unpack(fr_params)
     )
     for _, fr in ipairs(fr_rows) do
       local other_id = tostring(fr.requester_id) == viewer0 and tostring(fr.addressee_id) or tostring(fr.requester_id)

@@ -248,6 +248,7 @@ body[data-background-ready="1"].bg-prev-visible .app-shell::after {
   inset: 0;
   z-index: 110;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   padding: 28px;
   opacity: 1;
@@ -274,6 +275,7 @@ body[data-background-ready="1"].bg-prev-visible .app-shell::after {
 .gallery-loading-panel {
   position: relative;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   width: min(920px, calc(100vw - 32px));
   padding: 28px;
@@ -392,6 +394,7 @@ body[data-background-ready="1"].bg-prev-visible .app-shell::after {
 .gallery-loading-copy {
   position: relative;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   min-width: 0;
 }
@@ -428,6 +431,7 @@ body[data-background-ready="1"].bg-prev-visible .app-shell::after {
 
 .gallery-loading-status-grid article {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   min-height: 118px;
   padding: 14px;
@@ -515,6 +519,7 @@ body[data-background-ready="1"].bg-prev-visible .app-shell::after {
 
 .brand-copy {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
   min-width: 0;
 }
@@ -534,6 +539,7 @@ body[data-background-ready="1"].bg-prev-visible .app-shell::after {
 
 .brand-mark {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   width: 34px;
   height: 34px;
@@ -617,6 +623,7 @@ body[data-background-ready="1"].bg-prev-visible .app-shell::after {
 
 .account-badge {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 1px;
   min-height: 38px;
   padding: 7px 12px;
@@ -855,6 +862,7 @@ body[data-background-ready="1"].bg-prev-visible .app-shell::after {
   position: sticky;
   top: 78px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   padding: 18px;
 }
@@ -867,6 +875,7 @@ body[data-background-ready="1"].bg-prev-visible .app-shell::after {
 
 .field {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 7px;
   color: var(--muted);
   font-size: 0.9rem;
@@ -1139,6 +1148,7 @@ textarea:focus {
 .three-columns,
 .settings-grid {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -1171,6 +1181,7 @@ textarea:focus {
 
 .tag-cloud {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   padding-top: 10px;
   border-top: 1px solid var(--line);
@@ -1258,6 +1269,7 @@ textarea:focus {
 
 .media-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   overflow: hidden;
   border-color: color-mix(in srgb, var(--accent) 24%, var(--line));
   background:
@@ -1273,6 +1285,7 @@ textarea:focus {
 
 .media-link {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   color: inherit;
   text-decoration: none;
 }
@@ -1280,6 +1293,7 @@ textarea:focus {
 .thumb-frame {
   position: relative;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   aspect-ratio: 4 / 3;
   background: #0a0f14;
@@ -1297,6 +1311,7 @@ textarea:focus {
 
 .video-thumb-placeholder {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   background:
     linear-gradient(135deg, rgba(55, 201, 167, 0.18), rgba(110, 199, 255, 0.12)),
@@ -1481,6 +1496,7 @@ textarea:focus {
 
 .empty-state {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   gap: 10px;
   min-height: 220px;
@@ -1500,6 +1516,7 @@ textarea:focus {
 .profile-sections,
 .upload-layout {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
   align-items: start;
 }
@@ -1510,6 +1527,7 @@ textarea:focus {
 
 .list-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   padding: 12px;
 }
@@ -1536,6 +1554,7 @@ textarea:focus {
   border-radius: 12px;
   padding: 10px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
 }
 
@@ -1574,6 +1593,7 @@ textarea:focus {
 
 .collection-suggestion-row span {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   flex: 1;
   min-width: 0;
 }
@@ -2092,6 +2112,12 @@ textarea:focus {
 .comments-panel,
 .side-box,
 .stacked-form {
+  /* Same implicit-auto-grid-track bug fixed on .page/.media-stage earlier:
+     no grid-template-columns means the single implicit column takes its
+     minimum size from its content's max-content contribution instead of
+     shrinking to fit. Confirmed live on the Settings page's form cards
+     (.settings-form-card composes .side-box + .stacked-form). */
+  grid-template-columns: minmax(0, 1fr);
   display: grid;
   gap: 13px;
   padding: 14px;
@@ -2108,6 +2134,7 @@ textarea:focus {
 .collection-inline-panel {
   flex: 1 0 100%;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
   min-width: 0;
   padding: 11px;
@@ -2139,6 +2166,7 @@ textarea:focus {
 
 .collection-empty-hint {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -2149,6 +2177,7 @@ textarea:focus {
 
 .collection-detail-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -2166,6 +2195,7 @@ textarea:focus {
 
 .collection-add-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   padding: 13px;
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
@@ -2298,6 +2328,7 @@ textarea:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
@@ -2314,6 +2345,7 @@ textarea:focus {
 
 .comments-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -2331,6 +2363,7 @@ textarea:focus {
 
 .locked-state {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   gap: 12px;
   color: var(--warn);
@@ -2412,6 +2445,7 @@ textarea:focus {
 .profile-hero-main,
 .profile-hero-side {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   min-width: 0;
 }
@@ -2490,6 +2524,7 @@ textarea:focus {
 
 .profile-stat-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   min-height: 98px;
   padding: 14px;
@@ -2574,6 +2609,7 @@ textarea:focus {
 
 .profile-feature-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   min-width: 0;
   padding: 18px;
@@ -2591,6 +2627,7 @@ textarea:focus {
 .profile-feature-strip,
 .profile-social-people {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -2858,6 +2895,7 @@ textarea:focus {
 
 .profile-rail {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -2926,11 +2964,13 @@ textarea:focus {
 .settings-preview-column,
 .settings-stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
 }
 
 .settings-cluster {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   padding: 16px;
   border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--line));
@@ -2942,6 +2982,7 @@ textarea:focus {
 
 .settings-cluster-head {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
 }
 
@@ -2959,6 +3000,7 @@ textarea:focus {
 
 .appearance-preset-card {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   text-align: left;
   padding: 12px 14px;
@@ -3011,6 +3053,7 @@ textarea:focus {
 
 .settings-status-grid div {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 5px;
   min-height: 86px;
   padding: 14px;
@@ -3139,6 +3182,7 @@ textarea:focus {
 
 .friend-request {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
   padding: 10px;
 }
@@ -3150,6 +3194,7 @@ textarea:focus {
 
 .metric {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 3px;
 }
 
@@ -3160,6 +3205,7 @@ textarea:focus {
 
 .studio-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -3234,6 +3280,7 @@ textarea:focus {
   margin: 0;
   padding: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -3306,6 +3353,16 @@ textarea:focus {
   opacity: 1;
 }
 
+.studio-top-posts {
+  /* Data tables don't shrink below their content's natural width (each
+     <td>'s content, especially post titles, forces a minimum column
+     width) -- `width: 100%` on the table just made it overflow its
+     container on narrow screens with no way to reach the clipped columns.
+     Scroll the table within its own box instead of trying to force it
+     to fit, the standard responsive-table pattern. */
+  overflow-x: auto;
+}
+
 .studio-top-posts table {
   width: 100%;
   border-collapse: collapse;
@@ -3375,6 +3432,7 @@ textarea:focus {
 .upload-drop {
   min-height: 520px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   align-content: start;
   padding: 14px;
@@ -3382,6 +3440,7 @@ textarea:focus {
 
 .file-picker {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   gap: 12px;
   min-height: 430px;
@@ -3464,6 +3523,7 @@ textarea:focus {
   border-radius: 12px;
   padding: 10px 12px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
 }
 
@@ -3483,6 +3543,7 @@ textarea:focus {
 
 .feed-empty-cta {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   gap: 12px;
   min-height: 280px;
@@ -3505,6 +3566,7 @@ textarea:focus {
 
 .check-stack {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
 }
 
@@ -3535,6 +3597,7 @@ textarea:focus {
 
 .mini-form {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
 }
 
@@ -3549,6 +3612,20 @@ textarea:focus {
   grid-auto-flow: column;
   gap: 4px;
   width: fit-content;
+  max-width: 100%;
+  /* max-width:100% alone wasn't enough: as a flex item of .admin-tab-head,
+     this has an implicit default min-width of `auto` (its own content
+     size), which takes priority over max-width until explicitly zeroed --
+     same family of bug as the grid-track fixes elsewhere in this file,
+     different mechanism (flex item minimum vs grid track minimum). */
+  min-width: 0;
+  /* `width: fit-content` sizes this to fit every button in one row (e.g.
+     the admin page's 4-tab Reports/Flagged Uploads/Users & Bans/Storage
+     switcher) with no way to shrink further -- the parent's `flex-wrap`
+     only wraps whole flex items, not this control's own internal row, so
+     it just overflowed the viewport on narrow screens with the trailing
+     tab(s) clipped off entirely. Scroll it horizontally instead. */
+  overflow-x: auto;
   padding: 4px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -3806,6 +3883,7 @@ textarea:focus {
 
 .skeleton-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -4077,6 +4155,7 @@ textarea:focus {
     order: initial;
     grid-column: auto;
     display: grid;
+  grid-template-columns: minmax(0, 1fr);
     grid-auto-flow: column;
     grid-auto-columns: minmax(66px, 1fr);
     gap: 4px;
@@ -4324,6 +4403,7 @@ textarea:focus {
   inset: 0;
   z-index: 200;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   padding: 16px;
   background: rgba(4, 7, 11, 0.88);
@@ -4414,6 +4494,7 @@ textarea:focus {
 
 .lb-media {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   min-height: 320px;
   max-height: calc(100dvh - 32px);
@@ -4431,6 +4512,7 @@ textarea:focus {
 
 .lb-info {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
   align-content: start;
   padding: 18px;
@@ -4739,6 +4821,7 @@ textarea:focus {
 
 .discover-greeting {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
 }
 
@@ -4789,6 +4872,7 @@ textarea:focus {
 .discover-trending,
 .discover-memories {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -4936,6 +5020,7 @@ textarea:focus {
   inset: auto 0 0 0;
   z-index: 1;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 3px;
   padding: 22px 9px 8px;
   background: linear-gradient(180deg, transparent, rgba(4, 8, 12, 0.94) 74%);
@@ -5227,6 +5312,7 @@ textarea:focus {
 /* Admin moderation reports */
 .admin-reports-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -5243,6 +5329,7 @@ textarea:focus {
 
 .admin-report-thumb {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   width: 96px;
   height: 72px;
@@ -5260,6 +5347,7 @@ textarea:focus {
 
 .admin-report-body {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   min-width: 0;
 }
@@ -5301,6 +5389,7 @@ textarea:focus {
 
 .admin-tab {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   margin-top: 14px;
 }
@@ -5344,6 +5433,7 @@ textarea:focus {
 
 .comment-replies {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   margin: 4px 0 4px 32px;
 }
@@ -5436,6 +5526,7 @@ textarea:focus {
 
 .maintenance-gate {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   min-height: 60vh;
 }
@@ -5489,6 +5580,7 @@ textarea:focus {
 /* Group messaging */
 .group-member-picker {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   max-height: 180px;
   overflow-y: auto;
