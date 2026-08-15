@@ -229,7 +229,15 @@ export async function cachedApiFetch(path, options = {}) {
     memoryCache.set(cacheKey, cached);
     if (cached.expires > now) return cached.value;
     if (cached.staleUntil > now && options.allowStale !== false) {
-      revalidateCache(cacheKey, path, options, ttl, staleTtl, storage);
+      // Fire-and-forget background refresh -- the caller already got
+      // `cached.value` and isn't awaiting this one, unlike the `return
+      // revalidateCache(...)` path below. Needs its own .catch(): a
+      // network hiccup/timeout here has nowhere else to land, and
+      // without this it surfaced as a genuine uncaught promise
+      // rejection ("Request timed out. Please try again.") -- confirmed
+      // live via Shell.jsx's site-announcement poll (cachedApiFetch with
+      // a live TTL) hitting exactly this branch.
+      revalidateCache(cacheKey, path, options, ttl, staleTtl, storage).catch(() => {});
       return cached.value;
     }
   }

@@ -129,7 +129,12 @@ export function StatsRow({ item, compact = false }) {
 export function ChipRow({ values }) {
   const chips = (values || []).filter(Boolean).slice(0, 18);
   if (!chips.length) return null;
-  return <div className="chip-row">{chips.map((value) => <span key={`${value}`}>{value}</span>)}</div>;
+  // Keyed by index+value, not value alone: a category and one of its own
+  // subcategories can legitimately share a name (e.g. media 606's category
+  // "FNAF" with a "FNAF" subcategory alongside it), and this list is a
+  // static, non-reorderable render straight from a fixed array, so index
+  // carries no stale-identity risk the value-only key was meant to avoid.
+  return <div className="chip-row">{chips.map((value, index) => <span key={`${index}-${value}`}>{value}</span>)}</div>;
 }
 
 export function CollectionCover({ collection }) {
