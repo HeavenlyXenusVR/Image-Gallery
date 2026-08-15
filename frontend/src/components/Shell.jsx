@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
-import { AlertTriangle, Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Moon, Settings, ShieldAlert, Sparkles, Sun, SunMoon, TrendingUp, Upload, UserPlus, Users, X as XIcon } from "lucide-react";
+import { AlertTriangle, Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Moon, Rocket, Settings, ShieldAlert, Sparkles, Sun, SunMoon, TrendingUp, Upload, UserPlus, Users, X as XIcon } from "lucide-react";
 import { cachedApiFetch } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { Avatar, GlassFilterDefs, glassPointerMove } from "./ui.jsx";
@@ -76,6 +76,7 @@ export function Shell({ ctx, children, className = "", style }) {
           {ctx.user ? <NavItem to="/studio" icon={Grid3X3} label="Studio" /> : null}
           {ctx.user ? <NavItem to="/upload" icon={Upload} label="Upload" accent /> : null}
           {ctx.user?.site_owner ? <NavItem to="/admin" icon={ShieldAlert} label="Admin" /> : null}
+          <NavItem to="/other-projects" icon={Rocket} label="My Other Projects" />
         </nav>
         <div className="account-actions">
           <span className={`health-pill ${liveOk ? "is-live" : ""}`} title={telegram?.detail || ""}>{healthText}</span>

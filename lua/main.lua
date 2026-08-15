@@ -131,6 +131,11 @@ httpd.route("GET", "/api/media/:media_id/hls/:quality/:segment", routes.serve_hl
 httpd.route("GET", "/api/media/:media_id/download", routes.download_media)
 httpd.route("GET", "/api/users/:user_id/avatar", routes.serve_user_avatar)
 
+-- "My Other Projects" tab -- see routes.lua's M.download_lumisound doc
+-- comment for why this proxies through `gh` instead of linking straight to
+-- GitHub (the Lumisound repo is private).
+httpd.route("GET", "/api/projects/lumisound/download", routes.download_lumisound)
+
 -- Public profiles, follows, friend requests/friends, search, blocks -- see
 -- routes.lua's "Public profiles, follows, friend requests..." section
 -- header for why these were missing (never ported) and the git-history

@@ -16,6 +16,7 @@ import { FeedPage } from "./pages/FeedPage.jsx";
 import { FriendsPage } from "./pages/FriendsPage.jsx";
 import { MediaDetailPage } from "./pages/MediaDetailPage.jsx";
 import { MessagesPage } from "./pages/MessagesPage.jsx";
+import { OtherProjectsPage } from "./pages/OtherProjectsPage.jsx";
 import { ProfilePage } from "./pages/ProfilePage.jsx";
 import { SettingsPage } from "./pages/SettingsPage.jsx";
 import { StudioPage } from "./pages/StudioPage.jsx";
@@ -389,6 +390,7 @@ function App() {
         <Route path="/upload" element={<UploadPage ctx={ctx} />} />
         <Route path="/settings" element={<SettingsPage ctx={ctx} />} />
         <Route path="/admin" element={<AdminPage ctx={ctx} />} />
+        <Route path="/other-projects" element={<OtherProjectsPage ctx={ctx} />} />
         <Route path="/login" element={<AuthPage ctx={ctx} />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
