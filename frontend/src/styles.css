@@ -752,6 +752,23 @@ body[data-background-ready="1"].bg-prev-visible .app-shell::after {
 }
 
 .page {
+  /* Explicit minmax(0, ...) column -- the root cause of a whole family of
+     "page doesn't scale at narrow widths" reports: .page is the universal
+     page wrapper (see ui.jsx's <Page>, used by nearly every route), and
+     its implicit default `auto` grid column takes its minimum size from
+     the max-content contribution of whatever's inside it. A single full-
+     resolution image on the media detail page was enough to force this
+     top-level wrapper (and therefore the whole page) out to the image's
+     native pixel width on every screen size, confirmed live via a
+     1920px-wide image forcing a 1930px-wide page on a 480px viewport.
+     Every one of .page's own descendants can declare its own nested grid/
+     flex without this problem now that the outermost boundary is fixed,
+     but any NEW nested grid/flex container should still set minmax(0,...)
+     or min-width:0 on its own tracks/items rather than relying solely on
+     this outer fix -- this bug can reintroduce itself at any additional
+     grid/flex boundary between here and an unconstrained image/video/
+     table, as .media-stage above (fixed alongside this) demonstrated. */
+  grid-template-columns: minmax(0, 1fr);
   display: grid;
   gap: 18px;
   animation: page-enter var(--motion-slow) both;
@@ -1576,6 +1593,18 @@ textarea:focus {
   position: relative;
   min-height: 520px;
   display: grid;
+  /* Explicit minmax(0, ...) column, not the implicit default `auto` --
+     an `auto` grid track's minimum size is its content's max-content
+     contribution, so the full-res <img> inside (width:100%, but with no
+     min-width override -- see .media-stage img below) was forcing this
+     track, and therefore .media-stage itself and everything containing
+     it, out to the image's natural pixel width regardless of viewport.
+     Confirmed live: a 1920px-wide source image forced a 1930px-wide grid
+     track on a 480px viewport. Fixing .detail-layout's own outer track
+     (see grid-template-columns above) wasn't enough on its own -- this is
+     a second, independent grid boundary one level deeper that needed the
+     same treatment. */
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   align-content: center;
   overflow: hidden;
@@ -3963,7 +3992,7 @@ textarea:focus {
   .profile-showcase,
   .profile-sections,
   .upload-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .filter-rail {
@@ -3976,12 +4005,12 @@ textarea:focus {
 
   .profile-hero,
   .profile-layout-split.profile-hero {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .profile-hero-side,
   .profile-layout-magazine.profile-hero .profile-hero-side {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .profile-stat-grid,
@@ -4010,7 +4039,7 @@ textarea:focus {
 
   .gallery-loading-hero,
   .gallery-loading-status-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .gallery-loading-lightbox {
@@ -4100,7 +4129,7 @@ textarea:focus {
   .profile-stat-grid,
   .settings-status-grid,
   .settings-check-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .media-grid,
@@ -4129,11 +4158,11 @@ textarea:focus {
 
   .collection-add-search,
   .collection-save-controls {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .collection-candidate-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .media-copy {
@@ -4192,7 +4221,7 @@ textarea:focus {
   .profile-preview-hero,
   .studio-item,
   .user-card {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .profile-settings-preview {
@@ -4499,7 +4528,7 @@ textarea:focus {
 
 @media (max-width: 760px) {
   .lb-panel {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto 1fr;
     max-height: calc(100dvh - 20px);
     border-radius: var(--radius);
@@ -4962,7 +4991,7 @@ textarea:focus {
 
 @media (max-width: 1180px) {
   .discover-trending-body {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .discover-spotlight {
