@@ -6213,6 +6213,23 @@ end
 -- Returns the variant's cache directory (which may not have any segments
 -- in it yet -- see the bounded poll in M.serve_hls_playlist) or nil if
 -- this quality isn't offered at all for this file.
+-- A playlist.m3u8 that exists but has no #EXT-X-ENDLIST is a dead artifact
+-- from an encode that never finished (ffmpeg crashed, got OOM-killed, or --
+-- since the detached transcode job lives in this service's systemd
+-- cgroup and `systemctl restart` defaults to KillMode=control-group --
+-- simply got torn down by a routine backend restart landing mid-transcode.
+-- Confirmed live: media 606's 720p variant has been a 0-byte playlist.m3u8
+-- plus a truncated last segment since a restart on 2026-08-10, and would
+-- have 503'd "still starting up" forever, since nothing ever re-triggers
+-- an encode for a file that already "exists".
+local function hls_variant_ready(dir)
+  local f = io.open(dir .. "/playlist.m3u8", "rb")
+  if not f then return false end
+  local text = f:read("*a")
+  f:close()
+  return text ~= nil and text:find("#EXT-X-ENDLIST", 1, true) ~= nil
+end
+
 local function ensure_hls_variant(media_id, item, content, quality)
   if quality ~= "original" and not VIDEO_QUALITY_PROFILES[quality] then return nil end
   if #content > VIDEO_TRANSCODE_SIZE_LIMIT then return nil end
@@ -6220,16 +6237,17 @@ local function ensure_hls_variant(media_id, item, content, quality)
   local digest_seed = media_content_digest_seed(media_id, item)
   local dir = hls_variant_dir(media_id, quality, digest_seed)
 
-  if io.open(dir .. "/playlist.m3u8", "rb") then return dir end
-
   -- Same filesystem-based ".pending" dedup as ensure_video_quality_cache.
   local pending_marker = dir .. ".pending"
   local pf = io.open(pending_marker, "rb")
   local pending_age = pf and tonumber(pf:read("*a")) or nil
   if pf then pf:close() end
-  if pending_age and (os.time() - pending_age) < VIDEO_TRANSCODE_PENDING_STALE_SECONDS then
-    return dir
-  end
+  local still_encoding = pending_age and (os.time() - pending_age) < VIDEO_TRANSCODE_PENDING_STALE_SECONDS
+
+  -- Trust the existing directory only if it's genuinely complete, or a
+  -- transcode for it is still actively running (don't stomp on/duplicate
+  -- live work just because the playlist hasn't gotten its ENDLIST yet).
+  if hls_variant_ready(dir) or still_encoding then return dir end
 
   os.execute("mkdir -p " .. shell_quote(dir))
   local src = dir .. "/source.bin"
