@@ -72,11 +72,17 @@ function App() {
   const [user, setUserState] = useState(() => readStoredUser());
   const [lookups, setLookups] = useState({ categories: [], tags: [], live: null });
   const [toast, setToast] = useState(null);
-  const [bootPhase, setBootPhase] = useState(() => readToken() ? "Checking your gallery access" : "Opening public gallery");
+  // readStoredUser(), not readToken(): the web app no longer persists a
+  // bearer token at all (see loginWith below), so readToken() is now
+  // permanently empty for browser sessions -- the cached user object
+  // (still written on every login, cookie or not) is the actual signal
+  // that a still-possibly-valid cookie session might exist to restore via
+  // refreshMe()'s unconditional /api/me call further down.
+  const [bootPhase, setBootPhase] = useState(() => readStoredUser() ? "Checking your gallery access" : "Opening public gallery");
   const [bootTipIndex, setBootTipIndex] = useState(0);
   const [bootDismissed, setBootDismissed] = useState(false);
   const [bootLeaving, setBootLeaving] = useState(false);
-  const [sessionReady, setSessionReady] = useState(() => !readToken());
+  const [sessionReady, setSessionReady] = useState(() => !readStoredUser());
   const [lookupsReady, setLookupsReady] = useState(false);
   const [lightbox, setLightbox] = useState(null);
   const [quickTheme, setQuickTheme] = useState(() => localStorage.getItem(QUICK_THEME_KEY) || "");
@@ -136,10 +142,25 @@ function App() {
   }, []);
 
   const loginWith = useCallback((payload) => {
-    writeToken(payload.token);
+    // The web app never stores payload.token as a bearer credential: the
+    // login/2FA response that hands us this payload already came with a
+    // Set-Cookie (HttpOnly, Secure, SameSite=None -- see gallery_auth.lua's
+    // session_cookie()), and every apiFetch already sends credentials:
+    // "include", so the cookie alone carries the session from here.
+    // Deliberately NOT the same tradeoff as the iOS app, which has no
+    // shared cookie jar with the site and genuinely needs the bearer
+    // token in GalleryAPIClient.swift -- that path (options.token /
+    // readToken() in api.js) stays fully intact for it. A localStorage-
+    // held bearer token is readable by any script that runs on the page
+    // (XSS), unlike an HttpOnly cookie the page's own JS can't touch --
+    // no reason for the browser session to take on that exposure when
+    // the cookie the backend already issues does the job. "cookie-session"
+    // is the same sentinel refreshMe() already falls back to below; this
+    // just makes it the normal path instead of a rarely-hit fallback.
+    writeToken("");
     writeStoredUser(payload.user);
     clearApiCache();
-    setTokenState(payload.token);
+    setTokenState("cookie-session");
     setUserState(payload.user);
     setSessionReady(true);
     setLookupsReady(false);
@@ -286,7 +307,7 @@ function App() {
       return;
     }
     if (!sessionReady) {
-      setBootPhase(readToken() ? "Checking your gallery access" : "Opening public gallery");
+      setBootPhase(readStoredUser() ? "Checking your gallery access" : "Opening public gallery");
     }
   }, [bootDismissed, lookupsReady, sessionReady]);
 
