@@ -5542,8 +5542,24 @@ textarea:focus {
    required position values -- sticky for the topbar, absolute for the
    lightbox's floating round controls -- since a same-specificity
    single-class rule later in the file wins ties. Restore them explicitly. */
+/* Also un-does .liquid-glass's `transform: translateZ(0)`/`will-change:
+   transform` GPU-layer hint specifically for the topbar: any transform
+   other than `none` makes its element the containing block for
+   `position: fixed` descendants, and .primary-nav (a real DOM child of
+   .topbar, not just a visual one -- see Shell.jsx) switches to `position:
+   fixed; bottom: 0` at the mobile breakpoint to become a bottom tab bar.
+   With the transform in place that "bottom: 0" resolved against the
+   TOPBAR's own box instead of the viewport, pinning the mobile nav to the
+   top of the page instead of the bottom -- confirmed live via
+   getComputedStyle (top: -6px instead of the intended fixed-to-viewport
+   bottom placement). The layer-promotion hint is a nice-to-have for
+   compositor performance, not load-bearing for the glass effect itself;
+   correctness for the one element that actually needs real viewport-fixed
+   positioning wins. */
 .topbar.liquid-glass {
   position: sticky;
+  transform: none;
+  will-change: auto;
 }
 
 .lb-close.liquid-glass,

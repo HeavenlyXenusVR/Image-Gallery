@@ -172,12 +172,20 @@ export function videoPreviewUrl(item, quality = "low") {
 }
 
 // Real HLS instead of a single Range-served file: "original"/"high" (no
-// explicit quality) points at the master playlist for genuine adaptive
-// bitrate (the player auto-switches renditions on network conditions);
-// picking an explicit quality from the selector forces that one
-// rendition's own media playlist instead. VideoPlayer.jsx feeds this
-// straight into hls.js (or native <video> on Safari, which supports HLS
-// out of the box).
+// explicit quality) used to point at the master playlist for "genuine"
+// adaptive bitrate, letting hls.js's own ABR heuristic pick a rendition.
+// Reverted: hls.js has no bandwidth history on a cold connection, so its
+// default estimate (~500kbps) sits below every transcoded rendition
+// except 144p -- on a video nobody has watched yet, EVERY rendition is
+// cold, so this meant first playback almost always landed on 144p and
+// still paid the full cold-transcode wait, while the one rendition that's
+// actually fast regardless of file size (original/"-c copy", pure remux,
+// see routes.lua's ensure_hls_variant) sat unused in the master playlist
+// nobody ever actually watched via. "Original"/no quality picked now goes
+// straight at that single fast rendition instead of gambling through ABR
+// -- master.m3u8 was never exposed as its own "Auto" option in
+// MediaDetailPage's qualityOptions anyway, so nothing that picked
+// "original" wanted ABR specifically; they wanted the source quality.
 export function videoQualityUrl(item, quality = "original") {
   if (!item || item.locked || !item.url) return "";
   try {
@@ -185,9 +193,8 @@ export function videoQualityUrl(item, quality = "original") {
     const parsed = new URL(item.url, window.location.origin);
     if (!parsed.pathname.endsWith("/file")) return item.url;
     const base = parsed.pathname.slice(0, -"/file".length);
-    parsed.pathname = (!quality || quality === "original" || quality === "high")
-      ? `${base}/hls/master.m3u8`
-      : `${base}/hls/${quality}/playlist.m3u8`;
+    const rendition = (!quality || quality === "original" || quality === "high") ? "original" : quality;
+    parsed.pathname = `${base}/hls/${rendition}/playlist.m3u8`;
     return absolute ? parsed.toString() : parsed.pathname + parsed.search + parsed.hash;
   } catch (_error) {
     return item.url;

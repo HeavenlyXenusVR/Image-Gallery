@@ -353,6 +353,22 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     if (!video || error) return;
     if (video.paused) {
       shouldAutoPlayRef.current = true;
+      // If hls.js hasn't attached/buffered anything yet (readyState 0-2,
+      // e.g. the click landed before the dynamic `import("hls.js")` even
+      // resolved, or while a cold quality is still transcoding
+      // server-side), video.play() silently no-ops -- no `waiting` event
+      // fires because playback never actually started, so `buffering`
+      // never turns on and the big Play button just sits there unchanged.
+      // That looked like the click didn't register at all, and the fix
+      // for "I have to hit play again" was users doing exactly that.
+      // Surface the same spinner immediately instead of waiting on a
+      // native event that isn't coming; onCanPlay/onPlaying clear it once
+      // real playback starts (same as the `waiting` path already did).
+      if (video.readyState < 3) {
+        setBuffering(true);
+        if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
+        bufferingTimerRef.current = setTimeout(() => setBufferingLong(true), 3000);
+      }
       video.play().catch(() => {});
     } else {
       video.pause();
