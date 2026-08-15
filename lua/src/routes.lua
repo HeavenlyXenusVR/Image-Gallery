@@ -209,8 +209,24 @@ function M.require_login_for_page(req)
   return user, status, body
 end
 
+-- Falls back to a `?key=gk_...` scoped API key (see M.resolve_api_key
+-- further down this file) when there's no session cookie/bearer token.
+-- Deliberately only wired in here, not into current_user()/require_auth():
+-- every one of auth_optional's ~20 call sites is a GET/read-context route
+-- (listing, detail, media-serving, profile/follow lists) that uses the
+-- resolved viewer id purely to decide what's visible to them -- nothing
+-- that calls auth_optional ever performs a mutation, so a key can only
+-- ever see what its owning account could already see, never act as it.
+-- Mutating routes all authenticate via current_user()/gauth.require_auth
+-- directly and remain cookie/bearer-only.
 local function auth_optional(req)
-  return gauth.require_auth(req.headers, parse_cookies(req), M.settings.session_secret, M.settings.api_token_ttl_seconds)
+  local auth = gauth.require_auth(req.headers, parse_cookies(req), M.settings.session_secret, M.settings.api_token_ttl_seconds)
+  if auth then return auth end
+  local key = req.query and nn(req.query.key)
+  if not key then return nil end
+  local user_id = M.resolve_api_key(key)
+  if not user_id then return nil end
+  return { id = user_id }
 end
 
 -- ---------------------------------------------------------------------------
@@ -1854,7 +1870,16 @@ function M.resolve_api_key(raw_key)
   local token_hash = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(raw_key))
   local row = db.fetchone("SELECT id, user_id FROM api_keys WHERE token_hash=%s AND revoked_at IS NULL", token_hash)
   if not row then return nil end
-  db.execute("UPDATE api_keys SET last_used_at=now() WHERE id=%s", tostring(db.toint(row.id, row.id)))
+  -- Now that auth_optional() (see above) resolves a key on every read-
+  -- context request -- including HLS segment fetches, which can be 50-100+
+  -- per video watched -- an unconditional UPDATE here would mean that many
+  -- writes per video. The staleness guard keeps last_used_at meaningfully
+  -- fresh (still-accurate to within a minute) while collapsing a whole
+  -- streaming session down to at most one write.
+  db.execute(
+    "UPDATE api_keys SET last_used_at=now() WHERE id=%s AND (last_used_at IS NULL OR last_used_at < now() - interval '60 seconds')",
+    tostring(db.toint(row.id, row.id))
+  )
   return tostring(db.toint(row.user_id, row.user_id))
 end
 
@@ -6287,6 +6312,22 @@ local function ensure_hls_variant(media_id, item, content, quality)
   return dir
 end
 
+-- Builds the query string to propagate onto sub-resource URLs (master
+-- playlist -> per-quality playlist -> segments), so a viewer who only
+-- authenticated via ?access= or ?key= on the FIRST request stays
+-- authenticated through the rest of the chain -- relative-URL resolution
+-- doesn't inherit a parent playlist's query string on its own, and a
+-- <video> tag/HLS player can't attach custom headers to the sub-requests
+-- it makes. ?access= (the narrower, single-post capability token) wins if
+-- both are somehow present.
+local function hls_propagated_qs(req)
+  local access = req.query and nn(req.query.access)
+  if access then return "?access=" .. access end
+  local key = req.query and nn(req.query.key)
+  if key then return "?key=" .. key end
+  return nil
+end
+
 -- Shared by all three HLS routes below: 404s (not 403 -- matches this
 -- file's "don't leak existence" convention elsewhere) on anything that
 -- would also 404/403 through the regular file-serving path.
@@ -6315,7 +6356,7 @@ function M.serve_hls_master(req)
   local item, status, body = hls_check_access(req, media_id)
   if not item then return status, body end
 
-  local access_qs = req.query and nn(req.query.access) and ("?access=" .. req.query.access) or ""
+  local access_qs = hls_propagated_qs(req) or ""
   local lines = { "#EXTM3U", "#EXT-X-VERSION:6" }
   -- Original first: no re-encode needed (fast remux), so it's always the
   -- quickest to become available and is a sane default rendition even
@@ -6361,7 +6402,7 @@ function M.serve_hls_playlist(req)
   -- this app has already hit real inconsistency with for redirects/Range
   -- requests -- and web's plain <video> tag can't attach custom headers
   -- to sub-resource requests at all regardless.
-  local access_qs = req.query and nn(req.query.access) and ("?access=" .. req.query.access) or nil
+  local access_qs = hls_propagated_qs(req)
 
   local playlist_path = dir .. "/playlist.m3u8"
   local waited = 0
