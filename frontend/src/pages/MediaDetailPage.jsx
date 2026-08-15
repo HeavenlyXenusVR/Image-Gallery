@@ -6,7 +6,7 @@ import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
 import { MediaActionPanel, MediaControls } from "../components/media.jsx";
 import { VideoPlayer } from "../components/VideoPlayer.jsx";
-import { Avatar, ChipRow, EmptyState, Notice, NotFound, Page, ResilientImage, SkeletonGrid, StatsRow, UserLine } from "../components/ui.jsx";
+import { Avatar, ChipRow, EmptyState, glassPointerMove, Notice, NotFound, Page, ResilientImage, SkeletonGrid, StatsRow, UserLine } from "../components/ui.jsx";
 import { imageQualityUrl, isGifMedia, thumbUrl, videoQualityUrl } from "../utils/media.js";
 
 const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🔥"];
@@ -352,7 +352,12 @@ export function MediaDetailPage({ ctx }) {
           <div className="section-head"><h2>More like this</h2></div>
           <div className="similar-media-rail">
             {similar.map((item) => (
-              <Link className={`profile-media-mini ${item.locked ? "is-locked" : ""}`} to={`/media/${item.id}`} key={item.id}>
+              <Link
+                className={`profile-media-mini liquid-glass ${item.locked ? "is-locked" : ""}`}
+                to={`/media/${item.id}`}
+                key={item.id}
+                onPointerMove={glassPointerMove}
+              >
                 {item.locked ? (
                   <div className="video-thumb-placeholder"><Lock size={28} /></div>
                 ) : (
