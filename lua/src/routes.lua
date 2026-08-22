@@ -189,6 +189,25 @@ local function parse_cookies(req)
   return cookies
 end
 
+-- is_online (see the profile/list queries further down: "now() -
+-- last_seen_at <= interval '180 seconds'") was previously only ever true
+-- for the ~3 minutes right after logging IN -- last_seen_at had exactly
+-- one writer in the whole codebase, the login route itself, so an account
+-- actively browsing for hours showed as offline the entire time. Called
+-- from both current_user() (every mutating/write request) and
+-- auth_optional() (every read-context request -- feed, media, profile,
+-- ~20 call sites), so any authenticated activity keeps the account
+-- looking online, not just logging in. Same staleness-throttle pattern as
+-- api_keys.last_used_at above: at most one write per account per minute,
+-- not one per request.
+local function touch_last_seen(user_id)
+  if not user_id then return end
+  db.execute(
+    "UPDATE users SET last_seen_at=now() WHERE id=%s AND (last_seen_at IS NULL OR last_seen_at < now() - interval '60 seconds')",
+    tostring(user_id)
+  )
+end
+
 -- Depends()-equivalent: returns (user, auth_payload) or (nil, nil, status, body)
 -- on failure. auth_payload is the decoded token {id, username, display_name}.
 local function current_user(req)
@@ -214,6 +233,7 @@ local function current_user(req)
   if is_actively_banned(user) then
     return nil, nil, 403, { detail = (user and nn(user.ban_reason)) or "Your account has been suspended." }
   end
+  touch_last_seen(auth.id)
   return user, auth, nil, nil
 end
 
@@ -237,11 +257,15 @@ end
 -- directly and remain cookie/bearer-only.
 local function auth_optional(req)
   local auth = gauth.require_auth(req.headers, parse_cookies(req), M.settings.session_secret, M.settings.api_token_ttl_seconds)
-  if auth then return auth end
+  if auth then
+    touch_last_seen(auth.id)
+    return auth
+  end
   local key = req.query and nn(req.query.key)
   if not key then return nil end
   local user_id = M.resolve_api_key(key)
   if not user_id then return nil end
+  touch_last_seen(user_id)
   return { id = user_id }
 end
 
