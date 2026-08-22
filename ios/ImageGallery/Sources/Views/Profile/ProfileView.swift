@@ -41,6 +41,12 @@ struct ProfileView: View {
                     }
                     .accessibilityLabel("Friend requests")
                 }
+                ToolbarItem(placement: .topBarTrailing) {
+                    NavigationLink(destination: EditProfileView()) {
+                        Image(systemName: "pencil")
+                    }
+                    .accessibilityLabel("Edit profile")
+                }
             } else if let user = viewModel.user {
                 ToolbarItem(placement: .topBarTrailing) {
                     ShareLink(item: profileShareURL(username: user.username)) {

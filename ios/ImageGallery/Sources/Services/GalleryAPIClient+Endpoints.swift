@@ -91,6 +91,34 @@ extension GalleryAPIClient {
         let response: UserResponse = try await requestJSON("/api/me/settings", method: "PATCH", body: body)
         return response.user
     }
+
+    /// Mirrors `clean_profile_updates` on the backend (`user_settings.lua`)
+    /// -- unlike `/api/me/settings`, this endpoint has NO partial-update
+    /// filtering: every field is written unconditionally on every call, and
+    /// an omitted boolean defaults to `true` (not "leave unchanged").
+    /// Callers MUST populate every property from the current `GalleryUser`
+    /// before editing, and send all of them back, or an untouched field
+    /// silently resets.
+    struct UpdateProfileBody: Encodable {
+        var displayName: String
+        var bio: String?
+        var profileQuote: String?
+        var websiteUrl: String?
+        var locationLabel: String?
+        var profileHeadline: String?
+        var featuredTags: [String]
+        var profileColor: String
+        var publicProfile: Bool
+        var showLikedCount: Bool
+        var showCollections: Bool
+        var showRecentUploads: Bool
+        var showFriends: Bool
+    }
+
+    func updateProfile(_ body: UpdateProfileBody) async throws -> GalleryUser {
+        let response: UserResponse = try await requestJSON("/api/me/profile", method: "PATCH", body: body)
+        return response.user
+    }
 }
 
 // MARK: - Feed / Discover
