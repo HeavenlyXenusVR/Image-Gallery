@@ -80,15 +80,12 @@ struct SettingsView: View {
             // same save repeated with no independent effect. Grouped as
             // separate Form sections purely for scannability; the single
             // save button lives at the bottom of this group.
-            //
-            // autoplay_previews/muted_previews/blur_video_previews are NOT
-            // exposed here yet even though the model/API layer supports them
-            // (see UserSettings/SettingsUpdateBody) -- the web app applies
-            // them to a live-playing preview video on every grid card, and
-            // iOS's MediaCard has no such preview mechanism at all yet
-            // (static thumbnail only). Surfacing toggles for a feature that
-            // doesn't exist on this platform would store a value nothing
-            // reads -- shipping that is worse than not shipping the toggle.
+            Section("Playback & Previews") {
+                Toggle("Autoplay grid previews", isOn: $autoplayPreviews)
+                Toggle("Mute previews", isOn: $mutedPreviews)
+                Toggle("Blur video thumbnails", isOn: $blurVideoPreviews)
+            }
+
             Section("Profile Visibility") {
                 Toggle("Show follow counts", isOn: $profileShowFollowCounts)
                 Toggle("Show joined date", isOn: $profileShowJoinedDate)
