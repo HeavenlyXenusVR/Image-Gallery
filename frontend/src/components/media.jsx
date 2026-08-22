@@ -38,7 +38,26 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
   const actions = useMediaActions(ctx, onItemUpdated);
   const thumb = useMemo(() => (item.media_kind === "video" ? thumbUrl(item, 420) : thumbUrl(item)), [item]);
   const mutedPreview = ctx.settings.muted_previews !== false;
-  const previewEligible = item.media_kind === "video" && ctx.settings.autoplay_previews && item.url && !isPerfLiteRuntime();
+  // NOT !isPerfLiteRuntime() -- perf-lite auto-activates on ANY coarse-
+  // pointer device or a viewport <=820px wide (main.jsx's mobileQuery:
+  // "(max-width: 820px), (pointer: coarse)"), which is effectively every
+  // phone. That unconditionally disabled video previews on mobile
+  // regardless of the autoplay_previews setting, while GIFs (plain <img>
+  // tags, no preview machinery involved) kept animating as normal --
+  // reported as "scrolling through Discover, only gifs are actually
+  // playing," on both web and the iOS app, and confirmed live: this
+  // account has autoplay_previews genuinely turned on. perf-lite bundling
+  // "mobile" in with "reduce visual load" made sense before this feature
+  // had any viewport-gating/debounce of its own; now that MediaCard
+  // itself only mounts a preview once a card has actually settled in
+  // view (see the effect below) and un-mounts on scroll-out, blanket-
+  // disabling on mobile is redundant and actively works against a
+  // setting the viewer explicitly turned on for exactly this device.
+  // prefers-reduced-motion is still honored -- that's an accessibility
+  // signal ("don't show me autoplaying motion"), not a performance one,
+  // and stays real via the app's own reduce_motion setting rather than
+  // perf-lite's system-level media-query mirror of the same intent.
+  const previewEligible = item.media_kind === "video" && ctx.settings.autoplay_previews && item.url && !ctx.settings.reduce_motion;
   // Every MediaCard in a grid mounts at once (no virtualization), so an
   // unconditional autoplay <video> here meant every video on the page --
   // often dozens, on/off-screen alike -- started fetching a preview
@@ -65,7 +84,7 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
   // (each potentially a full original file, per the fallback above) for
   // cards the viewer never actually stopped on. A short settle delay,
   // cancelled if the card leaves the viewport before it elapses, mirrors
-  // the 350ms debounce already used for this exact reason in the iOS app's
+  // the same-length debounce used for this exact reason in the iOS app's
   // MediaCard.
   const cardRef = useRef(null);
   const [inView, setInView] = useState(eager);
@@ -77,7 +96,13 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting) {
-          settleTimer = window.setTimeout(() => setInView(true), 350);
+          // 150ms, not the original 350 -- long enough to skip a card that
+          // flashes past mid-fling, but 350 turned out to routinely be
+          // longer than a card stays continuously visible during a normal
+          // scroll flick, so previews rarely got the chance to start at
+          // all ("only gifs are actually playing" while scrolling, since
+          // GIFs need no such gate). Tightened on both platforms together.
+          settleTimer = window.setTimeout(() => setInView(true), 150);
         } else {
           if (settleTimer) { window.clearTimeout(settleTimer); settleTimer = null; }
           setInView(false);

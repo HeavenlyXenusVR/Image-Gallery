@@ -88,7 +88,14 @@ struct MediaCard: View {
                 previewController.stop()
                 return
             }
-            try? await Task.sleep(nanoseconds: 350_000_000)
+            // 150ms, not the original 350 -- long enough to skip a card
+            // that flashes past mid-fling, but 350 turned out to routinely
+            // be longer than a card stays continuously on screen during a
+            // normal scroll flick, so previews rarely got the chance to
+            // start at all (reported as "scrolling through Discover, only
+            // gifs are actually playing" -- GIFs need no such gate).
+            // Tightened on both platforms together.
+            try? await Task.sleep(nanoseconds: 150_000_000)
             guard !Task.isCancelled else { return }
             previewController.start(url: url, muted: previewMuted)
         }
