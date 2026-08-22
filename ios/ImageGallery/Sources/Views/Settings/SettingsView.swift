@@ -40,6 +40,10 @@ struct SettingsView: View {
     @State private var profileHeroAlignment = "split"
     @State private var profileStatStyle = "tiles"
     @State private var profileNameStyle = "display"
+    @State private var profileContentFocus = "balanced"
+    @State private var profileFeaturedPanel = "uploads"
+    @State private var profileSocialLayout = "rail"
+    @State private var profileCardStyle = "glass"
     @State private var isSavingAppearance = false
     @State private var loadedAppearance = false
     @State private var showingLogoutConfirm = false
@@ -151,6 +155,31 @@ struct SettingsView: View {
                     Text("Outline").tag("outline")
                 }
                 .pickerStyle(.segmented)
+                Picker("Profile focus", selection: $profileContentFocus) {
+                    Text("Balanced").tag("balanced")
+                    Text("Gallery").tag("gallery")
+                    Text("Collections").tag("collections")
+                    Text("Social").tag("social")
+                }
+                Picker("Featured panel", selection: $profileFeaturedPanel) {
+                    Text("Uploads").tag("uploads")
+                    Text("Collections").tag("collections")
+                    Text("Friends").tag("friends")
+                }
+                .pickerStyle(.segmented)
+                Picker("Friends layout", selection: $profileSocialLayout) {
+                    Text("Rail").tag("rail")
+                    Text("Cards").tag("cards")
+                    Text("Compact").tag("compact")
+                }
+                .pickerStyle(.segmented)
+                Picker("Profile cards", selection: $profileCardStyle) {
+                    Text("Glass").tag("glass")
+                    Text("Solid").tag("solid")
+                    Text("Outline").tag("outline")
+                    Text("Elevated").tag("elevated")
+                    Text("Edge").tag("edge")
+                }
             }
 
             // These sections share the same "Save appearance" action as the
@@ -450,6 +479,10 @@ struct SettingsView: View {
         profileHeroAlignment = settings.profileHeroAlignment ?? "split"
         profileStatStyle = settings.profileStatStyle ?? "tiles"
         profileNameStyle = settings.profileNameStyle ?? "display"
+        profileContentFocus = settings.profileContentFocus ?? "balanced"
+        profileFeaturedPanel = settings.profileFeaturedPanel ?? "uploads"
+        profileSocialLayout = settings.profileSocialLayout ?? "rail"
+        profileCardStyle = settings.profileCardStyle ?? "glass"
     }
 
     private func saveAppearance() async {
@@ -485,7 +518,11 @@ struct SettingsView: View {
                 openOriginalInNewTab: openOriginalInNewTab,
                 profileHeroAlignment: profileHeroAlignment,
                 profileStatStyle: profileStatStyle,
-                profileNameStyle: profileNameStyle
+                profileNameStyle: profileNameStyle,
+                profileContentFocus: profileContentFocus,
+                profileFeaturedPanel: profileFeaturedPanel,
+                profileSocialLayout: profileSocialLayout,
+                profileCardStyle: profileCardStyle
             )
             let user = try await GalleryAPIClient.shared.updateSettings(body)
             session.setCurrentUser(user)

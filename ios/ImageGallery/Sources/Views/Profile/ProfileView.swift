@@ -62,16 +62,57 @@ struct ProfileView: View {
 
     @ViewBuilder
     private func profileContent(_ user: GalleryUser) -> some View {
+        // profile_content_focus reorders/hides collections+friends around
+        // the media grid; profile_featured_panel is a separate "Featured…"
+        // spotlight section web only actually renders content into for
+        // collections/friends (its own ternary: featuredPanel === "uploads"
+        // -- the default -- renders nothing extra there, since Posts
+        // already covers that case), so mirrored the same way here rather
+        // than inventing a "Featured Posts" section web itself doesn't have.
+        let focus = user.userSettings?.profileContentFocus ?? "balanced"
         if Appearance.isGridFirstLayout(user.userSettings?.profileLayout) {
             mediaSection
             headerSection(user)
-            collectionsSection
-            friendsSection
+            featuredPanelSection(user)
+            focusedSections(focus: focus)
         } else {
             headerSection(user)
+            featuredPanelSection(user)
+            focusedSections(focus: focus)
+        }
+    }
+
+    @ViewBuilder
+    private func focusedSections(focus: String) -> some View {
+        switch focus {
+        case "gallery":
+            mediaSection
+        case "collections":
+            collectionsSection
+            mediaSection
+            friendsSection
+        case "social":
+            friendsSection
+            mediaSection
+            collectionsSection
+        default:
             mediaSection
             collectionsSection
             friendsSection
+        }
+    }
+
+    @ViewBuilder
+    private func featuredPanelSection(_ user: GalleryUser) -> some View {
+        switch user.userSettings?.profileFeaturedPanel {
+        case "collections" where !viewModel.collections.isEmpty:
+            Text("Featured Collections").font(.headline)
+            collectionsRow(Array(viewModel.collections.prefix(4)))
+        case "friends" where !viewModel.friends.isEmpty:
+            Text("Featured Friends").font(.headline)
+            friendsRow(Array(viewModel.friends.prefix(6)), style: "cards")
+        default:
+            EmptyView()
         }
     }
 
@@ -100,11 +141,7 @@ struct ProfileView: View {
     private var collectionsSection: some View {
         if !viewModel.collections.isEmpty {
             Text("Collections").font(.headline)
-            ForEach(viewModel.collections) { collection in
-                NavigationLink(destination: CollectionDetailView(collectionId: collection.id)) {
-                    Label(collection.name, systemImage: "folder")
-                }
-            }
+            collectionsRow(viewModel.collections)
         }
     }
 
@@ -112,9 +149,83 @@ struct ProfileView: View {
     private var friendsSection: some View {
         if !viewModel.friends.isEmpty {
             Text("Friends").font(.headline)
-            ForEach(viewModel.friends) { friend in
-                NavigationLink(destination: ProfileView(username: friend.username)) {
-                    Label(friend.displayName ?? friend.username, systemImage: "person.crop.circle")
+            friendsRow(viewModel.friends, style: viewModel.user?.userSettings?.profileSocialLayout)
+        }
+    }
+
+    // profile_card_style, applied to these (previously bare Label rows,
+    // not cards at all -- a real functional gap next to web's CollectionMini/
+    // UserMini, not just a missing setting). solid/outline/elevated/edge
+    // mirror the same corner/shadow/fill treatments media_border_style
+    // already established for MediaCard; glass reuses softCard() as-is.
+    private func collectionsRow(_ collections: [CollectionSummary]) -> some View {
+        VStack(spacing: 8) {
+            ForEach(collections) { collection in
+                NavigationLink(destination: CollectionDetailView(collectionId: collection.id)) {
+                    HStack(spacing: 10) {
+                        if let coverUrl = collection.coverUrl, let url = URL(string: coverUrl) {
+                            AsyncImage(url: url) { phase in
+                                if case .success(let image) = phase { image.resizable().scaledToFill() } else { Color.secondary.opacity(0.15) }
+                            }
+                            .frame(width: 40, height: 40)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        } else {
+                            Image(systemName: "folder").frame(width: 40, height: 40).background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+                        Text(collection.name).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
+                        Spacer()
+                    }
+                    .padding(10)
+                    .modifier(ProfileCardBackground(style: viewModel.user?.userSettings?.profileCardStyle))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func friendsRow(_ friends: [GalleryUser], style: String?) -> some View {
+        switch style {
+        case "rail":
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 14) {
+                    ForEach(friends) { friend in
+                        NavigationLink(destination: ProfileView(username: friend.username)) {
+                            VStack(spacing: 4) {
+                                AvatarView(urlString: friend.avatarUrl, fallbackInitial: String(friend.username.prefix(1)), shape: .circle, size: 52)
+                                Text(friend.displayName ?? friend.username).font(.caption2).lineLimit(1).frame(width: 60)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        case "cards":
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 10)], spacing: 10) {
+                ForEach(friends) { friend in
+                    NavigationLink(destination: ProfileView(username: friend.username)) {
+                        VStack(spacing: 6) {
+                            AvatarView(urlString: friend.avatarUrl, fallbackInitial: String(friend.username.prefix(1)), shape: .circle, size: 56)
+                            Text(friend.displayName ?? friend.username).font(.caption).lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .modifier(ProfileCardBackground(style: viewModel.user?.userSettings?.profileCardStyle))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        default: // "compact"
+            VStack(spacing: 8) {
+                ForEach(friends) { friend in
+                    NavigationLink(destination: ProfileView(username: friend.username)) {
+                        HStack(spacing: 10) {
+                            AvatarView(urlString: friend.avatarUrl, fallbackInitial: String(friend.username.prefix(1)), shape: .circle, size: 32)
+                            Text(friend.displayName ?? friend.username).font(.subheadline).foregroundStyle(.primary)
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -344,6 +455,32 @@ private struct ProfileHeaderBackground: ViewModifier {
             content
         default:
             content.background(.thinMaterial)
+        }
+    }
+}
+
+/// `profile_card_style` -- mirrors web's five `.profile-card-*` treatments
+/// (solid/outline/elevated/edge use a flat fill/no-fill/heavier-shadow/
+/// sharp-corner variant of the same softCard() base; "glass" is just
+/// softCard() itself, the existing default look).
+private struct ProfileCardBackground: ViewModifier {
+    let style: String?
+
+    func body(content: Content) -> some View {
+        switch style {
+        case "solid":
+            content
+                .background(RoundedRectangle(cornerRadius: Metrics.Radius.md, style: .continuous).fill(Color(uiColor: .secondarySystemBackground)))
+        case "outline":
+            content
+                .overlay(RoundedRectangle(cornerRadius: Metrics.Radius.md, style: .continuous).strokeBorder(Color.primary.opacity(0.14), lineWidth: 1))
+        case "elevated":
+            content.softCard().cardShadow()
+        case "edge":
+            content
+                .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(.thinMaterial))
+        default: // "glass"
+            content.softCard()
         }
     }
 }

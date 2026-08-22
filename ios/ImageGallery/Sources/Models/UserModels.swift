@@ -75,6 +75,10 @@ struct UserSettings: Codable, Equatable {
     var profileHeroAlignment: String?
     var profileStatStyle: String?
     var profileNameStyle: String?
+    var profileContentFocus: String?
+    var profileFeaturedPanel: String?
+    var profileSocialLayout: String?
+    var profileCardStyle: String?
 }
 
 struct ProfilePageResponse: Codable {

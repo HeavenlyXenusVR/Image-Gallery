@@ -97,6 +97,10 @@ extension GalleryAPIClient {
         var profileHeroAlignment: String?
         var profileStatStyle: String?
         var profileNameStyle: String?
+        var profileContentFocus: String?
+        var profileFeaturedPanel: String?
+        var profileSocialLayout: String?
+        var profileCardStyle: String?
     }
 
     func updateSettings(_ body: SettingsUpdateBody) async throws -> GalleryUser {
