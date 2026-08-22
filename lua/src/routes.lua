@@ -6147,6 +6147,42 @@ local VIDEO_QUALITY_PROFILES = {
 }
 local VIDEO_TRANSCODE_SIZE_LIMIT = 500 * 1024 * 1024
 
+local function ffprobe_bin()
+  return os.getenv("GALLERY_FFPROBE_BIN") or "ffprobe"
+end
+
+-- Reads the source video's pixel width via ffprobe, or nil if the probe
+-- fails for any reason (corrupt/unusual container -- callers must fall
+-- back to the old downscale-only behavior in that case, not crash).
+local function probe_video_width(path)
+  local probe = io.popen(string.format(
+    "%s -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 %s 2>/dev/null",
+    ffprobe_bin(), shell_quote(path)
+  ))
+  if not probe then return nil end
+  local line = probe:read("*l")
+  probe:close()
+  return tonumber(line)
+end
+
+-- Builds the -vf scale filter for one quality-profile transcode. A plain
+-- `scale='min(max_width,iw)'` (the old behavior) never grows the frame --
+-- picking "1080p" on a phone upload that's actually 480p produced a file
+-- labeled 1080p with zero visual improvement, just wasted encode time.
+-- When the source is genuinely smaller than the requested rendition, scale
+-- up to it for real and follow with a mild unsharp pass, since a bare
+-- upscale by itself only produces a softer copy of the same pixels --
+-- unsharp is what makes the extra resolution actually look sharper instead
+-- of just blurrier-but-bigger. Downscaling (the common case) keeps the
+-- original lanczos-only behavior unchanged.
+local function video_scale_filter(src_path, max_width)
+  local source_width = probe_video_width(src_path)
+  if source_width and source_width > 0 and source_width < max_width then
+    return string.format("scale=%d:-2:flags=lanczos,unsharp=5:5:0.8:5:5:0.0", max_width)
+  end
+  return string.format("scale='min(%d,iw)':-2:flags=lanczos", max_width)
+end
+
 local function normalize_video_quality(value)
   local quality = tostring(value or "high"):lower()
   local legacy = { medium = "720p", low = "480p", high = "original", original = "original" }
@@ -6222,7 +6258,7 @@ local function ensure_video_quality_cache(media_id, item, content, quality)
     marker:close()
 
     local tmp_dst = cache_file .. ".tmp." .. tostring(math.random(100000, 999999)) .. ".mp4"
-    local scale_filter = string.format("scale='min(%d,iw)':-2:flags=lanczos", profile.max_width)
+    local scale_filter = video_scale_filter(src, profile.max_width)
     local cmd = string.format(
       "( %s -y -hide_banner -loglevel error -i %s -map 0:v:0 -map 0:a:0? -vf %s -c:v libx264 -preset %s -crf %d "
         .. "-profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s -movflags +faststart -f mp4 %s "
@@ -6289,7 +6325,14 @@ end
 
 local function ensure_hls_variant(media_id, item, content, quality)
   if quality ~= "original" and not VIDEO_QUALITY_PROFILES[quality] then return nil end
-  if #content > VIDEO_TRANSCODE_SIZE_LIMIT then return nil end
+  -- "original" is a `-c copy` remux (no re-encode -- see the codec_args
+  -- branch below), not a real transcode, so the size cap that exists to
+  -- bound ffmpeg re-encode time doesn't apply to it. Applying it here
+  -- anyway meant any upload over the cap 404'd on EVERY quality, including
+  -- the one rendition explicitly meant to "be available almost instantly
+  -- regardless of source length" per this section's own header comment --
+  -- the exact "nothing plays" symptom for large uploads.
+  if quality ~= "original" and #content > VIDEO_TRANSCODE_SIZE_LIMIT then return nil end
 
   local digest_seed = media_content_digest_seed(media_id, item)
   local dir = hls_variant_dir(media_id, quality, digest_seed)
@@ -6321,7 +6364,7 @@ local function ensure_hls_variant(media_id, item, content, quality)
     codec_args = "-c copy"
   else
     local profile = VIDEO_QUALITY_PROFILES[quality]
-    local scale_filter = string.format("scale='min(%d,iw)':-2:flags=lanczos", profile.max_width)
+    local scale_filter = video_scale_filter(src, profile.max_width)
     codec_args = string.format(
       "-vf %s -c:v libx264 -preset %s -crf %d -profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s",
       shell_quote(scale_filter), profile.preset, profile.crf, profile.profile, profile.audio_bitrate
