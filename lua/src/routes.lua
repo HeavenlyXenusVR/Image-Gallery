@@ -1064,9 +1064,20 @@ function M.list_media(req)
     params[#params + 1] = tostring(subcategory_id)
   end
   if query_text ~= "" then
-    clauses[#clauses + 1] = "(m.title ILIKE %s OR m.description ILIKE %s OR m.tags ILIKE %s)"
-    local needle = "%" .. query_text:gsub("([%%_])", "\\%1") .. "%"
-    params[#params + 1] = needle; params[#params + 1] = needle; params[#params + 1] = needle
+    -- media_items.text_search is a generated tsvector(title || ' ' ||
+    -- description) column with its own GIN index
+    -- (idx_media_items_text_search) that already existed on this table but
+    -- was never actually queried anywhere -- title/description search ran
+    -- as a plain ILIKE seq-scan-shaped pattern match instead. plainto_tsquery
+    -- gets real word-boundary/stemmed matching (searching "cat" now also
+    -- matches "cats"/"catlike", which a substring ILIKE never would) AND
+    -- lets the GIN index actually get used. tags stays on ILIKE -- it's a
+    -- JSON-encoded array column, not part of text_search, and a plain
+    -- substring match across the raw JSON text is still the simplest way
+    -- to catch a query that's itself a tag/tag fragment.
+    clauses[#clauses + 1] = "(m.text_search @@ plainto_tsquery('english', %s) OR m.tags ILIKE %s)"
+    params[#params + 1] = query_text
+    params[#params + 1] = "%" .. query_text:gsub("([%%_])", "\\%1") .. "%"
   end
   if uploader ~= "" then
     clauses[#clauses + 1] = "(u.username ILIKE %s OR u.display_name ILIKE %s)"
@@ -1130,13 +1141,33 @@ function M.list_media(req)
     -- live: "column \"like_count\" does not exist") -- so this repeats the
     -- underlying COUNT(DISTINCT l.user_id) aggregate instead.
     trending = "m.pinned_at DESC NULLS LAST, (m.views + COUNT(DISTINCT l.user_id) * 3) / POWER(EXTRACT(EPOCH FROM (now() - m.created_at)) / 3600 + 2, 1.5) DESC, m.created_at DESC",
+    -- ts_rank against the same text_search column the WHERE clause above
+    -- now actually searches -- m.text_search is safe to reference here
+    -- despite the GROUP BY not listing it: m.id (media_items' primary
+    -- key) IS in GROUP BY, and Postgres treats every other column of the
+    -- same table as functionally dependent on it, so no aggregate/GROUP BY
+    -- is needed for other bare m.* references.
+    relevance = "ts_rank(m.text_search, plainto_tsquery('english', %s)) DESC, m.pinned_at DESC NULLS LAST, m.created_at DESC",
   })[sort] or "m.pinned_at DESC NULLS LAST, m.created_at DESC"
+  -- A text search with the caller's default sort ("new"/unset) reads
+  -- results ranked by relevance, not upload date -- matches what "true
+  -- indexing" is actually for. An explicit sort=... still always wins.
+  local effective_sort = sort
+  if query_text ~= "" and (not sort or sort == "" or sort == "new") then
+    effective_sort = "relevance"
+    order = "ts_rank(m.text_search, plainto_tsquery('english', %s)) DESC, m.pinned_at DESC NULLS LAST, m.created_at DESC"
+  end
 
   -- Build the full parameter list in call order: 4 leading viewer refs used
   -- by the SELECT list's CASE expressions + the 2 JOIN viewer refs, then the
   -- WHERE clause's own params (already collected above), then LIMIT/OFFSET.
   local sql_params = { viewer0, viewer0, viewer0, viewer0, viewer0, viewer0 }
   for _, p in ipairs(params) do sql_params[#sql_params + 1] = p end
+  -- order's own %s (the relevance branch's ts_rank(...) call) sits
+  -- textually between the WHERE clause and LIMIT/OFFSET in the final SQL
+  -- -- its parameter has to land in that same position in sql_params, not
+  -- appended after limit/offset.
+  if effective_sort == "relevance" then sql_params[#sql_params + 1] = query_text end
   sql_params[#sql_params + 1] = tostring(limit)
   sql_params[#sql_params + 1] = tostring(offset)
 
@@ -1177,7 +1208,7 @@ function M.list_media(req)
   if err then return 500, { detail = "Query failed: " .. tostring(err) } end
   attach_media_subcategories(rows)
   for _, row in ipairs(rows) do decode_media_row(row, viewer_can_open_adult, req) end
-  return 200, { media = arr(rows), limit = limit, offset = offset, sort = sort }
+  return 200, { media = arr(rows), limit = limit, offset = offset, sort = effective_sort }
 end
 
 -- Shared by the three feed-shaped endpoints below (feed_following,
@@ -2773,10 +2804,25 @@ local function finalize_upload(req, user, source, original_filename, form)
   end
   finalize_upload_debug_mark("ai analysis done", debug_t0)
 
+  -- Auto-organization (tags/subcategories) only auto-applies above this
+  -- confidence -- title is left ungated below (a so-so title guess is
+  -- low-stakes and the uploader notices/fixes it immediately; it isn't an
+  -- "organization" decision the way tags/category are), and category
+  -- itself is deliberately left ungated too, since it's the one REQUIRED
+  -- field here -- gating it would turn a low-confidence guess into a new
+  -- upload failure ("Category is required") for uploads that silently
+  -- succeeded before this change, which is a bigger behavior change than
+  -- "auto-organize with high confidence" asked for. Tags and
+  -- subcategories are both optional, so gating them can only ever leave a
+  -- field blank for the uploader to notice and fill in themselves --
+  -- never break the upload.
+  local AI_ORGANIZE_MIN_CONFIDENCE = 0.6
+  local ai_organize_confident = analysis and (tonumber(analysis.confidence) or 0) >= AI_ORGANIZE_MIN_CONFIDENCE
+
   local title = title_raw ~= "" and title_raw or (analysis and analysis.title) or ""
   if title == "" then return 400, { detail = "Title is required." } end
   local description = description_raw ~= "" and description_raw:sub(1, 2000) or nil
-  local tags = (analysis and #analysis.tags > 0) and analysis.tags or tags_hint
+  local tags = (ai_organize_confident and #analysis.tags > 0) and analysis.tags or tags_hint
 
   local category_id = tonumber(form.category_id)
   if not category_id or category_id <= 0 then
@@ -2808,7 +2854,7 @@ local function finalize_upload(req, user, source, original_filename, form)
   if nn(form.subcategory_name) and trim(form.subcategory_name) ~= "" then
     table.insert(requested_names, 1, form.subcategory_name)
   end
-  if #requested_ids == 0 and #requested_names == 0 and analysis then
+  if #requested_ids == 0 and #requested_names == 0 and ai_organize_confident then
     for _, name in ipairs(analysis.subcategory_names or {}) do requested_names[#requested_names + 1] = name end
   end
   requested_names = normalize_subcategory_names(requested_names)
