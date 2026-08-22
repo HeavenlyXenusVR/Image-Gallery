@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct MediaDetailView: View {
     @StateObject private var viewModel: MediaDetailViewModel
@@ -6,6 +7,8 @@ struct MediaDetailView: View {
     @State private var showingReport = false
     @State private var showingAgeVerification = false
     @State private var showingFullScreen = false
+    @State private var originalURL: URL?
+    @State private var showingOriginalInApp = false
     @State private var videoController: VideoPlayerController?
     @State private var videoQuality = "original"
 
@@ -42,7 +45,8 @@ struct MediaDetailView: View {
                         isTogglingBookmark: viewModel.isTogglingBookmark,
                         onLike: { Task { await viewModel.toggleLike() } },
                         onBookmark: { Task { await viewModel.toggleBookmark() } },
-                        onReport: { showingReport = true }
+                        onReport: { showingReport = true },
+                        onOpenOriginal: { openOriginal(media) }
                     )
 
                     ReactionTray(reactions: viewModel.reactions) { emoji in
@@ -75,6 +79,14 @@ struct MediaDetailView: View {
         }
         .sheet(isPresented: $showingReport) { ReportSheet(viewModel: viewModel) }
         .sheet(isPresented: $showingAgeVerification, onDismiss: { Task { await viewModel.load() } }) { AgeVerificationView() }
+        // isPresented + a separately-stored URL, not .sheet(item:) -- URL
+        // doesn't conform to Identifiable, and this matches the same
+        // pattern StudioView/CollectionsListView already use for their own
+        // "optional URL drives a sheet" cases (showingDownloadShare +
+        // downloadURL).
+        .sheet(isPresented: $showingOriginalInApp) {
+            if let originalURL { InAppSafariView(url: originalURL) }
+        }
         .fullScreenCover(isPresented: $showingFullScreen) {
             if let media = viewModel.media {
                 FullScreenMediaView(media: media, videoController: videoController)
@@ -104,6 +116,23 @@ struct MediaDetailView: View {
             : base + "/hls/\(quality)/playlist.m3u8"
         components.queryItems = accessToken.map { [URLQueryItem(name: "access", value: $0)] }
         return components.url
+    }
+
+    // open_original_in_new_tab -- web's literal "new tab" framing doesn't
+    // map 1:1 to iOS (there's no tab to stay on), so the natural
+    // equivalent is "leave the app" (launch system Safari) vs. "stay in
+    // the app" (an embedded SFSafariViewController sheet). This is the
+    // one iOS action MediaActionBar never had at all before this -- there
+    // was no "Open Original" anywhere in the app, unlike web's
+    // MediaActionPanel.
+    private func openOriginal(_ media: MediaItem) {
+        guard let urlString = media.url, let url = URL(string: urlString) else { return }
+        if session.currentUser?.userSettings?.openOriginalInNewTab == true {
+            UIApplication.shared.open(url)
+        } else {
+            originalURL = url
+            showingOriginalInApp = true
+        }
     }
 
     private func setUpVideoControllerIfNeeded() {

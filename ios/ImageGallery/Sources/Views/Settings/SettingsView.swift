@@ -36,6 +36,7 @@ struct SettingsView: View {
     @State private var columnGap = "normal"
     @State private var galleryFont = "system"
     @State private var profileHeaderStyle = "solid"
+    @State private var openOriginalInNewTab = false
     @State private var isSavingAppearance = false
     @State private var loadedAppearance = false
     @State private var showingLogoutConfirm = false
@@ -141,6 +142,7 @@ struct SettingsView: View {
                 Toggle("Mute previews", isOn: $mutedPreviews)
                 Toggle("Blur video thumbnails", isOn: $blurVideoPreviews)
                 Toggle("Reduce motion", isOn: $reduceMotion)
+                Toggle("Open originals in Safari", isOn: $openOriginalInNewTab)
             }
 
             Section("Profile Visibility") {
@@ -422,6 +424,7 @@ struct SettingsView: View {
         columnGap = settings.columnGap ?? "normal"
         galleryFont = settings.galleryFont ?? "system"
         profileHeaderStyle = settings.profileHeaderStyle ?? "solid"
+        openOriginalInNewTab = settings.openOriginalInNewTab ?? false
     }
 
     private func saveAppearance() async {
@@ -453,7 +456,8 @@ struct SettingsView: View {
                 cardInfoDisplay: cardInfoDisplay,
                 columnGap: columnGap,
                 galleryFont: galleryFont,
-                profileHeaderStyle: profileHeaderStyle
+                profileHeaderStyle: profileHeaderStyle,
+                openOriginalInNewTab: openOriginalInNewTab
             )
             let user = try await GalleryAPIClient.shared.updateSettings(body)
             session.setCurrentUser(user)

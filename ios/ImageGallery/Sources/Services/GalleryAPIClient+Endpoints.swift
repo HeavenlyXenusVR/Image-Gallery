@@ -93,6 +93,7 @@ extension GalleryAPIClient {
         var columnGap: String?
         var galleryFont: String?
         var profileHeaderStyle: String?
+        var openOriginalInNewTab: Bool?
     }
 
     func updateSettings(_ body: SettingsUpdateBody) async throws -> GalleryUser {

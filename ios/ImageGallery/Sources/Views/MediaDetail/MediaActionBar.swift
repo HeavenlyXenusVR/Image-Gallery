@@ -11,6 +11,7 @@ struct MediaActionBar: View {
     let onLike: () -> Void
     let onBookmark: () -> Void
     let onReport: () -> Void
+    let onOpenOriginal: () -> Void
 
     @State private var likeBounce = false
 
@@ -41,6 +42,7 @@ struct MediaActionBar: View {
                 Spacer()
 
                 Menu {
+                    Button("Open Original", action: onOpenOriginal)
                     Button("Report", role: .destructive, action: onReport)
                 } label: {
                     iconLabel("ellipsis")

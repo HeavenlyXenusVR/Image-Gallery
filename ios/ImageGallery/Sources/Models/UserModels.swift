@@ -71,6 +71,7 @@ struct UserSettings: Codable, Equatable {
     var columnGap: String?
     var galleryFont: String?
     var profileHeaderStyle: String?
+    var openOriginalInNewTab: Bool?
 }
 
 struct ProfilePageResponse: Codable {

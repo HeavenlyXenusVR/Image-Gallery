@@ -82,10 +82,22 @@ export function useMediaActions(ctx, onItemUpdated) {
     }
   }, []);
 
+  // open_original_in_new_tab was stored/editable on the Settings page
+  // (SettingsPage.jsx) and even summarized in a status readout there, but
+  // never actually consulted here -- this always opened a new tab
+  // regardless of the setting, same class of bug as show_liked_count/
+  // profile_show_follow_counts/profile_show_joined_date, which routes.lua's
+  // decode_user already documents fixing server-side. This one's purely
+  // client-side (no privacy/leak angle, just an inert preference), so the
+  // fix is just: actually branch on it.
   const openOriginal = useCallback(async (item) => {
     const raw = item?.url || item?.preview_url || `/api/media/${item.id}/file`;
     const url = await resolveApiUrl(raw).catch(() => raw);
-    window.open(url, "_blank", "noopener,noreferrer");
+    if (ctxRef.current.settings?.open_original_in_new_tab) {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } else {
+      window.location.href = url;
+    }
   }, []);
 
   return { toggleLike, toggleBookmark, download, copyAddress, copyPageLink, openOriginal };
