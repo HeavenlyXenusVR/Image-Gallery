@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Ban, CheckCircle2, Flag, HardDrive, History, Megaphone, RefreshCw, ShieldAlert, Trash2, Users, XCircle } from "lucide-react";
+import { Ban, CheckCircle2, Flag, HardDrive, History, Megaphone, Music, RefreshCw, ShieldAlert, Trash2, Upload, Users, XCircle } from "lucide-react";
 import { apiFetch, clearApiCache } from "../api.js";
 import { EmptyState, Notice, Page, Segmented, SkeletonList } from "../components/ui.jsx";
 import { formatDate, formatBytes } from "../utils/format.js";
@@ -12,6 +12,7 @@ const TABS = [
   ["users", "Users & Bans"],
   ["storage", "Storage"],
   ["site", "Site Settings"],
+  ["music", "Background Music"],
   ["audit", "Audit Log"],
 ];
 
@@ -45,6 +46,7 @@ export function AdminPage({ ctx }) {
       {tab === "users" ? <UsersTab ctx={ctx} /> : null}
       {tab === "storage" ? <StorageTab ctx={ctx} /> : null}
       {tab === "site" ? <SiteSettingsTab ctx={ctx} /> : null}
+      {tab === "music" ? <MusicTab ctx={ctx} /> : null}
       {tab === "audit" ? <AuditLogTab /> : null}
     </Page>
   );
@@ -422,6 +424,115 @@ function SiteSettingsTab({ ctx }) {
         <button className="primary" type="submit" disabled={saving}>{saving ? "Saving..." : "Save site settings"}</button>
       </div>
     </form>
+  );
+}
+
+function MusicTab({ ctx }) {
+  const [tracks, setTracks] = useState([]);
+  const [maxTracks, setMaxTracks] = useState(10);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [busyId, setBusyId] = useState("");
+  const [title, setTitle] = useState("");
+  const [file, setFile] = useState(null);
+  const showToast = ctx.showToast;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await apiFetch("/api/admin/background-music");
+      setTracks(data.tracks || []);
+      setMaxTracks(data.max_tracks || 10);
+    } catch (error) {
+      showToast(error.message, "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function upload(event) {
+    event.preventDefault();
+    if (!file) return showToast("Choose an audio file first.", "error");
+    setUploading(true);
+    try {
+      const body = new FormData();
+      body.set("file", file);
+      body.set("title", title);
+      await apiFetch("/api/admin/background-music", { method: "POST", body });
+      setTitle("");
+      setFile(null);
+      const input = document.getElementById("bg-music-file-input");
+      if (input) input.value = "";
+      showToast("Track added.", "success");
+      load();
+    } catch (error) {
+      showToast(error.message, "error");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function remove(trackId) {
+    if (!window.confirm("Remove this background track?")) return;
+    setBusyId(trackId);
+    try {
+      await apiFetch(`/api/admin/background-music/${trackId}`, { method: "DELETE" });
+      setTracks((current) => current.filter((track) => track.id !== trackId));
+      showToast("Track removed.", "success");
+    } catch (error) {
+      showToast(error.message, "error");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  if (loading) return <SkeletonList />;
+
+  return (
+    <div className="admin-tab">
+      <div className="settings-cluster">
+        <div className="settings-cluster-head">
+          <h3><Music size={16} /> Background music</h3>
+          <p>Shuffled ambient tracks visitors hear while browsing. Ducks out automatically when a video with sound starts playing. Up to {maxTracks} tracks.</p>
+        </div>
+        {tracks.length < maxTracks ? (
+          <form className="stacked-form" onSubmit={upload}>
+            <label className="field"><span>Title (optional)</span>
+              <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} placeholder="Uses the filename if left blank" />
+            </label>
+            <label className="field"><span>Audio file</span>
+              <input id="bg-music-file-input" type="file" accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+            </label>
+            <div className="form-actions settings-actions">
+              <button className="primary" type="submit" disabled={uploading || !file}><Upload size={16} />{uploading ? "Uploading..." : "Add track"}</button>
+            </div>
+          </form>
+        ) : (
+          <p className="muted-copy">Track limit reached — remove one below to add another.</p>
+        )}
+      </div>
+
+      {tracks.length === 0 ? (
+        <EmptyState title="No background tracks yet" description="Add one above to start the ambient shuffle for visitors." />
+      ) : (
+        <div className="admin-reports-list">
+          {tracks.map((track) => (
+            <article className="admin-report-row" key={track.id}>
+              <div className="admin-report-body">
+                <strong>{track.title}</strong>
+                <p className="muted-copy">{track.original_filename} · {formatBytes(track.file_size)} · added by {track.uploaded_by_username || "unknown"} · {formatDate(track.created_at)}</p>
+                <audio controls preload="none" src={track.url} style={{ marginTop: 8, maxWidth: 320 }} />
+              </div>
+              <button type="button" onClick={() => remove(track.id)} disabled={busyId === track.id}><Trash2 size={16} />{busyId === track.id ? "Removing..." : "Remove"}</button>
+            </article>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

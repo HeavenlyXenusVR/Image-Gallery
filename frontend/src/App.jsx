@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, Route, Routes, useNavigate } from "react-router-dom";
 import { apiFetch, cachedApiFetch, clearApiCache, forceRefreshRemoteOrigin, prefetchApi, readStoredUser, readToken, resolveApiUrl, toQuery, writeStoredUser, writeToken } from "./api.js";
 import { Shell } from "./components/Shell.jsx";
+import { BackgroundMusicPlayer } from "./components/BackgroundMusicPlayer.jsx";
 import { Lightbox } from "./components/Lightbox.jsx";
 import { NotFound } from "./components/ui.jsx";
 import { DEFAULT_SETTINGS, PAGE_SIZE, setRuntimeMaxUploadBytes } from "./config.js";
@@ -415,6 +416,7 @@ function App() {
         <Route path="/login" element={<AuthPage ctx={ctx} />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
+      <BackgroundMusicPlayer />
       {!bootDismissed ? (
         <GalleryBootOverlay
           authenticated={Boolean(token && user)}

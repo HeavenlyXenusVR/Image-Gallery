@@ -115,8 +115,21 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     const video = videoRef.current;
     if (!video) return;
 
-    const onPlay = () => { setPlaying(true); setBuffering(false); scheduleHide(); };
-    const onPause = () => { setPlaying(false); setShowControls(true); if (controlsHideTimer.current) clearTimeout(controlsHideTimer.current); };
+    // BackgroundMusicPlayer listens for this globally to duck/restore its
+    // own volume -- see its VIDEO_PLAYING_EVENT doc comment for why this is
+    // a plain window event rather than threaded through context/props.
+    const onPlay = () => {
+      setPlaying(true);
+      setBuffering(false);
+      scheduleHide();
+      window.dispatchEvent(new CustomEvent("nyxframe:video-playing", { detail: { playing: true } }));
+    };
+    const onPause = () => {
+      setPlaying(false);
+      setShowControls(true);
+      if (controlsHideTimer.current) clearTimeout(controlsHideTimer.current);
+      window.dispatchEvent(new CustomEvent("nyxframe:video-playing", { detail: { playing: false } }));
+    };
     const onTimeUpdate = () => {
       setCurrentTime(video.currentTime);
       if (video.buffered.length > 0) setBuffered(video.buffered.end(video.buffered.length - 1));
@@ -203,7 +216,11 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
         }
       } else setError("Playback error — the video could not be loaded.");
     };
-    const onEnded = () => { setPlaying(false); setShowControls(true); };
+    const onEnded = () => {
+      setPlaying(false);
+      setShowControls(true);
+      window.dispatchEvent(new CustomEvent("nyxframe:video-playing", { detail: { playing: false } }));
+    };
     const onVolumeChange = () => { setVolume(video.volume); setMuted(video.muted); };
     const onFullscreenChange = () => setFullscreen(Boolean(document.fullscreenElement));
     const onPipEnter = () => setPip(true);
@@ -237,6 +254,13 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
       document.removeEventListener("fullscreenchange", onFullscreenChange);
       clearTimeout(controlsHideTimer.current);
       if (bufferingTimerRef.current) clearTimeout(bufferingTimerRef.current);
+      // Navigating away mid-playback unmounts this without ever firing
+      // "pause"/"ended" -- without this, BackgroundMusicPlayer would stay
+      // ducked forever, permanently quiet, since it never sees the
+      // matching "false" event.
+      if (!video.paused) {
+        window.dispatchEvent(new CustomEvent("nyxframe:video-playing", { detail: { playing: false } }));
+      }
     };
   }, [scheduleHide]);
 
