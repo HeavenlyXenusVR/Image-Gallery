@@ -1823,12 +1823,27 @@ textarea:focus {
   justify-content: space-between;
   padding: 4px 10px 6px;
   gap: 8px;
+  /* .vp-root clips with overflow:hidden (needed for the rounded corners),
+     so on a narrow viewport this row -- 5+ icon buttons per cluster,
+     several carrying a text label like "Original"/"1080p HD" -- silently
+     lost its rightmost buttons instead of wrapping or scrolling into
+     view. Let the row scroll horizontally instead of overflowing into
+     the clip; each cluster keeps its natural width so buttons never get
+     squeezed illegibly thin. */
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.vp-bottom::-webkit-scrollbar {
+  display: none;
 }
 
 .vp-cluster {
   display: flex;
   align-items: center;
   gap: 2px;
+  flex-shrink: 0;
 }
 
 /* Buttons */

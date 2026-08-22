@@ -32,6 +32,22 @@ function clamp(value, min, max) {
 
 const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
+// "original"/"high" is a `-c copy` remux (see routes.lua's ensure_hls_variant)
+// -- it plays back whatever codec the upload actually used, unlike every
+// other quality option, which always transcodes through libx264/aac and so
+// is guaranteed browser-safe regardless of source format. When the browser
+// can't decode the source codec (HEVC/ProRes/etc. uploads are common from
+// phones), the fix is exactly the same on every engine: drop to the first
+// real transcoded rendition available. Shared so both the native-<video>
+// error path (Safari) and the hls.js error path (Chrome/Firefox/Opera/
+// Chromium/Edge) recover the same way instead of only one of them knowing
+// how to.
+function pickCompatFallbackQuality(currentQuality, options) {
+  if (currentQuality && currentQuality !== "high" && currentQuality !== "original") return null;
+  if (!options) return null;
+  return options.find(([v]) => v === "1080p" || v === "720p" || v === "480p" || v === "144p");
+}
+
 export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOptions, title }) {
   const videoRef = useRef(null);
   const containerRef = useRef(null);
@@ -140,17 +156,15 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
         }
         setError("Network error — check your connection and try again.");
       }
-      else if (code === 3) setError("Decoding error — the video format may not be supported.");
-      else if (code === 4) {
-        // MEDIA_ERR_SRC_NOT_SUPPORTED — Firefox rejects non-browser-safe formats.
-        // If we're on high/original quality and a lower quality is available,
-        // automatically fall back to 1080p so the video can still play.
-        const fallback = qualityOptions && qualityOptions.find(([v]) => v === "1080p" || v === "720p");
-        if (
-          onQualityChange &&
-          (quality === "high" || quality === "original" || !quality) &&
-          fallback
-        ) {
+      else if (code === 3 || code === 4) {
+        // MEDIA_ERR_DECODE (3) / MEDIA_ERR_SRC_NOT_SUPPORTED (4) — Safari's
+        // native HLS path surfaces an unsupported source codec as either,
+        // depending on whether it fails at demux or decode. Both mean the
+        // same thing here (see pickCompatFallbackQuality above), so both
+        // get the same auto-fallback instead of only code 4 recovering
+        // while code 3 just showed a dead end.
+        const fallback = pickCompatFallbackQuality(quality, qualityOptions);
+        if (onQualityChange && fallback) {
           setError(`This format isn't supported by your browser. Switching to ${fallback[1] || fallback[0]}…`);
           onQualityChange(fallback[0]);
         } else {
@@ -273,7 +287,18 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
               hls.recoverMediaError();
               return;
             }
-            setError("Decoding error — the video format may not be supported.");
+            // Exhausted recoverMediaError() retries -- for a genuinely
+            // unsupported source codec (common on "original"/no re-encode
+            // for an HEVC/ProRes phone upload) those retries were never
+            // going to succeed, so fall back the same way the native-HLS
+            // Safari path does instead of leaving a dead player behind.
+            const fallback = pickCompatFallbackQuality(quality, qualityOptions);
+            if (onQualityChange && fallback) {
+              setError(`This format isn't supported by your browser. Switching to ${fallback[1] || fallback[0]}…`);
+              onQualityChange(fallback[0]);
+            } else {
+              setError("Decoding error — the video format may not be supported.");
+            }
           } else {
             setError("Playback error — the video could not be loaded.");
           }
