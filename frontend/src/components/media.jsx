@@ -1,4 +1,4 @@
-import { memo, useMemo, useEffect, useState } from "react";
+import { memo, useMemo, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Bookmark, Copy, Download, ExternalLink, Film, FolderPlus, Heart, Image as ImageIcon, Link as LinkIcon, Lock, RefreshCw, Save, Trash2 } from "lucide-react";
 import { apiFetch, clearApiCache } from "../api.js";
@@ -38,13 +38,40 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
   const actions = useMediaActions(ctx, onItemUpdated);
   const thumb = useMemo(() => (item.media_kind === "video" ? thumbUrl(item, 420) : thumbUrl(item)), [item]);
   const mutedPreview = ctx.settings.muted_previews !== false;
-  const liveVideoPreview = item.media_kind === "video" && ctx.settings.autoplay_previews && item.url && !isPerfLiteRuntime();
+  const previewEligible = item.media_kind === "video" && ctx.settings.autoplay_previews && item.url && !isPerfLiteRuntime();
+  // Every MediaCard in a grid mounts at once (no virtualization), so an
+  // unconditional autoplay <video> here meant every video on the page --
+  // often dozens, on/off-screen alike -- started fetching a preview
+  // simultaneously the instant the grid rendered. Each of those hits
+  // ensure_video_quality_cache() on a cold cache, which falls back to
+  // streaming the ENTIRE original file (not a trimmed-down preview) while
+  // the real low-quality transcode runs in the background -- so a big
+  // grid of freshly-uploaded (never-yet-transcoded) videos could fire off
+  // that many full-file downloads at once, saturating the connection and
+  // the backend's single-threaded request loop, and making unrelated
+  // video loads (including the one the viewer actually opened) stall or
+  // fail. Only mount the live preview once the card has actually scrolled
+  // into view, same as "hover preview" already implied but never enforced.
+  const cardRef = useRef(null);
+  const [inView, setInView] = useState(eager);
+  useEffect(() => {
+    if (!previewEligible || inView) return undefined;
+    const node = cardRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") { setInView(true); return undefined; }
+    const observer = new IntersectionObserver(
+      ([entry]) => { if (entry.isIntersecting) setInView(true); },
+      { rootMargin: "200px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [previewEligible, inView]);
+  const liveVideoPreview = previewEligible && inView;
   const previewSrc = useMemo(() => (liveVideoPreview ? videoPreviewUrl(item, "low") : ""), [liveVideoPreview, item]);
   const categoryLine = useMemo(() => [item.category_name || "Unsorted", ...subcategoryNames(item)].filter(Boolean).join(" / "), [item]);
   const imageSources = useMemo(() => mediaImageSources(item, { width: eager ? 720 : 640, previewSize: "detail" }), [item, eager]);
   const videoThumbSources = useMemo(() => mediaImageSources(item, { width: 420, previewSize: "card" }), [item]);
   return (
-    <article className={`media-card ${item.locked ? "is-locked" : ""}`}>
+    <article ref={cardRef} className={`media-card ${item.locked ? "is-locked" : ""}`}>
       <Link
         className="media-link"
         to={`/media/${item.id}`}
