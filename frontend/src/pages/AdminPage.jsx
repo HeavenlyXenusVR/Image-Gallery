@@ -16,8 +16,25 @@ const TABS = [
   ["audit", "Audit Log"],
 ];
 
+// Same class of bug as DiscoverPage's filters -- plain local state, so
+// leaving /admin (any nav click) and coming back always dumped you back
+// on "Reports" regardless of which section you'd actually been on.
+const TAB_SESSION_KEY = "nyxframe_admin_tab";
+
 export function AdminPage({ ctx }) {
-  const [tab, setTab] = useState("reports");
+  const [tab, setTab] = useState(() => {
+    try {
+      const stored = sessionStorage.getItem(TAB_SESSION_KEY);
+      return TABS.some(([value]) => value === stored) ? stored : "reports";
+    } catch (_error) {
+      return "reports";
+    }
+  });
+
+  function selectTab(next) {
+    setTab(next);
+    try { sessionStorage.setItem(TAB_SESSION_KEY, next); } catch (_error) { /* private browsing */ }
+  }
 
   if (!ctx.user) {
     return (
@@ -39,7 +56,7 @@ export function AdminPage({ ctx }) {
       title="Admin"
       eyebrow="Moderation"
       lede="Review reports and flagged uploads, manage accounts, watch storage, and control site-wide messaging."
-      actions={<Segmented value={tab} onChange={setTab} options={TABS} />}
+      actions={<Segmented value={tab} onChange={selectTab} options={TABS} />}
     >
       {tab === "reports" ? <ReportsTab ctx={ctx} /> : null}
       {tab === "flagged" ? <FlaggedTab ctx={ctx} /> : null}

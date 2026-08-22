@@ -5,8 +5,21 @@ import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { UserCard } from "../components/social.jsx";
 import { EmptyState, Page, SkeletonGrid } from "../components/ui.jsx";
 
+// Same class of bug as DiscoverPage's filters (see its FILTERS_SESSION_KEY
+// doc comment): plain local state, no URL involved at all here, so
+// switching to another tab and back unmounts/remounts this page and the
+// search box silently goes blank -- nothing the visitor typed was ever
+// actually lost, it just never survived the remount.
+const QUERY_SESSION_KEY = "nyxframe_users_query";
+
 export function UsersPage({ ctx }) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(() => {
+    try {
+      return sessionStorage.getItem(QUERY_SESSION_KEY) || "";
+    } catch (_error) {
+      return "";
+    }
+  });
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(false);
 
@@ -31,9 +44,16 @@ export function UsersPage({ ctx }) {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       loadUsers();
+      try {
+        if (query) sessionStorage.setItem(QUERY_SESSION_KEY, query);
+        else sessionStorage.removeItem(QUERY_SESSION_KEY);
+      } catch (_error) {
+        // Private-browsing/storage-disabled -- search just won't survive a
+        // tab switch in that case.
+      }
     }, 220);
     return () => window.clearTimeout(timer);
-  }, [loadUsers]);
+  }, [loadUsers, query]);
 
   useLiveRefresh(() => loadUsers({ background: true }), { interval: 25_000 });
 
