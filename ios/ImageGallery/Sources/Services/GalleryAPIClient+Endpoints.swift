@@ -5,6 +5,29 @@ struct MediaListResponse: Decodable { var media: [MediaItem] }
 struct MediaResponse: Decodable { var media: MediaItem }
 struct DuplicateMatch: Decodable, Identifiable { var id: Int; var title: String?; var thumbUrl: String?; var distance: Int? }
 struct MediaUploadResponse: Decodable { var media: MediaItem; var possibleDuplicates: [DuplicateMatch]?; var possibleSiteDuplicates: [DuplicateMatch]? }
+
+/// `/api/media/analyze`'s response -- mirrors web's UploadPage.jsx `analyze()`
+/// exactly (same field names, same "fill only empty fields" merge intent),
+/// just as a standalone pre-submit preview step, which the iOS upload flow
+/// never had at all: `autoAI` on the real upload silently ran AI analysis
+/// server-side with no chance to see/edit the result first.
+struct MediaAnalysis: Decodable {
+    var title: String?
+    var description: String?
+    var suggestedFilename: String?
+    var tags: [String]?
+    var categoryName: String?
+    var subcategoryName: String?
+    var subcategoryNames: [String]?
+    var isAdult: Bool?
+    var source: String?
+    var confidence: Double?
+    var reason: String?
+}
+struct MediaAnalyzeResponse: Decodable {
+    var analysis: MediaAnalysis?
+    var possibleDuplicates: [DuplicateMatch]?
+}
 struct MediaDetailResponse: Decodable {
     var media: MediaItem
     var comments: [Comment]?
@@ -242,7 +265,7 @@ extension GalleryAPIClient {
         var downloadsEnabled: Bool
         var autoAI: Bool
         var publishAt: String?
-        var checkSiteDuplicates: Bool = false
+        var checkSiteDuplicates: Bool = true
     }
 
     private func uploadForm(_ fields: UploadFields) -> [String: String] {
@@ -266,6 +289,22 @@ extension GalleryAPIClient {
     func uploadMedia(data: Data, fileName: String, mimeType: String, fields: UploadFields) async throws -> MediaUploadResponse {
         let file = MultipartFile(fieldName: "file", fileName: fileName, mimeType: mimeType, source: .data(data))
         return try await upload("/api/media", fields: uploadForm(fields), file: file)
+    }
+
+    /// Pre-submit AI autofill preview -- mirrors web's dedicated "Analyze"
+    /// button (UploadPage.jsx). `upload()` (not requestJSON) deliberately
+    /// isn't bound by GalleryAPIClient's 25s request timeout, since the
+    /// backend's Gemini vision call alone can legitimately take up to ~30s.
+    func analyzeMedia(data: Data, fileName: String, mimeType: String, titleHint: String, descriptionHint: String, tagsHint: String) async throws -> MediaAnalyzeResponse {
+        let file = MultipartFile(fieldName: "file", fileName: fileName, mimeType: mimeType, source: .data(data))
+        let fields = ["title": titleHint, "description": descriptionHint, "tags": tagsHint]
+        return try await upload("/api/media/analyze", fields: fields, file: file)
+    }
+
+    func analyzeMedia(fileURL: URL, fileName: String, mimeType: String, titleHint: String, descriptionHint: String, tagsHint: String) async throws -> MediaAnalyzeResponse {
+        let file = MultipartFile(fieldName: "file", fileName: fileName, mimeType: mimeType, source: .fileURL(fileURL))
+        let fields = ["title": titleHint, "description": descriptionHint, "tags": tagsHint]
+        return try await upload("/api/media/analyze", fields: fields, file: file)
     }
 
     /// Large-file variant — `fileURL` is streamed straight from disk into the

@@ -57,6 +57,7 @@ final class UploadViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var uploadedMedia: MediaItem?
     @Published var possibleDuplicates: [DuplicateMatch] = []
+    @Published var isAnalyzing = false
 
     private let api = GalleryAPIClient.shared
 
@@ -116,6 +117,40 @@ final class UploadViewModel: ObservableObject {
             }
         } catch {
             errorMessage = "Could not read that file: \(error.localizedDescription)"
+        }
+    }
+
+    /// Pre-submit AI autofill -- see `GalleryAPIClient.analyzeMedia`'s doc
+    /// comment. Only fills fields the user hasn't already typed something
+    /// into, same "current || suggestion" intent as web's analyze().
+    func analyze() async {
+        guard pickedData != nil || pickedFileURL != nil else {
+            errorMessage = "Choose a photo or video first."
+            return
+        }
+        isAnalyzing = true
+        errorMessage = nil
+        defer { isAnalyzing = false }
+        do {
+            let response: MediaAnalyzeResponse
+            if let pickedFileURL {
+                response = try await api.analyzeMedia(fileURL: pickedFileURL, fileName: pickedFileName, mimeType: pickedMimeType, titleHint: title, descriptionHint: description, tagsHint: tags)
+            } else if let pickedData {
+                response = try await api.analyzeMedia(data: pickedData, fileName: pickedFileName, mimeType: pickedMimeType, titleHint: title, descriptionHint: description, tagsHint: tags)
+            } else {
+                return
+            }
+            possibleDuplicates = response.possibleDuplicates ?? []
+            guard let analysis = response.analysis else { return }
+            if title.isEmpty { title = analysis.title ?? "" }
+            if description.isEmpty { description = analysis.description ?? "" }
+            if categoryName.isEmpty { categoryName = analysis.categoryName ?? "" }
+            if tags.isEmpty, let suggestedTags = analysis.tags, !suggestedTags.isEmpty {
+                tags = suggestedTags.joined(separator: ", ")
+            }
+            if analysis.isAdult == true { isAdult = true }
+        } catch {
+            if !error.isCancellation { errorMessage = error.localizedDescription }
         }
     }
 

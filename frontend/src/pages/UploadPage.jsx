@@ -35,7 +35,7 @@ export function UploadPage({ ctx }) {
     pinned: false,
     auto_ai: true,
     publish_at: "",
-    check_site_duplicates: false,
+    check_site_duplicates: true,
   });
   const [preview, setPreview] = useState("");
   const [busy, setBusy] = useState(false);

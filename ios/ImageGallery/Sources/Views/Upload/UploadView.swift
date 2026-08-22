@@ -53,6 +53,22 @@ struct UploadView: View {
                 }
 
                 if hasPickedFile {
+                    Button {
+                        Task { await viewModel.analyze() }
+                    } label: {
+                        HStack {
+                            if viewModel.isAnalyzing {
+                                ProgressView().tint(.white)
+                            } else {
+                                Image(systemName: "wand.and.stars")
+                            }
+                            Text(viewModel.isAnalyzing ? "Analyzing…" : "Analyze")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(viewModel.isAnalyzing || viewModel.isUploading)
+
                     UploadCardSection("Details", "text.alignleft") {
                         TextField("Title", text: $viewModel.title)
                             .onChange(of: viewModel.title) { newValue in
