@@ -5333,6 +5333,134 @@ local function write_audit_log(actor_id, action, target_type, target_id, detail)
   )
 end
 
+-- ---------------------------------------------------------------------------
+-- Background music (see scripts/pg_add_background_music.sql). Up to
+-- MAX_BACKGROUND_MUSIC_TRACKS tracks the site owner injects/removes from
+-- the admin panel; every visitor's client shuffles through whatever's
+-- currently uploaded while browsing (M.list_background_music /
+-- M.serve_background_music_file, both public/unauthenticated -- ambient
+-- music isn't gated content) and ducks it when a video with sound starts
+-- playing (client-side, see frontend/src/components/BackgroundMusicPlayer.jsx).
+-- ---------------------------------------------------------------------------
+
+local MAX_BACKGROUND_MUSIC_TRACKS = 10
+local MAX_BACKGROUND_MUSIC_BYTES = 30 * 1024 * 1024
+
+-- Minimal magic-byte sniffer for the handful of audio containers a track
+-- upload realistically arrives as -- mirrors sniff_magic's image/video
+-- approach (never trust the client-supplied Content-Type for what gets
+-- stored/served back out).
+local function sniff_audio_magic(content)
+  local head = content:sub(1, 64)
+  if head:sub(1, 3) == "ID3" then return "audio/mpeg" end
+  -- Frame-sync MP3 with no ID3 tag: 11 set bits (0xFFE.. / 0xFFF..).
+  if #head >= 2 and head:byte(1) == 0xFF and (head:byte(2) & 0xE0) == 0xE0 then return "audio/mpeg" end
+  if head:sub(1, 4) == "RIFF" and head:sub(9, 12) == "WAVE" then return "audio/wav" end
+  if head:sub(1, 4) == "OggS" then return "audio/ogg" end
+  if head:sub(1, 4) == "fLaC" then return "audio/flac" end
+  if #head >= 12 and head:sub(5, 8) == "ftyp" then
+    local brands = head:sub(9, 32):lower()
+    if brands:find("m4a", 1, true) or brands:find("m4b", 1, true) then return "audio/mp4" end
+  end
+  return nil
+end
+
+local BACKGROUND_MUSIC_EXT = {
+  ["audio/mpeg"] = ".mp3", ["audio/wav"] = ".wav", ["audio/ogg"] = ".ogg",
+  ["audio/flac"] = ".flac", ["audio/mp4"] = ".m4a",
+}
+
+function M.admin_list_background_music(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local rows = db.fetchall(
+    "SELECT bm.id, bm.title, bm.original_filename, bm.mime_type, bm.file_size, bm.sort_order, bm.created_at, " ..
+      "u.username AS uploaded_by_username " ..
+      "FROM background_music bm LEFT JOIN users u ON u.id = bm.uploaded_by " ..
+      "ORDER BY bm.sort_order ASC, bm.id ASC"
+  )
+  local origin = request_origin(req)
+  for _, row in ipairs(rows) do
+    row.file_size = db.toint(row.file_size, 0)
+    row.url = origin .. "/api/background-music/" .. tostring(row.id) .. "/file"
+  end
+  return 200, { tracks = arr(rows), max_tracks = MAX_BACKGROUND_MUSIC_TRACKS }
+end
+
+function M.admin_upload_background_music(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+
+  local count_row = db.fetchone("SELECT COUNT(*) AS n FROM background_music")
+  if db.toint(count_row and count_row.n, 0) >= MAX_BACKGROUND_MUSIC_TRACKS then
+    return 400, { detail = string.format("Only %d background tracks are allowed at once -- remove one first.", MAX_BACKGROUND_MUSIC_TRACKS) }
+  end
+
+  local upload = (req.files or {}).file
+  if not upload or not upload.content or upload.content == "" then
+    return 400, { detail = "Upload is empty." }
+  end
+  if #upload.content > MAX_BACKGROUND_MUSIC_BYTES then
+    return 413, { detail = string.format("Tracks must be %dMB or smaller.", math.floor(MAX_BACKGROUND_MUSIC_BYTES / (1024 * 1024))) }
+  end
+  local mime_type = sniff_audio_magic(upload.content)
+  if not mime_type then
+    return 400, { detail = "Unsupported audio format. Use MP3, WAV, OGG, FLAC, or M4A." }
+  end
+
+  local form = req.form or {}
+  local original_filename = ((upload.filename or "track"):match("([^/\\]+)$") or "track"):sub(1, 255)
+  local title = trim(nn(form.title) or ""):sub(1, 120)
+  if title == "" then
+    title = (original_filename:gsub(BACKGROUND_MUSIC_EXT[mime_type] and BACKGROUND_MUSIC_EXT[mime_type] .. "$" or "%.[^.]+$", ""))
+  end
+
+  local next_sort_row = db.fetchone("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM background_music")
+  local sort_order = db.toint(next_sort_row and next_sort_row.n, 0)
+
+  local row = db.fetchone(
+    "INSERT INTO background_music (title, original_filename, mime_type, content, file_size, sort_order, uploaded_by) " ..
+      "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+    title, original_filename, mime_type, media_files.bytea_literal(upload.content), tostring(#upload.content), tostring(sort_order), tostring(owner.id)
+  )
+  write_audit_log(owner.id, "background_music_upload", "background_music", row and row.id, title)
+  return 200, { id = row and db.toint(row.id), title = title }
+end
+
+function M.admin_delete_background_music(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+  local track_id = tonumber(req.params.track_id)
+  if not track_id then return 404, { detail = "Track not found." } end
+  local existing = db.fetchone("SELECT id, title FROM background_music WHERE id=%s", tostring(track_id))
+  if not existing then return 404, { detail = "Track not found." } end
+  db.execute("DELETE FROM background_music WHERE id=%s", tostring(track_id))
+  write_audit_log(owner.id, "background_music_delete", "background_music", track_id, existing.title)
+  return 200, { ok = true }
+end
+
+-- Public: every visitor's client (logged in or not) fetches this list to
+-- build its own local shuffle order -- no auth, no per-track access
+-- token, same as the site's public media browsing.
+function M.list_background_music(req)
+  local rows = db.fetchall(
+    "SELECT id, title FROM background_music ORDER BY sort_order ASC, id ASC"
+  )
+  local origin = request_origin(req)
+  for _, row in ipairs(rows) do
+    row.url = origin .. "/api/background-music/" .. tostring(row.id) .. "/file"
+  end
+  return 200, { tracks = arr(rows) }
+end
+
+function M.serve_background_music_file(req)
+  local track_id = tonumber(req.params.track_id)
+  if not track_id then return 404, { detail = "Track not found." } end
+  local row = db.fetchone("SELECT mime_type, content FROM background_music WHERE id=%s", tostring(track_id))
+  if not row then return 404, { detail = "Track not found." } end
+  return 200, row.content, { ["Content-Type"] = row.mime_type, ["Cache-Control"] = "public, max-age=86400" }
+end
+
 function M.admin_stats(req)
   local owner, status, body = require_site_owner(req)
   if not owner then return status, body end

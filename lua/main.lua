@@ -210,6 +210,16 @@ httpd.route("GET", "/api/admin/storage", routes.admin_storage)
 httpd.route("POST", "/api/admin/storage/purge-orphans", routes.admin_purge_storage_orphans)
 httpd.route("PATCH", "/api/admin/site-settings", routes.admin_update_site_settings)
 
+-- Background music (see scripts/pg_add_background_music.sql). The two
+-- public routes are unauthenticated on purpose -- ambient music isn't
+-- gated content, every visitor's client fetches the track list and
+-- streams from it the same way it fetches media thumbnails.
+httpd.route("GET", "/api/admin/background-music", routes.admin_list_background_music)
+httpd.route("POST", "/api/admin/background-music", routes.admin_upload_background_music)
+httpd.route("DELETE", "/api/admin/background-music/:track_id", routes.admin_delete_background_music)
+httpd.route("GET", "/api/background-music", routes.list_background_music)
+httpd.route("GET", "/api/background-music/:track_id/file", routes.serve_background_music_file)
+
 -- "/export" MUST be registered before a future "/api/ai/vision/training/:id"-
 -- shaped route, if one is ever added (none exists today, so ordering is not
 -- currently load-bearing, but keep it above /training for consistency).

@@ -159,6 +159,7 @@ local function bytea_literal(bytes)
   end
   return "\\x" .. ffi.string(out, n * 2)
 end
+M.bytea_literal = bytea_literal
 
 local DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024
 
