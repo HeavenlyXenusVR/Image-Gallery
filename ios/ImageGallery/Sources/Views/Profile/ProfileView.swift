@@ -283,13 +283,47 @@ private struct ProfileHeader: View {
             statsRow
         }
         .padding(Metrics.Space.lg)
-        .background(AccentWash(color: accent, secondaryColor: secondaryAccent))
-        .modifier(ProfileHeaderBackground(style: user.userSettings?.profileHeaderStyle))
+        .background(headerBackground)
         .clipShape(RoundedRectangle(cornerRadius: Metrics.Radius.lg, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Metrics.Radius.lg, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
         )
+    }
+
+    // profile_bg_color is optional -- unset means "no override", not "fall
+    // back to a default color".
+    private var profileBgColor: Color? {
+        guard let hex = user.userSettings?.profileBgColor, !hex.isEmpty else { return nil }
+        return Color(hex: hex)
+    }
+
+    // Everything BEHIND the header's actual content, composited into one
+    // group so profile_surface_opacity/_blur can apply to just this --
+    // SwiftUI's .blur(radius:) blurs a view's own content too, unlike
+    // CSS's backdrop-filter (which only blurs what's behind an element),
+    // so applying it to the header's full VStack would have blurred the
+    // avatar/name/stats text right along with the background. Composited
+    // separately and placed via .background() specifically to avoid that.
+    private var headerBackground: some View {
+        ZStack {
+            ProfileHeaderBackgroundFill(style: user.userSettings?.profileHeaderStyle, overrideColor: profileBgColor)
+            // profile_backdrop_image_url/_strength -- web clamps strength
+            // to 0.2-0.55 (user_settings.lua); matched here rather than
+            // trusting whatever the stored value is.
+            if let backdropUrl = user.userSettings?.profileBackdropImageUrl, !backdropUrl.isEmpty, let url = URL(string: backdropUrl) {
+                AsyncImage(url: url) { phase in
+                    if case .success(let image) = phase {
+                        image.resizable().scaledToFill()
+                            .opacity(min(0.55, max(0.2, user.userSettings?.profileBackdropStrength ?? 0.18)))
+                    }
+                }
+                .clipped()
+            }
+            AccentWash(color: accent, secondaryColor: secondaryAccent, bannerStyle: user.userSettings?.profileBannerStyle)
+        }
+        .opacity(user.userSettings?.profileSurfaceOpacity.map { min(1, max(0.2, $0)) } ?? 1)
+        .blur(radius: min(24, max(0, user.userSettings?.profileSurfaceBlur ?? 0)))
     }
 
     private var avatarView: some View {
@@ -442,19 +476,32 @@ private struct ProfileName: View {
 /// underneath by ProfileHeader) stays constant across all five modes; this
 /// only changes what sits on top of it, mirroring web's solid/glass/blur/
 /// transparent/gradient header treatments.
-private struct ProfileHeaderBackground: ViewModifier {
+/// A standalone background fill layer (not a ViewModifier -- it's
+/// composited inside ProfileHeader's headerBackground ZStack alongside the
+/// backdrop image and AccentWash, rather than wrapping the header's actual
+/// content, so profile_surface_opacity/_blur can apply to backgrounds only).
+private struct ProfileHeaderBackgroundFill: View {
     let style: String?
+    /// `profile_bg_color` -- an explicit override wins outright over
+    /// profile_header_style, same as web's `[style*="--profile-bg-override"]`
+    /// selector taking precedence by being a plain background-color rule
+    /// applied regardless of which `.profile-header-*` class is also active.
+    let overrideColor: Color?
 
-    func body(content: Content) -> some View {
-        switch style {
-        case "solid":
-            content.background(Color(uiColor: .secondarySystemBackground))
-        case "blur":
-            content.background(.ultraThinMaterial)
-        case "transparent", "gradient":
-            content
-        default:
-            content.background(.thinMaterial)
+    var body: some View {
+        if let overrideColor {
+            overrideColor
+        } else {
+            switch style {
+            case "solid":
+                Color(uiColor: .secondarySystemBackground)
+            case "blur":
+                Rectangle().fill(.ultraThinMaterial)
+            case "transparent", "gradient":
+                Color.clear
+            default:
+                Rectangle().fill(.thinMaterial)
+            }
         }
     }
 }

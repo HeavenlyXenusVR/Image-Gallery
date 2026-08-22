@@ -69,8 +69,23 @@ struct AccentWash: View {
     /// -- nil when the user hasn't set a second color, same single-color
     /// wash as before.
     var secondaryColor: Color?
+    /// `profile_banner_style` -- web layers a second, differently-angled
+    /// gradient plus a tinted panel fill per style
+    /// (.profile-banner-mesh/aurora/spotlight in styles.css); folded into
+    /// this same wash rather than a second competing background layer
+    /// stacked on top of profile_header_style's own background modifier,
+    /// since both target the identical header region.
+    var bannerStyle: String?
 
     var body: some View {
+        ZStack {
+            base
+            secondLayer
+        }
+    }
+
+    @ViewBuilder
+    private var base: some View {
         if let secondaryColor {
             LinearGradient(
                 colors: [color.opacity(0.35), secondaryColor.opacity(0.2), .clear],
@@ -83,6 +98,22 @@ struct AccentWash: View {
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
+        }
+    }
+
+    @ViewBuilder
+    private var secondLayer: some View {
+        switch bannerStyle {
+        case "mesh":
+            LinearGradient(colors: [.clear, color.opacity(0.12), .clear], startPoint: .top, endPoint: .bottom)
+        case "aurora":
+            LinearGradient(colors: [.clear, Color.green.opacity(0.1), .clear], startPoint: .bottomLeading, endPoint: .topTrailing)
+        case "spotlight":
+            RadialGradient(colors: [color.opacity(0.28), .clear], center: .leading, startRadius: 4, endRadius: 260)
+        case "poster":
+            LinearGradient(colors: [color.opacity(0.22), .clear], startPoint: .leading, endPoint: .trailing)
+        default:
+            EmptyView()
         }
     }
 }

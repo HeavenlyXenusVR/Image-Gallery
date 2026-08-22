@@ -79,6 +79,13 @@ struct UserSettings: Codable, Equatable {
     var profileFeaturedPanel: String?
     var profileSocialLayout: String?
     var profileCardStyle: String?
+    var profileBannerStyle: String?
+    var galleryBgColor: String?
+    var profileBgColor: String?
+    var profileBackdropImageUrl: String?
+    var profileBackdropStrength: Double?
+    var profileSurfaceOpacity: Double?
+    var profileSurfaceBlur: Double?
 }
 
 struct ProfilePageResponse: Codable {

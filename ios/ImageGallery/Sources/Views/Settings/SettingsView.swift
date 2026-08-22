@@ -44,6 +44,13 @@ struct SettingsView: View {
     @State private var profileFeaturedPanel = "uploads"
     @State private var profileSocialLayout = "rail"
     @State private var profileCardStyle = "glass"
+    @State private var profileBannerStyle = "gradient"
+    @State private var galleryBgColor: Color?
+    @State private var profileBgColor: Color?
+    @State private var profileBackdropImageUrl = ""
+    @State private var profileBackdropStrength = 0.18
+    @State private var profileSurfaceOpacity = 1.0
+    @State private var profileSurfaceBlur = 0.0
     @State private var isSavingAppearance = false
     @State private var loadedAppearance = false
     @State private var showingLogoutConfirm = false
@@ -179,6 +186,44 @@ struct SettingsView: View {
                     Text("Outline").tag("outline")
                     Text("Elevated").tag("elevated")
                     Text("Edge").tag("edge")
+                }
+                Picker("Profile banner", selection: $profileBannerStyle) {
+                    Text("Gradient").tag("gradient")
+                    Text("Mesh").tag("mesh")
+                    Text("Frame").tag("frame")
+                    Text("Aurora").tag("aurora")
+                    Text("Spotlight").tag("spotlight")
+                    Text("Poster").tag("poster")
+                }
+                if let galleryBgColor {
+                    ColorPicker("App background", selection: Binding(get: { galleryBgColor }, set: { self.galleryBgColor = $0 }), supportsOpacity: false)
+                    Button("Clear app background", role: .destructive) { self.galleryBgColor = nil }
+                } else {
+                    Button("Override app background") { galleryBgColor = Color(uiColor: .systemBackground) }
+                }
+                if let profileBgColor {
+                    ColorPicker("Profile background", selection: Binding(get: { profileBgColor }, set: { self.profileBgColor = $0 }), supportsOpacity: false)
+                    Button("Clear profile background", role: .destructive) { self.profileBgColor = nil }
+                } else {
+                    Button("Override profile background") { profileBgColor = accentColor }
+                }
+                TextField("Profile backdrop image URL", text: $profileBackdropImageUrl)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                if !profileBackdropImageUrl.isEmpty {
+                    VStack(alignment: .leading) {
+                        Text("Backdrop strength").font(.caption).foregroundStyle(.secondary)
+                        Slider(value: $profileBackdropStrength, in: 0.2...0.55)
+                    }
+                }
+                VStack(alignment: .leading) {
+                    Text("Profile surface opacity").font(.caption).foregroundStyle(.secondary)
+                    Slider(value: $profileSurfaceOpacity, in: 0.2...1)
+                }
+                VStack(alignment: .leading) {
+                    Text("Profile surface blur").font(.caption).foregroundStyle(.secondary)
+                    Slider(value: $profileSurfaceBlur, in: 0...24)
                 }
             }
 
@@ -483,6 +528,13 @@ struct SettingsView: View {
         profileFeaturedPanel = settings.profileFeaturedPanel ?? "uploads"
         profileSocialLayout = settings.profileSocialLayout ?? "rail"
         profileCardStyle = settings.profileCardStyle ?? "glass"
+        profileBannerStyle = settings.profileBannerStyle ?? "gradient"
+        galleryBgColor = (settings.galleryBgColor?.isEmpty == false) ? Color(hex: settings.galleryBgColor) : nil
+        profileBgColor = (settings.profileBgColor?.isEmpty == false) ? Color(hex: settings.profileBgColor) : nil
+        profileBackdropImageUrl = settings.profileBackdropImageUrl ?? ""
+        profileBackdropStrength = settings.profileBackdropStrength ?? 0.18
+        profileSurfaceOpacity = settings.profileSurfaceOpacity ?? 1.0
+        profileSurfaceBlur = settings.profileSurfaceBlur ?? 0.0
     }
 
     private func saveAppearance() async {
@@ -522,7 +574,16 @@ struct SettingsView: View {
                 profileContentFocus: profileContentFocus,
                 profileFeaturedPanel: profileFeaturedPanel,
                 profileSocialLayout: profileSocialLayout,
-                profileCardStyle: profileCardStyle
+                profileCardStyle: profileCardStyle,
+                profileBannerStyle: profileBannerStyle,
+                // Always sent, never omitted -- "" is what actually clears
+                // these server-side, same reasoning as accentSecondary above.
+                galleryBgColor: galleryBgColor?.toHexString() ?? "",
+                profileBgColor: profileBgColor?.toHexString() ?? "",
+                profileBackdropImageUrl: profileBackdropImageUrl,
+                profileBackdropStrength: profileBackdropStrength,
+                profileSurfaceOpacity: profileSurfaceOpacity,
+                profileSurfaceBlur: profileSurfaceBlur
             )
             let user = try await GalleryAPIClient.shared.updateSettings(body)
             session.setCurrentUser(user)

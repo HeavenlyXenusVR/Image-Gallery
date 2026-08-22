@@ -43,6 +43,16 @@ struct RootView: View {
         .preferredColorScheme(colorScheme)
         .tint(Color(hex: session.currentUser?.userSettings?.accentColor))
         .modifier(GalleryFontDesign(galleryFont: session.currentUser?.userSettings?.galleryFont))
+        // gallery_bg_color -- mirrors web's --gallery-bg-override, which
+        // replaces the app's base --bg CSS variable everywhere. Applied as
+        // a background behind the root view; ScrollView-based screens
+        // (most of this app) show it through, but List/Form screens
+        // (Settings, Collections, Messages) paint their own opaque system
+        // grouped background on top regardless -- a real gap versus web's
+        // universal CSS variable, not something SwiftUI's List/Form let a
+        // background modifier override without replacing their appearance
+        // globally via UIKit interop.
+        .background(galleryBackgroundColor)
         // reduce_motion: nils out the animation on every transaction that
         // flows through this point in the tree, including ones descendant
         // views set with explicit withAnimation(...) calls -- the
@@ -83,6 +93,15 @@ struct RootView: View {
         case "dark": return .dark
         default: return nil
         }
+    }
+
+    // Optional, unlike accentColor -- an unset gallery_bg_color means "use
+    // the system background", not "fall back to a default color".
+    private var galleryBackgroundColor: Color {
+        guard let hex = session.currentUser?.userSettings?.galleryBgColor, !hex.isEmpty else {
+            return Color(uiColor: .systemBackground)
+        }
+        return Color(hex: hex)
     }
 
     private func updatePolling() {
