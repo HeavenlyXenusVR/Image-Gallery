@@ -217,6 +217,7 @@ httpd.route("PATCH", "/api/admin/site-settings", routes.admin_update_site_settin
 httpd.route("GET", "/api/admin/background-music", routes.admin_list_background_music)
 httpd.route("POST", "/api/admin/background-music", routes.admin_upload_background_music)
 httpd.route("DELETE", "/api/admin/background-music/:track_id", routes.admin_delete_background_music)
+httpd.route("POST", "/api/admin/background-music/import-playlist", routes.admin_import_background_music_playlist)
 httpd.route("GET", "/api/background-music", routes.list_background_music)
 httpd.route("GET", "/api/background-music/:track_id/file", routes.serve_background_music_file)
 

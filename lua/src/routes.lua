@@ -5440,6 +5440,7 @@ function M.admin_delete_background_music(req)
   return 200, { ok = true }
 end
 
+
 -- Public: every visitor's client (logged in or not) fetches this list to
 -- build its own local shuffle order -- no auth, no per-track access
 -- token, same as the site's public media browsing.
@@ -5722,6 +5723,115 @@ end
 -- reason as shell_quote above.
 local function ffmpeg_bin()
   return os.getenv("GALLERY_FFMPEG_BIN") or "ffmpeg"
+end
+
+-- Pull N random tracks out of an arbitrary playlist URL (YouTube,
+-- SoundCloud, anything yt-dlp's extractors cover) and add them as
+-- background music. Runs entirely as a detached background job -- even a
+-- handful of audio extractions can take minutes total, far past any
+-- reasonable request timeout -- so this returns immediately and the admin
+-- panel just polls the regular list endpoint to see tracks appear.
+--
+-- The job never inserts into the DB itself (no bytea/DB code in the bash
+-- script -- that's real complexity worth not duplicating). Instead it
+-- re-uses M.admin_upload_background_music by curling it over localhost for
+-- each downloaded file, authenticated with a short-lived token minted for
+-- this job. That gets the exact same validation (audio sniffing, size cap,
+-- the MAX_BACKGROUND_MUSIC_TRACKS cap enforced per-insert) for free instead
+-- of a second, easier-to-drift-out-of-sync copy of it.
+--
+-- Never string-interpolates untrusted text (playlist entry titles, etc.)
+-- into a shell command: yt-dlp's own output-template sanitizes the title
+-- into a filesystem-safe filename, and that's the ONLY place a title ever
+-- appears -- curl's `-F file=@path` reads the multipart filename from the
+-- path's basename, so no title text is ever concatenated into a command
+-- line. The one piece of admin-supplied input (the playlist URL) is passed
+-- as a real argv entry to bash (shell_quote'd once, by Lua, to launch the
+-- script) and only ever referenced via a quoted shell variable after that,
+-- never re-interpolated into another command string.
+--
+-- Same env-var-with-deployment-specific-fallback convention as
+-- ffmpeg_bin()/ffprobe_bin() above: yt-dlp is a `pip install --user` tool
+-- living in ~/.local/bin, which is on an interactive shell's PATH but NOT
+-- on the systemd --user service's (confirmed live: PATH there is just
+-- /usr/local/{s,}bin:/usr/bin:... -- a bare "yt-dlp" in the background
+-- script failed with a silently-swallowed "command not found" every time,
+-- the actual reason no tracks were ever appearing).
+local function ytdlp_bin()
+  return os.getenv("GALLERY_YTDLP_BIN") or (os.getenv("HOME") or "/home/proxy") .. "/.local/bin/yt-dlp"
+end
+
+function M.admin_import_background_music_playlist(req)
+  local owner, status, body = require_site_owner(req)
+  if not owner then return status, body end
+
+  local payload = json_body(req)
+  local playlist_url = trim(nn(payload.url) or "")
+  if playlist_url == "" or not playlist_url:match("^https?://") then
+    return 400, { detail = "Enter a valid playlist URL." }
+  end
+
+  local count_row = db.fetchone("SELECT COUNT(*) AS n FROM background_music")
+  local remaining = MAX_BACKGROUND_MUSIC_TRACKS - db.toint(count_row and count_row.n, 0)
+  if remaining <= 0 then
+    return 400, { detail = string.format("Only %d background tracks are allowed at once -- remove one first.", MAX_BACKGROUND_MUSIC_TRACKS) }
+  end
+  local want = math.min(remaining, tonumber(payload.count) or remaining, 10)
+
+  -- 20 minutes -- generous for even a slow multi-track import, but bounded
+  -- (not a real login session) since this token only ever needs to live
+  -- for the duration of this one background job.
+  local internal_token = auth_lib.issue_token(M.settings.session_secret, { id = tostring(owner.id), username = owner.username }, 1200)
+
+  -- No string.format here -- every value the script needs (playlist URL,
+  -- track count, token, port, yt-dlp's real path) travels as a real bash
+  -- argv entry ($1-$5), not interpolated into this template, so yt-dlp's
+  -- own %(...)s output-template syntax can be written plainly instead of
+  -- %%-escaped for a formatter that never runs over this string.
+  local script = [[
+#!/usr/bin/env bash
+set -uo pipefail
+PLAYLIST_URL="$1"
+NEED="$2"
+TOKEN="$3"
+PORT="$4"
+YTDLP="$5"
+TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR"' EXIT
+
+"$YTDLP" --flat-playlist --print "%(webpage_url)s" "$PLAYLIST_URL" > "$TMPDIR/urls.txt" 2>/dev/null
+shuf "$TMPDIR/urls.txt" | head -n "$NEED" > "$TMPDIR/picked.txt"
+
+while IFS= read -r vurl; do
+  [ -z "$vurl" ] && continue
+  OUTDIR="$(mktemp -d)"
+  timeout 180 nice -n 15 ionice -c2 -n6 "$YTDLP" -x --audio-format mp3 --audio-quality 5 \
+    --no-playlist --match-filter "duration<900" \
+    -o "$OUTDIR/%(title).100B.%(ext)s" "$vurl" >/dev/null 2>&1
+  FILE="$(ls "$OUTDIR"/*.mp3 2>/dev/null | head -n1)"
+  if [ -n "$FILE" ]; then
+    curl -s -o /dev/null --max-time 60 -H "Authorization: Bearer $TOKEN" \
+      -F "file=@$FILE;type=audio/mpeg" "http://127.0.0.1:$PORT/api/admin/background-music"
+  fi
+  rm -rf "$OUTDIR"
+done < "$TMPDIR/picked.txt"
+]]
+
+  local script_path = os.tmpname() .. ".sh"
+  local sf = assert(io.open(script_path, "wb"))
+  sf:write(script)
+  sf:close()
+
+  local cmd = string.format(
+    "( bash %s %s %s %s %s %s; rm -f %s ) </dev/null >/dev/null 2>&1 &",
+    shell_quote(script_path), shell_quote(playlist_url), shell_quote(tostring(want)),
+    shell_quote(internal_token), shell_quote(tostring(M.settings.port)), shell_quote(ytdlp_bin()),
+    shell_quote(script_path)
+  )
+  os.execute(cmd)
+
+  write_audit_log(owner.id, "background_music_playlist_import", "background_music", nil, playlist_url:sub(1, 200))
+  return 202, { status = "importing", requested = want }
 end
 
 -- No lfs/posix rock is vendored, so directory listing shells out to `find`
