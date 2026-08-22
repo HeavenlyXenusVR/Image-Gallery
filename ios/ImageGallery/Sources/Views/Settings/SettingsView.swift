@@ -30,6 +30,10 @@ struct SettingsView: View {
     @State private var profileShowJoinedDate = true
     @State private var watermarkText = ""
     @State private var discordWebhookUrl = ""
+    @State private var cardAspectRatio = "free"
+    @State private var mediaBorderStyle = "none"
+    @State private var cardInfoDisplay = "below"
+    @State private var columnGap = "normal"
     @State private var isSavingAppearance = false
     @State private var loadedAppearance = false
     @State private var showingLogoutConfirm = false
@@ -82,6 +86,32 @@ struct SettingsView: View {
                     Text("Downloads").tag("downloads")
                     Text("Views").tag("views")
                     Text("Old").tag("old")
+                }
+                Picker("Card aspect ratio", selection: $cardAspectRatio) {
+                    Text("Free").tag("free")
+                    Text("Square").tag("1:1")
+                    Text("16:9").tag("16:9")
+                    Text("4:3").tag("4:3")
+                    Text("3:4").tag("3:4")
+                }
+                Picker("Card info", selection: $cardInfoDisplay) {
+                    Text("Below").tag("below")
+                    Text("Overlay").tag("overlay")
+                    Text("Minimal").tag("minimal")
+                    Text("Hidden").tag("hidden")
+                }
+                Picker("Card border", selection: $mediaBorderStyle) {
+                    Text("None").tag("none")
+                    Text("Soft").tag("soft")
+                    Text("Crisp").tag("crisp")
+                    Text("Glow").tag("glow")
+                    Text("Neon").tag("neon")
+                }
+                Picker("Grid spacing", selection: $columnGap) {
+                    Text("None").tag("none")
+                    Text("Tight").tag("tight")
+                    Text("Normal").tag("normal")
+                    Text("Wide").tag("wide")
                 }
             }
 
@@ -370,6 +400,10 @@ struct SettingsView: View {
         profileShowJoinedDate = settings.profileShowJoinedDate ?? true
         watermarkText = settings.watermarkText ?? ""
         discordWebhookUrl = settings.discordWebhookUrl ?? ""
+        cardAspectRatio = settings.cardAspectRatio ?? "free"
+        mediaBorderStyle = settings.mediaBorderStyle ?? "none"
+        cardInfoDisplay = settings.cardInfoDisplay ?? "below"
+        columnGap = settings.columnGap ?? "normal"
     }
 
     private func saveAppearance() async {
@@ -395,7 +429,11 @@ struct SettingsView: View {
                 profileShowFollowCounts: profileShowFollowCounts,
                 profileShowJoinedDate: profileShowJoinedDate,
                 watermarkText: watermarkText,
-                discordWebhookUrl: discordWebhookUrl
+                discordWebhookUrl: discordWebhookUrl,
+                cardAspectRatio: cardAspectRatio,
+                mediaBorderStyle: mediaBorderStyle,
+                cardInfoDisplay: cardInfoDisplay,
+                columnGap: columnGap
             )
             let user = try await GalleryAPIClient.shared.updateSettings(body)
             session.setCurrentUser(user)

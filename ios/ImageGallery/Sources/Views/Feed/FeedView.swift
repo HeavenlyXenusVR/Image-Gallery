@@ -8,7 +8,7 @@ struct FeedView: View {
     @FocusState private var searchFocused: Bool
 
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity)), spacing: 12)]
+        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity)), spacing: Appearance.gridSpacing(session.currentUser?.userSettings?.columnGap))]
     }
 
     var body: some View {
@@ -172,7 +172,7 @@ struct FeedView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.top, 40)
             } else {
-                LazyVGrid(columns: columns, spacing: 12) {
+                LazyVGrid(columns: columns, spacing: Appearance.gridSpacing(session.currentUser?.userSettings?.columnGap)) {
                     ForEach(viewModel.items) { item in
                         NavigationLink(destination: MediaDetailView(mediaId: item.id)) {
                             MediaCard(item: item)

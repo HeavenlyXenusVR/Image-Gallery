@@ -5,7 +5,7 @@ struct ProfileView: View {
     @EnvironmentObject private var session: SessionStore
 
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity, default_: 100)), spacing: 8)]
+        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity, default_: 100)), spacing: Appearance.gridSpacing(session.currentUser?.userSettings?.columnGap))]
     }
 
     init(username: String) {
@@ -85,7 +85,7 @@ struct ProfileView: View {
     private var mediaSection: some View {
         if !viewModel.media.isEmpty {
             Text("Posts").font(.headline)
-            LazyVGrid(columns: columns, spacing: 8) {
+            LazyVGrid(columns: columns, spacing: Appearance.gridSpacing(session.currentUser?.userSettings?.columnGap)) {
                 ForEach(viewModel.media) { item in
                     NavigationLink(destination: MediaDetailView(mediaId: item.id)) {
                         MediaCard(item: item)

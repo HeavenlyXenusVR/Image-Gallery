@@ -37,46 +37,66 @@ struct MediaCard: View {
         return components.url
     }
 
+    // "card_info_display" -- mirrors web's four gallery-info-* CSS modes
+    // (see CardInfoDisplay's doc comment). Below/minimal render as normal
+    // flow content under the thumbnail; overlay renders inside the
+    // thumbnail's own bounds with a scrim; hidden renders neither.
+    private var infoDisplay: CardInfoDisplay { CardInfoDisplay(settings?.cardInfoDisplay) }
+    private var borderStyle: MediaBorderStyle { MediaBorderStyle(settings?.mediaBorderStyle) }
+    private var cornerRadius: CGFloat {
+        switch borderStyle {
+        case .soft, .crisp: return 4
+        default: return Metrics.Radius.md
+        }
+    }
+
     var body: some View {
-        Color.clear
-            .aspectRatio(1, contentMode: .fit)
-            .overlay(thumbnail)
-            .overlay { if shouldShowLivePreview, let player = previewController.player {
-                GridPreviewVideoView(player: player)
-                    .modifier(VideoPreviewBlur(active: settings?.blurVideoPreviews ?? false))
-                    .allowsHitTesting(false)
-                    .transition(.opacity)
-            } }
-            .overlay(alignment: .bottom) { scrim }
-            .overlay(alignment: .bottom) { footer }
-            .overlay(alignment: .topTrailing) { kindBadge }
-            .clipShape(RoundedRectangle(cornerRadius: Metrics.Radius.md, style: .continuous))
-            .cardShadow()
-            .onAppear { isOnScreen = true }
-            .onDisappear {
-                isOnScreen = false
+        VStack(alignment: .leading, spacing: 6) {
+            Color.clear
+                .aspectRatio(Appearance.cardAspectRatio(settings?.cardAspectRatio), contentMode: .fit)
+                .overlay(thumbnail)
+                .overlay { if shouldShowLivePreview, let player = previewController.player {
+                    GridPreviewVideoView(player: player)
+                        .modifier(VideoPreviewBlur(active: settings?.blurVideoPreviews ?? false))
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                } }
+                .overlay(alignment: .bottom) { if infoDisplay == .overlay { scrim } }
+                .overlay(alignment: .bottom) { if infoDisplay == .overlay { footer(overlayStyle: true) } }
+                .overlay(alignment: .topTrailing) { kindBadge }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .modifier(MediaBorderModifier(style: borderStyle, cornerRadius: cornerRadius))
+                .cardShadow()
+
+            if infoDisplay == .below || infoDisplay == .minimal {
+                footer(overlayStyle: false)
+            }
+        }
+        .onAppear { isOnScreen = true }
+        .onDisappear {
+            isOnScreen = false
+            previewController.stop()
+        }
+        // `.task(id:)` cancels its previous Task the moment the id
+        // changes (or the view disappears) -- exactly the debounce this
+        // needs: fast-scrolling past a card flips shouldShowLivePreview
+        // true-then-false before the sleep ever finishes, so the
+        // cancellation check below stops it from ever starting a real
+        // AVPlayer for a card the viewer never actually stopped on.
+        .task(id: shouldShowLivePreview) {
+            guard shouldShowLivePreview, let url = previewURL else {
                 previewController.stop()
+                return
             }
-            // `.task(id:)` cancels its previous Task the moment the id
-            // changes (or the view disappears) -- exactly the debounce this
-            // needs: fast-scrolling past a card flips shouldShowLivePreview
-            // true-then-false before the sleep ever finishes, so the
-            // cancellation check below stops it from ever starting a real
-            // AVPlayer for a card the viewer never actually stopped on.
-            .task(id: shouldShowLivePreview) {
-                guard shouldShowLivePreview, let url = previewURL else {
-                    previewController.stop()
-                    return
-                }
-                try? await Task.sleep(nanoseconds: 350_000_000)
-                guard !Task.isCancelled else { return }
-                previewController.start(url: url, muted: previewMuted)
-            }
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            previewController.start(url: url, muted: previewMuted)
+        }
     }
 
     // A dark gradient anchored to the bottom edge so the title/stat footer
     // stays legible over busy thumbnails without a solid overlay flattening
-    // the whole card.
+    // the whole card. Overlay mode only.
     private var scrim: some View {
         LinearGradient(
             colors: [.black.opacity(0.65), .black.opacity(0)],
@@ -87,23 +107,34 @@ struct MediaCard: View {
         .allowsHitTesting(false)
     }
 
-    private var footer: some View {
-        HStack(alignment: .lastTextBaseline, spacing: 6) {
-            Text(item.title?.nilIfEmpty ?? "Untitled")
-                .font(.caption)
-                .fontWeight(.semibold)
-                .lineLimit(1)
-                .foregroundStyle(.white)
-            Spacer(minLength: 4)
-            if let likeCount = item.likeCount, likeCount > 0 {
-                Label("\(likeCount)", systemImage: "heart.fill")
-                    .labelStyle(.compactStat)
+    @ViewBuilder
+    private func footer(overlayStyle: Bool) -> some View {
+        if infoDisplay != .hidden {
+            HStack(alignment: .lastTextBaseline, spacing: 6) {
+                Text(item.title?.nilIfEmpty ?? "Untitled")
+                    .font(.caption)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                // "minimal" drops the stat, same as web's
+                // .gallery-info-minimal .media-copy p { display: none }.
+                if infoDisplay != .minimal {
+                    Spacer(minLength: 4)
+                    if let likeCount = item.likeCount, likeCount > 0 {
+                        Label("\(likeCount)", systemImage: "heart.fill")
+                            .labelStyle(.compactStat)
+                    }
+                }
             }
+            .font(.caption2)
+            // Color.primary (not the bare .primary HierarchicalShapeStyle
+            // shorthand) so both ternary branches are the same concrete
+            // Color type -- foregroundStyle's generic parameter needs one
+            // single type, and mixing Color with HierarchicalShapeStyle
+            // across a ternary's branches wouldn't type-check.
+            .foregroundStyle(overlayStyle ? Color.white.opacity(0.9) : Color.primary)
+            .padding(.horizontal, overlayStyle ? 8 : 2)
+            .padding(.bottom, overlayStyle ? 6 : 0)
         }
-        .font(.caption2)
-        .foregroundStyle(.white.opacity(0.9))
-        .padding(.horizontal, 8)
-        .padding(.bottom, 6)
     }
 
     @ViewBuilder
@@ -143,6 +174,36 @@ struct MediaCard: View {
             }
         } else {
             Rectangle().fill(.secondary.opacity(0.2)).overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+        }
+    }
+}
+
+/// Mirrors web's four `gallery-border-*` treatments (see MediaBorderStyle's
+/// doc comment): glow/neon add an accent-tinted shadow, neon additionally
+/// draws a visible accent-colored stroke. none/soft/crisp differ only by
+/// the corner radius MediaCard already applies before this modifier runs.
+private struct MediaBorderModifier: ViewModifier {
+    let style: MediaBorderStyle
+    let cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        switch style {
+        case .none, .soft:
+            content
+        case .crisp:
+            content.overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
+            )
+        case .glow:
+            content.shadow(color: Color.accentColor.opacity(0.35), radius: 8)
+        case .neon:
+            content
+                .overlay(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1.5)
+                )
+                .shadow(color: Color.accentColor.opacity(0.45), radius: 12)
         }
     }
 }

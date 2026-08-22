@@ -11,7 +11,7 @@ struct StudioView: View {
     @EnvironmentObject private var session: SessionStore
 
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity, default_: 150)), spacing: 12)]
+        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity, default_: 150)), spacing: Appearance.gridSpacing(session.currentUser?.userSettings?.columnGap))]
     }
 
     private var filteredItems: [MediaItem] {
@@ -41,7 +41,7 @@ struct StudioView: View {
                     Text(errorMessage).font(.footnote).foregroundStyle(.red)
                 }
 
-                LazyVGrid(columns: columns, spacing: 12) {
+                LazyVGrid(columns: columns, spacing: Appearance.gridSpacing(session.currentUser?.userSettings?.columnGap)) {
                     ForEach(filteredItems) { item in
                         StudioItemCard(item: item, viewModel: viewModel)
                     }

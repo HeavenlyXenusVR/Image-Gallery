@@ -29,6 +29,56 @@ enum Appearance {
         default: return default_
         }
     }
+
+    /// `column_gap` -- exact pixel values web's COLUMN_GAP_MAP
+    /// (frontend/src/utils/appearance.js) uses for `--media-grid-gap`.
+    static func gridSpacing(_ columnGap: String?) -> CGFloat {
+        switch columnGap {
+        case "none": return 0
+        case "tight": return 8
+        case "wide": return 24
+        default: return 14
+        }
+    }
+
+    /// `card_aspect_ratio` -- "free" (the source image's own aspect ratio)
+    /// has no native equivalent here without a masonry-style variable-height
+    /// grid layout (LazyVGrid always sizes every cell in a row to the same
+    /// height), so it falls back to square rather than attempting that.
+    static func cardAspectRatio(_ value: String?) -> CGFloat {
+        switch value {
+        case "16:9": return 16.0 / 9.0
+        case "4:3": return 4.0 / 3.0
+        case "3:4": return 3.0 / 4.0
+        default: return 1
+        }
+    }
+}
+
+/// `card_info_display` -- mirrors web's four `gallery-info-*` CSS modes
+/// (frontend/src/styles.css). "overlay" drops the hover-fade-in web does
+/// (`opacity 0 -> 1 on hover`) since there's no hover state on touch; it's
+/// simply always visible here instead.
+enum CardInfoDisplay: String {
+    case below, overlay, minimal, hidden
+
+    init(_ raw: String?) {
+        self = CardInfoDisplay(rawValue: raw ?? "") ?? .below
+    }
+}
+
+/// `media_border_style` -- mirrors web's four `gallery-border-*` CSS modes.
+/// web's "soft" vs "crisp" distinction is a subtle corner-radius nuance
+/// (rounded image corners vs. rounded card + square image corners); this
+/// gives crisp a real, more clearly differentiated treatment (sharp corners
+/// + a thin border) rather than reproducing a difference too subtle to
+/// notice at card size.
+enum MediaBorderStyle: String {
+    case none, soft, crisp, glow, neon
+
+    init(_ raw: String?) {
+        self = MediaBorderStyle(rawValue: raw ?? "") ?? .none
+    }
 }
 
 enum AvatarShape: String {

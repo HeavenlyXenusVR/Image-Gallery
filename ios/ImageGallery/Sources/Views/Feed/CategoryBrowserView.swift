@@ -42,7 +42,7 @@ struct CategoryMediaView: View {
     @StateObject private var viewModel = FeedViewModel()
     @EnvironmentObject private var session: SessionStore
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity)), spacing: 8)]
+        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity)), spacing: Appearance.gridSpacing(session.currentUser?.userSettings?.columnGap))]
     }
 
     var body: some View {
@@ -50,7 +50,7 @@ struct CategoryMediaView: View {
             if let errorMessage = viewModel.errorMessage {
                 Text(errorMessage).foregroundStyle(.red).padding()
             }
-            LazyVGrid(columns: columns, spacing: 12) {
+            LazyVGrid(columns: columns, spacing: Appearance.gridSpacing(session.currentUser?.userSettings?.columnGap)) {
                 ForEach(viewModel.items) { item in
                     NavigationLink(destination: MediaDetailView(mediaId: item.id)) {
                         MediaCard(item: item)

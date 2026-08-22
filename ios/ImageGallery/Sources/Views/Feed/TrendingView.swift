@@ -8,7 +8,7 @@ struct TrendingView: View {
     @EnvironmentObject private var session: SessionStore
 
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity)), spacing: 8)]
+        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity)), spacing: Appearance.gridSpacing(session.currentUser?.userSettings?.columnGap))]
     }
 
     var body: some View {
@@ -28,7 +28,7 @@ struct TrendingView: View {
                 Text(errorMessage).foregroundStyle(.red).padding()
             }
 
-            LazyVGrid(columns: columns, spacing: 12) {
+            LazyVGrid(columns: columns, spacing: Appearance.gridSpacing(session.currentUser?.userSettings?.columnGap)) {
                 ForEach(items) { item in
                     NavigationLink(destination: MediaDetailView(mediaId: item.id)) {
                         MediaCard(item: item)

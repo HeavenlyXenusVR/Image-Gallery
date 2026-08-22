@@ -65,6 +65,10 @@ struct UserSettings: Codable, Equatable {
     var profileShowJoinedDate: Bool?
     var watermarkText: String?
     var discordWebhookUrl: String?
+    var cardAspectRatio: String?
+    var mediaBorderStyle: String?
+    var cardInfoDisplay: String?
+    var columnGap: String?
 }
 
 struct ProfilePageResponse: Codable {

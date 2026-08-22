@@ -87,6 +87,10 @@ extension GalleryAPIClient {
         var profileShowJoinedDate: Bool?
         var watermarkText: String?
         var discordWebhookUrl: String?
+        var cardAspectRatio: String?
+        var mediaBorderStyle: String?
+        var cardInfoDisplay: String?
+        var columnGap: String?
     }
 
     func updateSettings(_ body: SettingsUpdateBody) async throws -> GalleryUser {
