@@ -131,10 +131,13 @@ httpd.route("GET", "/api/media/:media_id/hls/:quality/:segment", routes.serve_hl
 httpd.route("GET", "/api/media/:media_id/download", routes.download_media)
 httpd.route("GET", "/api/users/:user_id/avatar", routes.serve_user_avatar)
 
--- "My Other Projects" tab -- see routes.lua's M.download_lumisound doc
+-- "My Other Projects" tab -- see routes.lua's download_latest_ipa doc
 -- comment for why this proxies through `gh` instead of linking straight to
--- GitHub (the Lumisound repo is private).
+-- GitHub (both repos are private -- Nyxframe's own repo goes back to
+-- private once this session's CI-billing workaround is no longer needed,
+-- same reason Lumisound already needed this).
 httpd.route("GET", "/api/projects/lumisound/download", routes.download_lumisound)
+httpd.route("GET", "/api/projects/nyxframe/download", routes.download_nyxframe)
 
 -- Public profiles, follows, friend requests/friends, search, blocks -- see
 -- routes.lua's "Public profiles, follows, friend requests..." section

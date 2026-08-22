@@ -4,6 +4,7 @@ import { apiFetchBlob, apiUrl, downloadBlob } from "../api.js";
 import { glassPointerMove, Page } from "../components/ui.jsx";
 import swarmpanelLogo from "../assets/projects/swarmpanel.png";
 import lumisoundLogo from "../assets/projects/lumisound.png";
+import nyxframeLogo from "../assets/projects/nyxframe.png";
 
 const PROJECTS = [
   {
@@ -20,6 +21,17 @@ const PROJECTS = [
     tagline: "iOS music app. Downloads the latest build straight from GitHub.",
     logo: lumisoundLogo,
     kind: "download",
+    // Both hit /api/projects/<id>/download on this same backend -- see
+    // routes.lua's download_latest_ipa doc comment for why (repo privacy).
+    downloadPath: "/api/projects/lumisound/download",
+  },
+  {
+    id: "nyxframe",
+    name: "Nyxframe",
+    tagline: "This site's own native iOS app. Downloads the latest build straight from GitHub.",
+    logo: nyxframeLogo,
+    kind: "download",
+    downloadPath: "/api/projects/nyxframe/download",
   },
 ];
 
@@ -30,9 +42,9 @@ function ProjectCard({ project, ctx }) {
     if (busy) return;
     setBusy(true);
     try {
-      const { blob, filename } = await apiFetchBlob(apiUrl("/api/projects/lumisound/download"));
+      const { blob, filename } = await apiFetchBlob(apiUrl(project.downloadPath));
       downloadBlob(blob, filename);
-      ctx.showToast("Lumisound download started.", "success");
+      ctx.showToast(`${project.name} download started.`, "success");
     } catch (error) {
       ctx.showToast(error.message, "error");
     } finally {

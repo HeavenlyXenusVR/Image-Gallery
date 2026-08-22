@@ -6865,14 +6865,16 @@ function M.serve_user_avatar(req)
 end
 
 -- ---------------------------------------------------------------------------
--- "My Other Projects" tab: Lumisound's latest .ipa, proxied from its GitHub
--- repo. The repo is private, so the browser can't just link straight to a
--- GitHub release asset -- private-repo asset downloads need an
--- Authorization header GitHub's own CDN redirect won't carry, and this repo
--- owner obviously can't hand out their GitHub token to the page's visitors.
--- Shells out to the `gh` CLI instead of a Lua HTTPS client: it's already
--- authenticated on this box (this backend and `gh` both run as the same
--- user), so this never needs to read/store/handle the token itself --
+-- "My Other Projects" tab: proxies each project's latest .ipa from its
+-- GitHub repo (Lumisound, and now Nyxframe itself once it goes back to
+-- private -- the whole reason this got generalized instead of staying a
+-- Lumisound-only special case). A private repo means the browser can't just
+-- link straight to a GitHub release asset -- private-repo asset downloads
+-- need an Authorization header GitHub's own CDN redirect won't carry, and
+-- this repo owner obviously can't hand out their GitHub token to the page's
+-- visitors. Shells out to the `gh` CLI instead of a Lua HTTPS client: it's
+-- already authenticated on this box (this backend and `gh` both run as the
+-- same user), so this never needs to read/store/handle the token itself --
 -- confirmed `gh auth status` succeeds even with every keyring/DBus/session
 -- env var stripped, so it works fine from this systemd --user service's
 -- minimal environment too. Same detached-background-job + bounded-poll
@@ -6880,10 +6882,9 @@ end
 -- yields to other requests instead of blocking the single-threaded server.
 -- ---------------------------------------------------------------------------
 
-local LUMISOUND_REPO = "HeavenlyXenusVR/Lumisound"
-local LUMISOUND_POLL_SECONDS = 20
+local PROJECT_DOWNLOAD_POLL_SECONDS = 20
 
-local function lumisound_cache_dir()
+local function project_download_cache_dir()
   local dir = M.settings.uploads_dir .. "/_project_downloads"
   os.execute("mkdir -p " .. shell_quote(dir))
   return dir
@@ -6892,10 +6893,10 @@ end
 -- Fast metadata-only call (no asset bytes), so a synchronous io.popen here
 -- is fine -- this is the same kind of brief, bounded call the rest of this
 -- file already makes synchronously (e.g. ffprobe-equivalent lookups).
-local function lumisound_latest_tag()
+local function project_latest_tag(repo)
   local handle = io.popen(
     "env -i HOME=" .. shell_quote(os.getenv("HOME") or "") .. " PATH=" .. shell_quote(os.getenv("PATH") or "")
-      .. " gh release list --repo " .. shell_quote(LUMISOUND_REPO)
+      .. " gh release list --repo " .. shell_quote(repo)
       .. " --limit 1 --json tagName -q '.[0].tagName' 2>/dev/null"
   )
   if not handle then return nil end
@@ -6905,18 +6906,21 @@ local function lumisound_latest_tag()
   return tag ~= "" and tag or nil
 end
 
-local function lumisound_safe_tag(tag)
+local function project_safe_tag(tag)
   return (tag:gsub("[^%w%.%-]", "_"))
 end
 
-function M.download_lumisound(req)
-  local tag = lumisound_latest_tag()
-  if not tag then return 502, { detail = "Could not reach GitHub to check the latest Lumisound release. Try again shortly." } end
+-- key: short filesystem-safe prefix for this project's cache files (e.g.
+-- "lumisound"/"nyxframe"). display_name: used only in the filename and
+-- error text shown to the visitor.
+local function download_latest_ipa(repo, key, display_name)
+  local tag = project_latest_tag(repo)
+  if not tag then return 502, { detail = "Could not reach GitHub to check the latest " .. display_name .. " release. Try again shortly." } end
 
-  local dir = lumisound_cache_dir()
-  local safe_tag = lumisound_safe_tag(tag)
-  local final_path = dir .. "/lumisound_" .. safe_tag .. ".ipa"
-  local filename = "Lumisound-" .. safe_tag .. ".ipa"
+  local dir = project_download_cache_dir()
+  local safe_tag = project_safe_tag(tag)
+  local final_path = dir .. "/" .. key .. "_" .. safe_tag .. ".ipa"
+  local filename = display_name .. "-" .. safe_tag .. ".ipa"
 
   local existing = io.open(final_path, "rb")
   if existing then
@@ -6937,7 +6941,7 @@ function M.download_lumisound(req)
   local pf = io.open(pending_marker, "rb")
   local pending_age = pf and tonumber(pf:read("*a")) or nil
   if pf then pf:close() end
-  local still_fetching = pending_age and (os.time() - pending_age) < LUMISOUND_POLL_SECONDS
+  local still_fetching = pending_age and (os.time() - pending_age) < PROJECT_DOWNLOAD_POLL_SECONDS
 
   if not still_fetching then
     local marker = assert(io.open(pending_marker, "wb"))
@@ -6949,7 +6953,7 @@ function M.download_lumisound(req)
       "( env -i HOME=%s PATH=%s gh release download %s --repo %s --pattern '*.ipa' -O %s --clobber "
         .. "&& mv -f %s %s; rm -f %s %s ) </dev/null >/dev/null 2>&1 &",
       shell_quote(os.getenv("HOME") or ""), shell_quote(os.getenv("PATH") or ""),
-      shell_quote(tag), shell_quote(LUMISOUND_REPO), shell_quote(tmp_path),
+      shell_quote(tag), shell_quote(repo), shell_quote(tmp_path),
       shell_quote(tmp_path), shell_quote(final_path),
       shell_quote(tmp_path), shell_quote(pending_marker)
     )
@@ -6957,7 +6961,7 @@ function M.download_lumisound(req)
   end
 
   local waited = 0
-  while waited < LUMISOUND_POLL_SECONDS do
+  while waited < PROJECT_DOWNLOAD_POLL_SECONDS do
     local f = io.open(final_path, "rb")
     if f then
       local content = f:read("*a")
@@ -6972,7 +6976,15 @@ function M.download_lumisound(req)
     if copas_ok then copas.sleep(0.5) end
     waited = waited + 0.5
   end
-  return 503, { detail = "Still fetching the latest Lumisound build from GitHub -- try again in a moment." }
+  return 503, { detail = "Still fetching the latest " .. display_name .. " build from GitHub -- try again in a moment." }
+end
+
+function M.download_lumisound(req)
+  return download_latest_ipa("HeavenlyXenusVR/Lumisound", "lumisound", "Lumisound")
+end
+
+function M.download_nyxframe(req)
+  return download_latest_ipa("HeavenlyXenusVR/Nyxframe", "nyxframe", "Nyxframe")
 end
 
 return M
