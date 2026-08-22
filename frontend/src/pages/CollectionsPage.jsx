@@ -11,7 +11,14 @@ export function CollectionsPage({ ctx }) {
   const [collections, setCollections] = useState([]);
   const [selected, setSelected] = useState(null);
   const [media, setMedia] = useState([]);
-  const [form, setForm] = useState({ name: "", description: "", is_public: true });
+  // Smart-collection creation previously only existed via two narrow side
+  // doors -- "save current Discover search" and "one-click from a tag
+  // suggestion" -- with no way to just build one directly here. The
+  // backend (POST /api/collections) already fully supports is_smart +
+  // filter_json in the create payload (sanitize_smart_filter accepts the
+  // same shape Discover's own filters use), so this is purely a UI gap:
+  // just exposing the fields that were always accepted.
+  const [form, setForm] = useState({ name: "", description: "", is_public: true, is_smart: false, filter_json: {} });
   const [picker, setPicker] = useState({ q: "", loading: false, results: [] });
   const [addingId, setAddingId] = useState("");
   const [loading, setLoading] = useState(true);
@@ -106,7 +113,7 @@ export function CollectionsPage({ ctx }) {
         body: JSON.stringify(form),
       });
       clearApiCache();
-      setForm({ name: "", description: "", is_public: true });
+      setForm({ name: "", description: "", is_public: true, is_smart: false, filter_json: {} });
       setMine(true);
       setCollections((rows) => [data.collection, ...rows]);
       await openCollection(data.collection.id, { fresh: true });
@@ -206,6 +213,59 @@ export function CollectionsPage({ ctx }) {
               <input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="Collection name" maxLength={100} required />
               <input value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} placeholder="Description" maxLength={500} />
               <label className="check-row"><input checked={form.is_public} onChange={(event) => setForm((current) => ({ ...current, is_public: event.target.checked }))} type="checkbox" />Public</label>
+              <label className="check-row">
+                <input
+                  checked={form.is_smart}
+                  onChange={(event) => setForm((current) => ({ ...current, is_smart: event.target.checked }))}
+                  type="checkbox"
+                />
+                <Sparkles size={13} />Smart collection (auto-updates to match a filter)
+              </label>
+              {form.is_smart ? (
+                <div className="smart-collection-builder">
+                  <input
+                    value={form.filter_json.q || ""}
+                    onChange={(event) => setForm((current) => ({ ...current, filter_json: { ...current.filter_json, q: event.target.value } }))}
+                    placeholder="Search terms (title, description, tags)"
+                    maxLength={80}
+                  />
+                  <select
+                    value={form.filter_json.media_kind || ""}
+                    onChange={(event) => setForm((current) => ({ ...current, filter_json: { ...current.filter_json, media_kind: event.target.value } }))}
+                  >
+                    <option value="">Any type</option>
+                    <option value="image">Images &amp; GIFs</option>
+                    <option value="video">Videos</option>
+                  </select>
+                  <select
+                    value={form.filter_json.category_id || ""}
+                    onChange={(event) => setForm((current) => ({ ...current, filter_json: { ...current.filter_json, category_id: event.target.value } }))}
+                  >
+                    <option value="">Any category</option>
+                    {ctx.lookups.categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                  <select
+                    value={form.filter_json.adult || "show"}
+                    onChange={(event) => setForm((current) => ({ ...current, filter_json: { ...current.filter_json, adult: event.target.value } }))}
+                  >
+                    <option value="show">Show 18+</option>
+                    <option value="hide">Hide 18+</option>
+                    <option value="only">Only 18+</option>
+                  </select>
+                  <select
+                    value={form.filter_json.sort || "new"}
+                    onChange={(event) => setForm((current) => ({ ...current, filter_json: { ...current.filter_json, sort: event.target.value } }))}
+                  >
+                    <option value="new">Newest</option>
+                    <option value="popular">Most liked</option>
+                    <option value="views">Most viewed</option>
+                    <option value="downloads">Most downloaded</option>
+                    <option value="trending">Trending</option>
+                    <option value="old">Oldest</option>
+                  </select>
+                  <p className="muted-copy">Matching posts are pulled live every time this collection is opened — nothing is copied into it.</p>
+                </div>
+              ) : null}
               <button type="submit"><Save size={16} />Create</button>
             </form>
           ) : null}

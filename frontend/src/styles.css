@@ -5670,6 +5670,16 @@ textarea:focus {
   padding: 6px 8px;
 }
 
+.smart-collection-builder {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--accent, #37c9a7) 6%, transparent);
+}
+
 .smart-collection-badge {
   display: inline-flex;
   align-items: center;
