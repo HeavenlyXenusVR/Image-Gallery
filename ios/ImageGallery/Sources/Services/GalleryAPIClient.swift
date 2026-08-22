@@ -149,14 +149,36 @@ final class GalleryAPIClient {
         throw GalleryAPIError.http(status: http.statusCode, message: message)
     }
 
+    // Bounds every "should be fast" request (JSON GET/POST, void acks, small
+    // downloads) against the same waitsForConnectivity hang Timeout.swift
+    // documents for SessionStore -- previously only bootstrap()/
+    // refreshCurrentUser() were wrapped, so every OTHER screen (profile,
+    // feeds, HLS playlist fetches, ...) stayed exposed to a request made at
+    // an instant the network is genuinely unreachable just sitting forever
+    // with isLoading stuck true and no error ever surfacing -- reported as
+    // "nothing in profile loads at all". Deliberately NOT applied to
+    // upload/uploadChunkBytes, which need to tolerate multi-minute transfers
+    // by design.
+    private static let requestTimeoutSeconds: TimeInterval = 25
+
+    private func withRequestTimeout<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        do {
+            return try await withTimeout(seconds: Self.requestTimeoutSeconds, operation: operation)
+        } catch is TimedOutError {
+            throw GalleryAPIError.http(status: 0, message: "The request timed out. Check your connection and try again.")
+        }
+    }
+
     // MARK: No-body requests (GET/DELETE/POST-with-no-payload)
 
     @discardableResult
     func requestJSON<T: Decodable>(_ path: String, method: String = "GET", query: [String: String]? = nil, requiresAuth: Bool = true) async throws -> T {
-        let (data, response) = try await sendWithRetry(
-            buildRequest: { try baseRequest(path: path, method: method, query: query, requiresAuth: requiresAuth) },
-            perform: { try await session.data(for: $0) }
-        )
+        let (data, response) = try await withRequestTimeout {
+            try await self.sendWithRetry(
+                buildRequest: { try self.baseRequest(path: path, method: method, query: query, requiresAuth: requiresAuth) },
+                perform: { try await self.session.data(for: $0) }
+            )
+        }
         try validate(response, data: data)
         do {
             return try decoder.decode(T.self, from: data)
@@ -169,15 +191,21 @@ final class GalleryAPIClient {
 
     @discardableResult
     func requestJSON<T: Decodable, B: Encodable>(_ path: String, method: String = "POST", body: B, query: [String: String]? = nil, requiresAuth: Bool = true) async throws -> T {
-        let (data, response) = try await sendWithRetry(
-            buildRequest: {
-                var request = try baseRequest(path: path, method: method, query: query, requiresAuth: requiresAuth)
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.httpBody = try encoder.encode(body)
-                return request
-            },
-            perform: { try await session.data(for: $0) }
-        )
+        // Encoded to Data up front, outside the @Sendable timeout-race
+        // closure below -- B itself isn't guaranteed Sendable, but the
+        // encoded bytes are.
+        let bodyData = try encoder.encode(body)
+        let (data, response) = try await withRequestTimeout {
+            try await self.sendWithRetry(
+                buildRequest: {
+                    var request = try self.baseRequest(path: path, method: method, query: query, requiresAuth: requiresAuth)
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.httpBody = bodyData
+                    return request
+                },
+                perform: { try await self.session.data(for: $0) }
+            )
+        }
         try validate(response, data: data)
         do {
             return try decoder.decode(T.self, from: data)
@@ -320,19 +348,23 @@ final class GalleryAPIClient {
 
     /// Fire-and-forget-shaped DELETE/POST calls that only return `{"ok": true}`-style acks.
     func requestVoid(_ path: String, method: String, query: [String: String]? = nil, requiresAuth: Bool = true) async throws {
-        let (data, response) = try await sendWithRetry(
-            buildRequest: { try baseRequest(path: path, method: method, query: query, requiresAuth: requiresAuth) },
-            perform: { try await session.data(for: $0) }
-        )
+        let (data, response) = try await withRequestTimeout {
+            try await self.sendWithRetry(
+                buildRequest: { try self.baseRequest(path: path, method: method, query: query, requiresAuth: requiresAuth) },
+                perform: { try await self.session.data(for: $0) }
+            )
+        }
         try validate(response, data: data)
     }
 
     /// Downloads a raw file (e.g. the "download my data" JSON export).
     func download(_ path: String, requiresAuth: Bool = true) async throws -> Data {
-        let (data, response) = try await sendWithRetry(
-            buildRequest: { try baseRequest(path: path, method: "GET", query: nil, requiresAuth: requiresAuth) },
-            perform: { try await session.data(for: $0) }
-        )
+        let (data, response) = try await withRequestTimeout {
+            try await self.sendWithRetry(
+                buildRequest: { try self.baseRequest(path: path, method: "GET", query: nil, requiresAuth: requiresAuth) },
+                perform: { try await self.session.data(for: $0) }
+            )
+        }
         try validate(response, data: data)
         return data
     }
@@ -342,15 +374,18 @@ final class GalleryAPIClient {
     /// request-building as `requestJSON`'s POST overload, just returning the
     /// raw response bytes instead of decoding JSON.
     func downloadPOST<B: Encodable>(_ path: String, body: B, requiresAuth: Bool = true) async throws -> Data {
-        let (data, response) = try await sendWithRetry(
-            buildRequest: {
-                var request = try baseRequest(path: path, method: "POST", query: nil, requiresAuth: requiresAuth)
-                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                request.httpBody = try encoder.encode(body)
-                return request
-            },
-            perform: { try await session.data(for: $0) }
-        )
+        let bodyData = try encoder.encode(body)
+        let (data, response) = try await withRequestTimeout {
+            try await self.sendWithRetry(
+                buildRequest: {
+                    var request = try self.baseRequest(path: path, method: "POST", query: nil, requiresAuth: requiresAuth)
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.httpBody = bodyData
+                    return request
+                },
+                perform: { try await self.session.data(for: $0) }
+            )
+        }
         try validate(response, data: data)
         return data
     }
