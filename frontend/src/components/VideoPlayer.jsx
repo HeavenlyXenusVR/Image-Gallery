@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   Gauge,
+  Image as ImageIcon,
   Loader2,
   Maximize,
   Minimize,
@@ -576,6 +577,16 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
         onClick={(e) => { e.stopPropagation(); togglePlay(); }}
         onDoubleClick={toggleFullscreen}
       />
+
+      {/* Site watermark -- pointer-events:none so it never steals a click
+          from the video underneath it, and stays up through fullscreen
+          (same brand mark used in the topbar) since that's the point of a
+          player watermark: it should still read as this site's player
+          when a clip is captured, shared, or seen out of context. */}
+      <div className="vp-watermark" aria-hidden="true">
+        <span className="vp-watermark-mark"><ImageIcon size={12} /></span>
+        <span>Image Gallery</span>
+      </div>
 
       {/* Buffering spinner */}
       {buffering && !error && (

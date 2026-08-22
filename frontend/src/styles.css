@@ -1708,8 +1708,15 @@ textarea:focus {
 }
 
 .vp-fullscreen .vp-video {
-  max-height: 100vh;
-  height: 100vh;
+  /* 100vh, not 100dvh -- unlike every other viewport-height rule in this
+     file (.lb-panel, .media-stage video, etc.), this one sized the player
+     TALLER than what's actually visible on mobile Safari/Chrome, whose
+     address bar/toolbar occupies part of the "vh" viewport without
+     shrinking it. The player itself (and its bottom control row) ended up
+     partially behind the browser chrome in fullscreen on a phone. dvh
+     tracks the real visible viewport as the chrome shows/hides. */
+  max-height: 100dvh;
+  height: 100dvh;
 }
 
 /* Controls visibility */
@@ -2109,6 +2116,44 @@ textarea:focus {
 
 .vp-big-play svg {
   margin-left: 4px;
+}
+
+/* Site watermark */
+.vp-watermark {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 5px;
+  border-radius: 999px;
+  background: rgba(6, 10, 14, 0.5);
+  backdrop-filter: blur(6px);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+  opacity: 0.85;
+}
+
+.vp-watermark-mark {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #37c9a7 0 42%, #6ec7ff 42% 72%, #ffcf6a 72% 100%);
+  color: #071014;
+  flex-shrink: 0;
+}
+
+@media (max-width: 480px) {
+  .vp-watermark span:last-child {
+    display: none;
+  }
 }
 
 /* Autoplay-is-muted affordance */
@@ -4102,7 +4147,16 @@ textarea:focus {
 
 @media (max-width: 1180px) {
   .topbar {
-    grid-template-columns: 1fr auto;
+    /* Both tracks explicitly minmax(0, ...), not a bare `1fr`/`auto` --
+       same class of bug already fixed on .media-stage/.detail-layout
+       elsewhere in this file: an unconstrained track sizes to its
+       content's max-content contribution, not the space actually
+       available. .account-actions already has flex-wrap:wrap, but that
+       never engaged because the plain `auto` track it lived in just grew
+       to fit every icon on one line instead of ever handing wrap a
+       reason to kick in -- confirmed the same way as those other fixes,
+       by tracing what actually bounds each track's width. */
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
   }
 
   .primary-nav {
@@ -4182,7 +4236,7 @@ textarea:focus {
   }
 
   .topbar {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
     gap: 8px;
     padding: 9px 10px;
   }
