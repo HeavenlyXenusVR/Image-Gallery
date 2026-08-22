@@ -14,6 +14,7 @@ final class VideoPlayerController: ObservableObject {
     @Published private(set) var errorMessage: String?
 
     private var statusObservation: NSKeyValueObservation?
+    private var rateObservation: NSKeyValueObservation?
     private var retryAttempt = 0
     private static let maxRetries = 2
     private var preflightTask: Task<Void, Never>?
@@ -53,6 +54,7 @@ final class VideoPlayerController: ObservableObject {
 
     private func startPlayback(autoplay: Bool) {
         statusObservation?.invalidate()
+        rateObservation?.invalidate()
         preflightTask?.cancel()
         var headers: [String: String] = [:]
         if let token = GalleryAPIClient.shared.authToken {
@@ -109,6 +111,13 @@ final class VideoPlayerController: ObservableObject {
             }
         }
         let newPlayer = AVPlayer(playerItem: item)
+        // BackgroundMusicService observes this to duck/restore its own
+        // volume -- rate (not play()/pause() call sites) so this also
+        // catches play/pause triggered by AVKit's native transport controls,
+        // not just our own startPlayback()/pause() methods.
+        rateObservation = newPlayer.observe(\.rate, options: [.new]) { player, _ in
+            NotificationCenter.default.post(name: .nyxframeVideoPlaybackChanged, object: nil, userInfo: ["playing": player.rate > 0])
+        }
         player = newPlayer
         if autoplay { newPlayer.play() }
     }
@@ -147,6 +156,14 @@ final class VideoPlayerController: ObservableObject {
 
     deinit {
         statusObservation?.invalidate()
+        rateObservation?.invalidate()
         preflightTask?.cancel()
+        // Unconditional, not conditioned on prior playback state -- mirrors
+        // web's identical unmount-safety comment on VideoPlayer.jsx: this
+        // controller being deallocated mid-playback (navigating away) would
+        // otherwise leave BackgroundMusicService permanently ducked with no
+        // matching "stopped" rate change ever coming. A redundant post when
+        // nothing was playing is a harmless no-op fade to the same volume.
+        NotificationCenter.default.post(name: .nyxframeVideoPlaybackChanged, object: nil, userInfo: ["playing": false])
     }
 }

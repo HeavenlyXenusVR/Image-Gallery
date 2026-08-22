@@ -5,6 +5,7 @@ struct SettingsView: View {
     @EnvironmentObject private var session: SessionStore
     @EnvironmentObject private var biometricLock: BiometricLockService
     @StateObject private var viewModel = SettingsViewModel()
+    @ObservedObject private var backgroundMusic = BackgroundMusicService.shared
     @AppStorage("theme_mode") private var themeMode = "system"
     @State private var biometricLockEnabled = false
     @State private var exportURL: URL?
@@ -239,6 +240,12 @@ struct SettingsView: View {
                 Toggle("Blur video thumbnails", isOn: $blurVideoPreviews)
                 Toggle("Reduce motion", isOn: $reduceMotion)
                 Toggle("Open originals in Safari", isOn: $openOriginalInNewTab)
+                if backgroundMusic.hasTracks {
+                    Toggle("Background music", isOn: Binding(
+                        get: { !backgroundMusic.isMuted },
+                        set: { _ in backgroundMusic.toggleMuted() }
+                    ))
+                }
             }
 
             Section("Profile Visibility") {

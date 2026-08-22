@@ -70,6 +70,7 @@ struct RootView: View {
             await biometricLock.attemptUnlock()
             updatePolling()
             await ServerConfig.shared.refresh()
+            BackgroundMusicService.shared.startIfNeeded()
         }
         .onChange(of: session.currentUser?.id) { _ in
             updatePolling()

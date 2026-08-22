@@ -194,7 +194,19 @@ extension GalleryAPIClient {
         let response: CategoriesResponse = try await requestJSON("/api/categories", requiresAuth: false)
         return response.categories
     }
+
+    func backgroundMusicTracks() async throws -> [BackgroundMusicTrack] {
+        let response: BackgroundMusicListResponse = try await requestJSON("/api/background-music", requiresAuth: false)
+        return response.tracks
+    }
 }
+
+struct BackgroundMusicTrack: Decodable, Identifiable {
+    var id: Int
+    var title: String
+    var url: String
+}
+struct BackgroundMusicListResponse: Decodable { var tracks: [BackgroundMusicTrack] }
 
 // MARK: - Media actions
 
