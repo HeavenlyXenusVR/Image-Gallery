@@ -10,6 +10,15 @@ struct FullScreenMediaView: View {
     /// a second, disconnected `AVPlayer` -- both presentations play through
     /// this one controller.
     var videoController: VideoPlayerController?
+    /// Previously missing entirely -- this view had no quality picker at
+    /// all, so the expand button silently traded away the ability to
+    /// change quality the moment you actually wanted the bigger view.
+    /// Passed through from MediaDetailView rather than owned here, since
+    /// both presentations share the one videoController and need to stay
+    /// in sync about which rendition is playing.
+    var qualityOptions: [(String, String)] = []
+    var videoQuality: String = "original"
+    var onQualityChange: ((String) -> Void)?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -25,15 +34,20 @@ struct FullScreenMediaView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundStyle(.white, .black.opacity(0.5))
+            HStack(spacing: 4) {
+                if media.isVideo, !qualityOptions.isEmpty, let onQualityChange {
+                    VideoQualityMenu(options: qualityOptions, current: videoQuality, onSelect: onQualityChange)
+                }
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.white, .black.opacity(0.5))
+                }
+                .padding()
+                .accessibilityLabel("Close fullscreen")
             }
-            .padding()
-            .accessibilityLabel("Close fullscreen")
         }
         .statusBarHidden()
     }

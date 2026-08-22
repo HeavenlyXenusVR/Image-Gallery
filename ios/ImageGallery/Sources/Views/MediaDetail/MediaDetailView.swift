@@ -89,7 +89,13 @@ struct MediaDetailView: View {
         }
         .fullScreenCover(isPresented: $showingFullScreen) {
             if let media = viewModel.media {
-                FullScreenMediaView(media: media, videoController: videoController)
+                FullScreenMediaView(
+                    media: media,
+                    videoController: videoController,
+                    qualityOptions: Self.qualityOptions,
+                    videoQuality: videoQuality,
+                    onQualityChange: { changeQuality($0, media: media) }
+                )
             }
         }
         .onChange(of: viewModel.media?.id) { _ in
@@ -102,18 +108,29 @@ struct MediaDetailView: View {
     }
 
     /// Real HLS instead of a single Range-served file: AVPlayer has native
-    /// HLS support, so this is purely a URL swap. "original" points at the
-    /// master playlist for genuine adaptive bitrate (AVPlayer auto-switches
-    /// renditions on network conditions); picking an explicit quality from
-    /// the selector forces that one rendition's own media playlist instead.
+    /// HLS support, so this is purely a URL swap. "original" points straight
+    /// at that one rendition's own playlist (a fast `-c copy` remux, no
+    /// re-encode -- see routes.lua's ensure_hls_variant), NOT the master
+    /// playlist -- previously it did, and that's very likely why "original
+    /// quality just loads forever" was reported: master.m3u8 hands AVPlayer
+    /// genuine ABR across all 4 transcoded renditions, and on a cold
+    /// connection/cache, AVPlayer has no bandwidth history to negotiate
+    /// with, so it can end up waiting on a rendition that isn't ready yet
+    /// (the backend's serve_hls_playlist 503s "still starting up" for up to
+    /// 8s server-side while a transcode is in flight, and there's nothing
+    /// here retrying that the way the native/hls.js error paths in
+    /// VideoPlayer.jsx do). The web app hit this exact problem and
+    /// deliberately reverted away from master.m3u8 for "original" -- see
+    /// videoQualityUrl's comment in utils/media.js -- this brings iOS in
+    /// line with that already-proven fix instead of independently
+    /// rediscovering it.
     private func videoQualityURL(_ media: MediaItem, quality: String) -> URL? {
         guard let urlString = media.url, var components = URLComponents(string: urlString) else { return nil }
         let accessToken = (components.queryItems ?? []).first { $0.name == "access" }?.value
         guard components.path.hasSuffix("/file") else { return nil }
         let base = String(components.path.dropLast("/file".count))
-        components.path = (quality == "original" || quality.isEmpty)
-            ? base + "/hls/master.m3u8"
-            : base + "/hls/\(quality)/playlist.m3u8"
+        let rendition = (quality == "original" || quality.isEmpty || quality == "high") ? "original" : quality
+        components.path = base + "/hls/\(rendition)/playlist.m3u8"
         components.queryItems = accessToken.map { [URLQueryItem(name: "access", value: $0)] }
         return components.url
     }
@@ -148,33 +165,10 @@ struct MediaDetailView: View {
         controller.setURL(url)
     }
 
-    @ViewBuilder
     private var qualityMenu: some View {
-        Menu {
-            ForEach(Self.qualityOptions, id: \.0) { value, label in
-                Button {
-                    if let media = viewModel.media { changeQuality(value, media: media) }
-                } label: {
-                    if videoQuality == value {
-                        Label(label, systemImage: "checkmark")
-                    } else {
-                        Text(label)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "slider.horizontal.3")
-                Text(Self.qualityOptions.first { $0.0 == videoQuality }?.1 ?? "Original")
-            }
-            .font(.caption.weight(.semibold))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.ultraThinMaterial, in: Capsule())
-            .foregroundStyle(.white)
+        VideoQualityMenu(options: Self.qualityOptions, current: videoQuality) { value in
+            if let media = viewModel.media { changeQuality(value, media: media) }
         }
-        .padding(8)
-        .accessibilityLabel("Video quality")
     }
 
     @ViewBuilder

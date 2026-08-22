@@ -19,7 +19,32 @@ final class SessionStore: ObservableObject {
         await LiveConfigService.shared.refresh()
         if api.isAuthenticated {
             do {
-                currentUser = try await api.me()
+                // Bounded, not a bare `try await api.me()` -- see Timeout.swift's
+                // withTimeout doc comment: the shared URLSession's
+                // waitsForConnectivity=true means a request made while the
+                // network is genuinely unreachable at this instant otherwise
+                // waits with no timeout ever firing, which previously meant
+                // isBootstrapping could get stuck true forever (the reported
+                // "sometimes stuck on an infinite loading screen"). A timeout
+                // here is treated as "couldn't verify right now," not a
+                // fatal auth failure -- see the catch below.
+                currentUser = try await withTimeout(seconds: 12) { try await self.api.me() }
+            } catch is TimedOutError {
+                // Unlike a real 401/403, this isn't evidence the session is
+                // actually invalid -- just that this attempt couldn't reach
+                // the server in time, so (unlike the catch-all branch below)
+                // the token is deliberately left in place rather than
+                // cleared. currentUser is still nil here, though -- there's
+                // no cached GalleryUser to restore, so RootView's `session.
+                // currentUser != nil` check sends this to the login screen
+                // for now, not a resumed session. That's a real UX
+                // regression versus true offline resume, but it's a login
+                // screen the person can act on (retry once connectivity is
+                // back), not the unresponsive infinite spinner this
+                // replaces -- and the very next successful bootstrap/
+                // refreshCurrentUser() call, using the still-valid token,
+                // puts them right back in without re-entering credentials.
+                lastError = "Couldn't reach the server. Please try again."
             } catch {
                 // Surface *why* — this is the only place a banned/suspended
                 // account's session gets invalidated, and silently dropping
@@ -74,7 +99,14 @@ final class SessionStore: ObservableObject {
     func refreshCurrentUser() async {
         guard api.isAuthenticated else { return }
         do {
-            currentUser = try await api.me()
+            // Same waitsForConnectivity hang risk bootstrap() has (see
+            // Timeout.swift) -- lower stakes here since nothing UI-blocking
+            // awaits this call, but an unbounded task sitting around
+            // per foreground event is still worth not leaving unbounded.
+            currentUser = try await withTimeout(seconds: 12) { try await self.api.me() }
+        } catch is TimedOutError {
+            // Falls into the same "keep the existing session as-is" bucket
+            // as the generic network-hiccup catch below.
         } catch let error as GalleryAPIError {
             if case .http(let status, let message) = error, status == 401 || status == 403 {
                 lastError = message

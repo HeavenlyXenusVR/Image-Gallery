@@ -3648,8 +3648,6 @@ end
 -- for the process lifetime plays the same role as Python's
 -- main._background_cache / main._site_background_state globals -- every
 -- client polling within the same 5-minute window gets the identical pick.
-local BACKGROUND_ASPECT_RATIO = 16 / 9
-local BACKGROUND_ASPECT_TOLERANCE = 0.035
 local BACKGROUND_CACHE_SECONDS = 300
 local SITE_BACKGROUND_ROTATION_SECONDS = 300
 local background_candidates_cache = { items = nil, built_at = 0 }
@@ -3661,13 +3659,21 @@ local function background_candidate_rows()
   if background_candidates_cache.items and (now - background_candidates_cache.built_at) < BACKGROUND_CACHE_SECONDS then
     return background_candidates_cache.items
   end
-  -- Aspect-ratio + adult-content + visibility filtering all happen in SQL
+  -- Orientation + adult-content + visibility filtering all happen in SQL
   -- (not Lua-side after fetch): is_adult=false is not optional here -- this
   -- is the one condition standing between "site background" and "surprise
   -- 18+ content on every visitor's screen", so it lives in the WHERE clause
   -- itself rather than a filter step that's easier to accidentally skip.
-  local rows = db.fetchall(string.format(
-    [[
+  --
+  -- Orientation only (width > height), not a near-exact-16:9 ratio check --
+  -- the previous `ABS(ratio - 16/9) <= 0.035` tolerance rejected anything
+  -- that wasn't almost exactly widescreen (a 4:3, 16:10, or ultrawide
+  -- landscape image all fail that check despite being perfectly good
+  -- backgrounds), which is stricter than "landscape" actually means. GIFs
+  -- were never excluded here -- they share media_kind='image' with regular
+  -- images (see is_gif_media(); distinguished only by mime_type/filename),
+  -- so this already covered them once orientation was the only gate left.
+  local rows = db.fetchall([[
       SELECT m.id, m.title, m.original_filename, m.mime_type, m.image_width, m.image_height,
              c.name AS category_name, sc.name AS subcategory_name,
              u.username, CASE WHEN u.public_profile THEN u.display_name ELSE u.username END AS display_name
@@ -3680,13 +3686,10 @@ local function background_candidate_rows()
         AND m.media_kind='image'
         AND m.is_adult=false
         AND m.image_width IS NOT NULL AND m.image_height IS NOT NULL
-        AND m.image_width >= m.image_height
-        AND ABS((m.image_width::float / m.image_height::float) - %f) <= %f
+        AND m.image_width > m.image_height
       ORDER BY COALESCE(m.pinned_at, m.created_at) DESC, m.created_at DESC
       LIMIT 180
-    ]],
-    BACKGROUND_ASPECT_RATIO, BACKGROUND_ASPECT_TOLERANCE
-  ))
+    ]])
   for _, row in ipairs(rows) do
     row.id = db.toint(row.id, row.id)
     row.image_width = db.toint(row.image_width, row.image_width)

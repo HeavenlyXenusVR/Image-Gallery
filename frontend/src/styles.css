@@ -1833,17 +1833,16 @@ textarea:focus {
   /* .vp-root clips with overflow:hidden (needed for the rounded corners),
      so on a narrow viewport this row -- 5+ icon buttons per cluster,
      several carrying a text label like "Original"/"1080p HD" -- silently
-     lost its rightmost buttons instead of wrapping or scrolling into
-     view. Let the row scroll horizontally instead of overflowing into
-     the clip; each cluster keeps its natural width so buttons never get
-     squeezed illegibly thin. */
-  overflow-x: auto;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
-}
-
-.vp-bottom::-webkit-scrollbar {
-  display: none;
+     lost its rightmost buttons instead of wrapping into view. flex-wrap,
+     not overflow-x:auto (tried first, reverted): setting overflow-x to
+     auto/scroll forces the UA to also compute overflow-y as auto per spec
+     when it's otherwise visible, which clipped the quality/speed popup
+     menus -- position:absolute, `bottom: calc(100% + 8px)`, so they
+     render ABOVE this row -- confirmed live as "clicking Original opens
+     no dropdown at all". Wrapping to a second line has no such Y-axis
+     side effect and still guarantees nothing is ever lost off-screen. */
+  flex-wrap: wrap;
+  row-gap: 2px;
 }
 
 .vp-cluster {
@@ -1851,6 +1850,14 @@ textarea:focus {
   align-items: center;
   gap: 2px;
   flex-shrink: 0;
+}
+
+/* When .vp-bottom wraps to two lines, space-between only has one item on
+   the second line (the right cluster alone) and left-aligns it by default
+   -- push it back to the right edge instead so wrapping doesn't look like
+   the controls jumped to the wrong side. */
+.vp-cluster:last-child {
+  margin-left: auto;
 }
 
 /* Buttons */
