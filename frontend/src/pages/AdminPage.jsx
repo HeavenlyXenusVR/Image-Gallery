@@ -435,6 +435,8 @@ function MusicTab({ ctx }) {
   const [busyId, setBusyId] = useState("");
   const [title, setTitle] = useState("");
   const [file, setFile] = useState(null);
+  const [playlistUrl, setPlaylistUrl] = useState("");
+  const [importing, setImporting] = useState(false);
   const showToast = ctx.showToast;
 
   const load = useCallback(async () => {
@@ -473,6 +475,35 @@ function MusicTab({ ctx }) {
       showToast(error.message, "error");
     } finally {
       setUploading(false);
+    }
+  }
+
+  // The import runs as a detached background job (each track's download can
+  // take up to a few minutes -- see routes.lua's admin_import_background_
+  // music_playlist), so the POST just kicks it off and this polls the
+  // regular list for a while afterward so new tracks appear without the
+  // admin having to remember to hit refresh themselves.
+  async function importPlaylist(event) {
+    event.preventDefault();
+    if (!playlistUrl.trim()) return showToast("Enter a playlist URL first.", "error");
+    setImporting(true);
+    try {
+      const result = await apiFetch("/api/admin/background-music/import-playlist", {
+        method: "POST",
+        body: JSON.stringify({ url: playlistUrl.trim() }),
+      });
+      setPlaylistUrl("");
+      showToast(`Importing up to ${result.requested} track(s) in the background — this can take a few minutes.`, "success");
+      const deadline = Date.now() + 5 * 60_000;
+      const poll = async () => {
+        await load();
+        if (Date.now() < deadline) setTimeout(poll, 10_000);
+      };
+      setTimeout(poll, 10_000);
+    } catch (error) {
+      showToast(error.message, "error");
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -515,6 +546,30 @@ function MusicTab({ ctx }) {
           <p className="muted-copy">Track limit reached — remove one below to add another.</p>
         )}
       </div>
+
+      {tracks.length < maxTracks ? (
+        <div className="settings-cluster">
+          <div className="settings-cluster-head">
+            <h3>Import from a playlist</h3>
+            <p>Paste a playlist link (YouTube, SoundCloud, anything yt-dlp supports) and it'll randomly pull tracks to fill your remaining {maxTracks - tracks.length} slot(s). Runs in the background — can take a few minutes.</p>
+          </div>
+          <form className="stacked-form" onSubmit={importPlaylist}>
+            <label className="field"><span>Playlist URL</span>
+              <input
+                type="url"
+                value={playlistUrl}
+                onChange={(event) => setPlaylistUrl(event.target.value)}
+                placeholder="https://www.youtube.com/playlist?list=..."
+              />
+            </label>
+            <div className="form-actions settings-actions">
+              <button className="primary" type="submit" disabled={importing || !playlistUrl.trim()}>
+                <Music size={16} />{importing ? "Starting import..." : "Import random tracks"}
+              </button>
+            </div>
+          </form>
+        </div>
+      ) : null}
 
       {tracks.length === 0 ? (
         <EmptyState title="No background tracks yet" description="Add one above to start the ambient shuffle for visitors." />
