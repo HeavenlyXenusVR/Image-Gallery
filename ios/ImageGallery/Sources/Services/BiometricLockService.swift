@@ -43,7 +43,7 @@ final class BiometricLockService: ObservableObject {
             return
         }
         do {
-            let success = try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock Image Gallery")
+            let success = try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "Unlock Nyxframe")
             isUnlocked = success
         } catch {
             isUnlocked = false

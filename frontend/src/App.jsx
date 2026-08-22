@@ -458,7 +458,7 @@ function GalleryBootOverlay({ phase, tip, authenticated, leaving }) {
             <span className="gallery-loading-core" />
           </div>
           <div className="gallery-loading-copy">
-            <span className="gallery-loading-kicker">Image Gallery // Curated Media Deck</span>
+            <span className="gallery-loading-kicker">Nyxframe // Curated Media Deck</span>
             <strong>{phase}</strong>
             <p>
               {authenticated

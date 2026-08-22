@@ -186,7 +186,7 @@ function M.generate_secret()
 end
 
 function M.provisioning_uri(secret, account_name, issuer)
-  issuer = issuer or "Image Gallery"
+  issuer = issuer or "Nyxframe"
   local function urlenc(s)
     return (tostring(s):gsub("[^%w%-%.%_%~]", function(c) return string.format("%%%02X", c:byte()) end))
   end

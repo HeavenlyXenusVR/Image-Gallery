@@ -98,7 +98,7 @@ function M.send_message(chat_id, text)
     local ok, err = pcall(api_call, "sendMessage", {
       chat_id = tostring(chat_id), text = chunk, disable_web_page_preview = "true",
     }, 15)
-    if not ok then print("[image-gallery-lua] Telegram sendMessage failed: " .. tostring(err)) end
+    if not ok then print("[nyxframe] Telegram sendMessage failed: " .. tostring(err)) end
     i = i + 3900
     sent = sent + 1
   end
@@ -158,7 +158,7 @@ end
 
 local function format_gallery_stats(stats)
   return string.format(
-    "Image Gallery — Stats\nUsers:      %d\nCategories: %d\nMedia:      %d\nStorage:    %s\nLikes:      %d",
+    "Nyxframe — Stats\nUsers:      %d\nCategories: %d\nMedia:      %d\nStorage:    %s\nLikes:      %d",
     stats.users, stats.categories, stats.media, fmt_bytes(stats.bytes), stats.likes
   )
 end
@@ -168,7 +168,7 @@ local function format_gallery_health(checks)
   local missing_files = db.toint(checks.missing_db_files, 0)
   local open_reports = db.toint(checks.open_reports, 0)
   local lines = {
-    "Image Gallery — Health",
+    "Nyxframe — Health",
     "DB time:        " .. db_time,
     "Users:          " .. tostring(db.toint(checks.users, 0)),
     "Media active:   " .. tostring(db.toint(checks.media_active, 0)),
@@ -199,7 +199,7 @@ local function handle_command(chat_id, text)
         .. "all chats can reach this bot. Use /id to find your chat id "
         .. "and set it in the .env file to restrict access."
     end
-    return "Image Gallery Telegram control panel\n\n"
+    return "Nyxframe Telegram control panel\n\n"
       .. "/status   — Gallery stats (users, media, storage)\n"
       .. "/health   — Database & file integrity check\n"
       .. "/storage  — Detailed storage breakdown\n"
@@ -244,7 +244,7 @@ local function handle_command(chat_id, text)
       local media_count = math.max(1, stats.media)
       local avg_bytes = math.floor(stats.bytes / media_count)
       return table.concat({
-        "Image Gallery — Storage",
+        "Nyxframe — Storage",
         "Backend:       " .. tostring(settings.storage_backend),
         "Total stored:  " .. fmt_bytes(stats.bytes),
         "DB file rows:  " .. tostring(db.toint(checks.db_files, 0)),
@@ -265,7 +265,7 @@ local function handle_command(chat_id, text)
       ORDER BY m.created_at DESC LIMIT 5
     ]])
     if not ok or #rows == 0 then return "No public gallery posts found." end
-    local lines = { "Image Gallery — Recent uploads" }
+    local lines = { "Nyxframe — Recent uploads" }
     for _, item in ipairs(rows) do
       local ts = tostring(item.created_at or ""):sub(1, 10)
       local user = item.display_name or item.username or "unknown"
@@ -277,20 +277,20 @@ local function handle_command(chat_id, text)
   if command == "/users" or command == "users" then
     local ok, checks = pcall(site_checks)
     if not ok then return "User info failed: " .. tostring(checks):sub(1, 300) end
-    return "Image Gallery — Users\nTotal registered: " .. tostring(db.toint(checks.users, 0))
+    return "Nyxframe — Users\nTotal registered: " .. tostring(db.toint(checks.users, 0))
       .. "\n(Use the web panel at " .. tostring(settings.pages_public_url) .. " to manage users)"
   end
 
   if command == "/ai" or command == "ai" then
     return table.concat({
-      "Image Gallery — AI / Vision",
+      "Nyxframe — AI / Vision",
       "AI enabled:     " .. (settings.ai_enabled and "yes" or "no"),
       "Provider:       " .. tostring(settings.ai_provider or "none"),
       "Model:          " .. tostring(settings.ai_model ~= "" and settings.ai_model or "default"),
     }, "\n")
   end
 
-  return "Unknown command. Use /help to see available Image Gallery commands."
+  return "Unknown command. Use /help to see available Nyxframe commands."
 end
 
 -- ---------------------------------------------------------------------------
@@ -324,7 +324,7 @@ local function handle_update(update)
   if ok then
     if reply then M.send_message(chat_id, reply) end
   else
-    print("[image-gallery-lua] Telegram handler failed: " .. tostring(reply))
+    print("[nyxframe] Telegram handler failed: " .. tostring(reply))
     M.send_message(chat_id, "Command failed. Please try again.")
   end
 end
@@ -348,7 +348,7 @@ local function poll_loop()
     end)
     if not ok then
       status.last_error = tostring(err):sub(1, 240)
-      print("[image-gallery-lua] Telegram polling error: " .. tostring(err))
+      print("[nyxframe] Telegram polling error: " .. tostring(err))
       copas.pause(backoff)
       backoff = math.min(backoff * 2, 120)
     end
@@ -385,8 +385,8 @@ local function health_watch_loop()
   while true do
     local ok, err = db.ping()
     if not ok then
-      print("[image-gallery-lua] Telegram health watch: database ping failed: " .. tostring(err))
-      M.send_alert("db", "Image Gallery database problem", tostring(err):sub(1, 240))
+      print("[nyxframe] Telegram health watch: database ping failed: " .. tostring(err))
+      M.send_alert("db", "Nyxframe database problem", tostring(err):sub(1, 240))
     end
     copas.pause(300)
   end
@@ -431,12 +431,12 @@ function M.start(app_settings)
           { command = "help", description = "Show available commands" },
         }),
       }, 12)
-      print("[image-gallery-lua] Telegram bridge connected as @" .. (status.bot_username ~= "" and status.bot_username or "unknown"))
+      print("[nyxframe] Telegram bridge connected as @" .. (status.bot_username ~= "" and status.bot_username or "unknown"))
     else
       status.last_error = tostring(info):sub(1, 240)
-      print("[image-gallery-lua] Telegram bridge could not verify token yet: " .. tostring(info))
+      print("[nyxframe] Telegram bridge could not verify token yet: " .. tostring(info))
     end
-    M.send_alert("startup", "Image Gallery online", "Telegram bridge, database health checks, and media services are running.")
+    M.send_alert("startup", "Nyxframe online", "Telegram bridge, database health checks, and media services are running.")
     poll_loop()
   end)
   copas.addthread(health_watch_loop)

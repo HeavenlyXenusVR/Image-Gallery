@@ -47,7 +47,7 @@ final class SettingsViewModel: ObservableObject {
         defer { isExporting = false }
         do {
             let data = try await api.exportMyData()
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("image-gallery-export.json")
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("nyxframe-export.json")
             try data.write(to: url)
             return url
         } catch {

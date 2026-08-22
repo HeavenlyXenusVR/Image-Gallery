@@ -72,7 +72,7 @@ acquire_instance_lock() {
 
   local existing_url
   existing_url="$(current_live_url)"
-  echo "Another Image Gallery live tunnel manager is already running."
+  echo "Another Nyxframe live tunnel manager is already running."
   if [[ -n "${existing_url}" ]]; then
     echo "Current published live URL: ${existing_url}"
   else
@@ -532,7 +532,7 @@ CLOUDFLARED="$(cloudflared_bin)"
 
 # Wait up to 5 minutes for the Lua backend (image-gallery-lua.service) to
 # appear -- on a fresh boot it can take a little while after the unit starts.
-echo "Waiting for Image Gallery backend on http://127.0.0.1:${PORT} (up to 300s)"
+echo "Waiting for Nyxframe backend on http://127.0.0.1:${PORT} (up to 300s)"
 for _ in {1..150}; do
   if backend_ready; then
     break
@@ -541,7 +541,7 @@ for _ in {1..150}; do
 done
 
 if ! backend_ready; then
-  echo "Image Gallery backend did not become reachable on port ${PORT}." >&2
+  echo "Nyxframe backend did not become reachable on port ${PORT}." >&2
   echo "Check: systemctl --user status image-gallery-lua.service" >&2
   publish_offline_config
   exit 1

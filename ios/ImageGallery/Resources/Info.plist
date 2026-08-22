@@ -40,7 +40,7 @@
     <key>CFBundleName</key>
     <string>$(PRODUCT_NAME)</string>
     <key>CFBundleDisplayName</key>
-    <string>Image Gallery</string>
+    <string>Nyxframe</string>
     <key>CFBundleIdentifier</key>
     <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
     <key>CFBundleExecutable</key>
@@ -79,17 +79,17 @@
 
     <!-- Privacy usage descriptions -->
     <key>NSCameraUsageDescription</key>
-    <string>Image Gallery uses the camera so you can capture a photo or video to upload.</string>
+    <string>Nyxframe uses the camera so you can capture a photo or video to upload.</string>
     <key>NSPhotoLibraryAddUsageDescription</key>
-    <string>Image Gallery saves media you download to your photo library.</string>
+    <string>Nyxframe saves media you download to your photo library.</string>
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>Image Gallery reads your photo library so you can choose a photo or video to upload.</string>
+    <string>Nyxframe reads your photo library so you can choose a photo or video to upload.</string>
     <!-- Required to call LAContext.evaluatePolicy for the optional Face ID
          app lock (Settings → "Require Face ID to open the app") — omitting
          this crashes the app on first use on a Face ID device, even though
          Touch ID/passcode need no such key. -->
     <key>NSFaceIDUsageDescription</key>
-    <string>Image Gallery can use Face ID to lock the app when it's in the background.</string>
+    <string>Nyxframe can use Face ID to lock the app when it's in the background.</string>
 
     <!-- App Transport Security: production traffic runs over HTTPS through the
          Cloudflare tunnel and needs no exception. This exception only allows

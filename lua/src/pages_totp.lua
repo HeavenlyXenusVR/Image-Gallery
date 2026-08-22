@@ -69,7 +69,7 @@ local function layout(title, body_html)
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>%s // Image Gallery</title>
+<title>%s // Nyxframe</title>
 %s
 </head>
 <body>
@@ -190,7 +190,7 @@ function M.confirm_enrollment(req)
     local row = db.fetchone("SELECT totp_secret, username FROM users WHERE id=%s", user.id)
     local message = (type(body) == "table" and body.detail) or "Verification failed."
     if row and row.totp_secret then
-      local uri = totp.provisioning_uri(row.totp_secret, row.username, "Image Gallery")
+      local uri = totp.provisioning_uri(row.totp_secret, row.username, "Nyxframe")
       return status, layout("Set up 2FA", enroll_body(row.totp_secret, uri, message)), HTML_HEADERS
     end
     return status, layout("Two-Factor Authentication", status_body(false, 0, nil, message)), HTML_HEADERS

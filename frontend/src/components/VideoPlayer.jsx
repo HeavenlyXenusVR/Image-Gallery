@@ -585,7 +585,7 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
           when a clip is captured, shared, or seen out of context. */}
       <div className="vp-watermark" aria-hidden="true">
         <span className="vp-watermark-mark"><ImageIcon size={12} /></span>
-        <span>Image Gallery</span>
+        <span>Nyxframe</span>
       </div>
 
       {/* Buffering spinner */}

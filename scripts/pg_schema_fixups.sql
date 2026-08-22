@@ -1,4 +1,4 @@
--- Image Gallery: Postgres schema correctness fixups.
+-- Nyxframe: Postgres schema correctness fixups.
 --
 -- Context: the MariaDB -> Postgres migration for `image_gallery` only ever
 -- carried over PRIMARY KEYs. Every UNIQUE constraint, every secondary index,

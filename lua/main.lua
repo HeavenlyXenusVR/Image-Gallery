@@ -270,9 +270,9 @@ httpd.fallback_handler = static.fallback
 
 local ok, err = db.ping()
 if ok then
-  print(string.format("[image-gallery-lua] Postgres reachable (server time: %s)", tostring(err)))
+  print(string.format("[nyxframe] Postgres reachable (server time: %s)", tostring(err)))
 else
-  print("[image-gallery-lua] WARNING: Postgres not reachable at startup: " .. tostring(err))
+  print("[nyxframe] WARNING: Postgres not reachable at startup: " .. tostring(err))
 end
 
 -- Telegram control-panel bridge (see lua/src/telegram.lua) -- runs as a
@@ -288,5 +288,5 @@ local digest = require("digest")
 digest.start(settings)
 
 httpd.listen(settings.host, settings.port)
-print(string.format("[image-gallery-lua] listening on %s:%d", settings.host, settings.port))
+print(string.format("[nyxframe] listening on %s:%d", settings.host, settings.port))
 httpd.run()

@@ -42,7 +42,7 @@ local function creators_with_webhook()
       AND user_settings->>'discord_webhook_url' != ''
   ]])
   if err then
-    print("[image-gallery-lua] digest: failed to list creators: " .. tostring(err))
+    print("[nyxframe] digest: failed to list creators: " .. tostring(err))
     return {}
   end
   return rows
@@ -65,7 +65,7 @@ local function send_digest_for_user(user_row, week_start, origin)
 
   local stats, err = routes.creator_stats_for(user_row.id, origin)
   if not stats then
-    print("[image-gallery-lua] digest: stats query failed for user " .. tostring(user_row.id) .. ": " .. tostring(err))
+    print("[nyxframe] digest: stats query failed for user " .. tostring(user_row.id) .. ": " .. tostring(err))
     return
   end
   if stats.totals.total_views == 0 and #stats.top_posts == 0 then return end
@@ -109,7 +109,7 @@ local function digest_loop()
       end
     end)
     if not ok then
-      print("[image-gallery-lua] digest loop error: " .. tostring(err))
+      print("[nyxframe] digest loop error: " .. tostring(err))
     end
     copas.pause(21600)
   end

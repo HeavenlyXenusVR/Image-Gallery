@@ -73,7 +73,7 @@ function M.site_feed(req)
     ORDER BY m.created_at DESC
     LIMIT 50
   ]])
-  return 200, rss_feed(origin, "Image Gallery", "Recent public uploads", "/feed.xml", rows), XML_HEADERS
+  return 200, rss_feed(origin, "Nyxframe", "Recent public uploads", "/feed.xml", rows), XML_HEADERS
 end
 
 function M.category_feed(req)
@@ -87,7 +87,7 @@ function M.category_feed(req)
     ORDER BY m.created_at DESC
     LIMIT 50
   ]], tostring(category.id))
-  return 200, rss_feed(origin, "Image Gallery: " .. category.name, "Recent public uploads in " .. category.name, "/feed/category/" .. slug .. ".xml", rows), XML_HEADERS
+  return 200, rss_feed(origin, "Nyxframe: " .. category.name, "Recent public uploads in " .. category.name, "/feed/category/" .. slug .. ".xml", rows), XML_HEADERS
 end
 
 function M.user_feed(req)
@@ -103,7 +103,7 @@ function M.user_feed(req)
     ORDER BY m.created_at DESC
     LIMIT 50
   ]], tostring(user.id))
-  return 200, rss_feed(origin, "Image Gallery: @" .. user.username, "Recent public uploads by @" .. user.username, "/feed/user/" .. username .. ".xml", rows), XML_HEADERS
+  return 200, rss_feed(origin, "Nyxframe: @" .. user.username, "Recent public uploads by @" .. user.username, "/feed/user/" .. username .. ".xml", rows), XML_HEADERS
 end
 
 function M.tag_feed(req)
@@ -116,7 +116,7 @@ function M.tag_feed(req)
     ORDER BY m.created_at DESC
     LIMIT 50
   ]], tag)
-  return 200, rss_feed(origin, 'Image Gallery: "' .. tag .. '"', "Recent public uploads tagged " .. tag, "/feed/tag/" .. tag .. ".xml", rows), XML_HEADERS
+  return 200, rss_feed(origin, 'Nyxframe: "' .. tag .. '"', "Recent public uploads tagged " .. tag, "/feed/tag/" .. tag .. ".xml", rows), XML_HEADERS
 end
 
 -- Personal feed authenticated by a scoped API key (routes.lua's
@@ -134,7 +134,7 @@ function M.personal_feed(req)
     ORDER BY m.created_at DESC
     LIMIT 100
   ]], user_id)
-  return 200, rss_feed(origin, "My Image Gallery uploads", "All of your uploads, any visibility", "/feed/me.xml", rows), XML_HEADERS
+  return 200, rss_feed(origin, "My Nyxframe uploads", "All of your uploads, any visibility", "/feed/me.xml", rows), XML_HEADERS
 end
 
 -- Plain list of public post URLs for search-engine discoverability.

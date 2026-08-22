@@ -46,7 +46,7 @@ local function layout(title, body_html)
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>%s // Image Gallery</title>
+<title>%s // Nyxframe</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -107,7 +107,7 @@ end
 local function login_form_body(error_message, prefill_username)
   return ([[
     <h1>Welcome back</h1>
-    <p class="lede">Sign in to Image Gallery.</p>
+    <p class="lede">Sign in to Nyxframe.</p>
     %s
     <form method="POST" action="/login">
       <label for="username">Username</label>
@@ -144,7 +144,7 @@ local function register_form_body(error_message, prefill)
   prefill = prefill or {}
   return ([[
     <h1>Create your account</h1>
-    <p class="lede">Join Image Gallery.</p>
+    <p class="lede">Join Nyxframe.</p>
     %s
     <form method="POST" action="/register">
       <label for="username">Username</label>

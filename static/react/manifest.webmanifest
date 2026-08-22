@@ -1,6 +1,6 @@
 {
-  "name": "Image Gallery",
-  "short_name": "Gallery",
+  "name": "Nyxframe",
+  "short_name": "Nyxframe",
   "description": "Curated media gallery — browse, upload, collect, and manage media.",
   "start_url": "/",
   "scope": "/",

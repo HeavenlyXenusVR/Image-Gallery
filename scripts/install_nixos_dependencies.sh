@@ -8,7 +8,7 @@ if [[ ! -f "$CONFIG" ]]; then
   exit 1
 fi
 
-sudo cp -a "$CONFIG" "$CONFIG.bak.image-gallery-deps.$(date +%F_%H%M%S)"
+sudo cp -a "$CONFIG" "$CONFIG.bak.nyxframe-deps.$(date +%F_%H%M%S)"
 
 add_pkg() {
   local pkg="$1"
@@ -16,7 +16,7 @@ add_pkg() {
     sudo sed -i "/environment.systemPackages = with pkgs; \[/a\\    $pkg" "$CONFIG"
 }
 
-# Core runtime/tools used by Image Gallery live scripts.
+# Core runtime/tools used by Nyxframe live scripts.
 add_pkg bash
 add_pkg git
 add_pkg gh
@@ -51,5 +51,5 @@ grep -q 'nix.settings.experimental-features' "$CONFIG" || sudo sed -i '/system.s
 \
   nix.settings.experimental-features = [ "nix-command" "flakes" ];' "$CONFIG"
 
-echo "Added/verified Image Gallery NixOS dependencies in $CONFIG"
+echo "Added/verified Nyxframe NixOS dependencies in $CONFIG"
 echo "Next: sudo nixos-rebuild dry-build && sudo nixos-rebuild switch"

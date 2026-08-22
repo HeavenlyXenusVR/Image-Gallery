@@ -6,7 +6,7 @@ struct BiometricLockView: View {
     var body: some View {
         VStack(spacing: 16) {
             Image(systemName: "lock.fill").font(.system(size: 48))
-            Text("Image Gallery Locked").font(.title3).bold()
+            Text("Nyxframe Locked").font(.title3).bold()
             Button {
                 Task { await biometricLock.attemptUnlock() }
             } label: {

@@ -19,18 +19,18 @@ local shell = [[<!doctype html>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta http-equiv="refresh" content="0; url=https://gallery.xenusanimations.studio/" />
-    <title>Image Gallery</title>
+    <title>Nyxframe</title>
     <link rel="canonical" href="https://gallery.xenusanimations.studio/" />
   </head>
   <body>
     <!--
       GitHub Pages is static-only hosting and can't run the Lua backend that
-      now renders Image Gallery directly (see the Lua rewrite -- there is no
+      now renders Nyxframe directly (see the Lua rewrite -- there is no
       separate frontend build to publish here anymore). This page exists
       only so old bookmarks/links to the GitHub Pages URL still land
       somewhere useful instead of a bare 404.
     -->
-    <p>Image Gallery has moved. Redirecting to
+    <p>Nyxframe has moved. Redirecting to
       <a href="https://gallery.xenusanimations.studio/">https://gallery.xenusanimations.studio/</a>...
     </p>
   </body>

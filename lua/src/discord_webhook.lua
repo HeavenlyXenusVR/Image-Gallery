@@ -48,7 +48,7 @@ local function deliver(webhook_url, embeds)
     end
   end)
   if not ok then
-    print("[image-gallery-lua] Discord webhook delivery failed: " .. tostring(err))
+    print("[nyxframe] Discord webhook delivery failed: " .. tostring(err))
   end
 end
 

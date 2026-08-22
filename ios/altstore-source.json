@@ -1,14 +1,14 @@
 {
-  "name": "Image Gallery",
+  "name": "Nyxframe",
   "identifier": "com.imagegallery.altstore-source",
   "sourceURL": "https://raw.githubusercontent.com/HeavenlyXenusVR/Image-Gallery/main/ios/altstore-source.json",
   "apps": [
     {
-      "name": "Image Gallery",
+      "name": "Nyxframe",
       "bundleIdentifier": "com.imagegallery.ios",
       "developerName": "HeavenlyXenusVR",
       "subtitle": "Browse, upload, and manage your self-hosted media gallery",
-      "localizedDescription": "Image Gallery is the native iOS companion to the self-hosted Image Gallery web app: browse and upload photos/videos, react and comment, manage your uploads in Studio, follow other creators, and get notifications.",
+      "localizedDescription": "Nyxframe is the native iOS companion to the self-hosted Nyxframe web app: browse and upload photos/videos, react and comment, manage your uploads in Studio, follow other creators, and get notifications.",
       "iconURL": "https://raw.githubusercontent.com/HeavenlyXenusVR/Image-Gallery/main/favicon.ico",
       "tintColor": "37C9A7",
       "screenshotURLs": [],

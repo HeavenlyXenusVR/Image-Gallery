@@ -30,7 +30,7 @@ jobs:
           VERSION="${TAG#ios/v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Releasing Image Gallery iOS version: $VERSION (tag: $TAG)"
+          echo "Releasing Nyxframe iOS version: $VERSION (tag: $TAG)"
 
       - name: Stamp version into project.yml
         run: |
@@ -275,8 +275,8 @@ jobs:
             INSTALL_NOTE="Download the IPA and install with [Sideloadly](https://sideloadly.io/) or [AltStore](https://altstore.io/)."
           fi
           gh release create "$TAG" \
-            --title "Image Gallery iOS v${VERSION}" \
-            --notes "$(printf '## Image Gallery iOS v%s\n\n**Installation:** %s\n\n**AltStore users:** Add the source URL from Settings to get automatic updates.' "$VERSION" "$INSTALL_NOTE")" \
+            --title "Nyxframe iOS v${VERSION}" \
+            --notes "$(printf '## Nyxframe iOS v%s\n\n**Installation:** %s\n\n**AltStore users:** Add the source URL from Settings to get automatic updates.' "$VERSION" "$INSTALL_NOTE")" \
             "ios/build/$IPA_NAME"
 
       # Best-effort: never fail the build over this housekeeping commit.

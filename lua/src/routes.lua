@@ -2375,7 +2375,7 @@ function M.discord_verify_start(req)
       }
     end
     local send_ok, send_err = discord_bot.send_dm(
-      target, "Your Image Gallery verification code is: " .. code .. "\nIt expires in 10 minutes."
+      target, "Your Nyxframe verification code is: " .. code .. "\nIt expires in 10 minutes."
     )
     if not send_ok then return 400, { detail = send_err } end
   else
@@ -2385,7 +2385,7 @@ function M.discord_verify_start(req)
     end
     target = webhook_url
     discord_webhook.send(webhook_url, { {
-      title = "Image Gallery verification code",
+      title = "Nyxframe verification code",
       description = "Code: **" .. code .. "**\nExpires in 10 minutes. Enter it on the Settings page.",
       color = 0x37c9a7,
     } })
@@ -2644,7 +2644,7 @@ local function notify_discord_upload(req, uploader, item)
     discord_webhook.send(webhook_url, { embed })
   end)
   if not ok then
-    print("[image-gallery-lua] Discord upload webhook notification failed for user " .. tostring(uploader.id) .. ": " .. tostring(err))
+    print("[nyxframe] Discord upload webhook notification failed for user " .. tostring(uploader.id) .. ": " .. tostring(err))
   end
 end
 
@@ -3541,7 +3541,7 @@ function M.totp_enroll(req)
   if not user then return status, body end
   local secret = totp.generate_secret()
   db.execute("UPDATE users SET totp_secret=%s, totp_enabled_at=NULL WHERE id=%s", secret, user.id)
-  return 200, { secret = secret, uri = totp.provisioning_uri(secret, user.username, "Image Gallery") }
+  return 200, { secret = secret, uri = totp.provisioning_uri(secret, user.username, "Nyxframe") }
 end
 
 function M.totp_confirm(req)
@@ -3987,7 +3987,7 @@ notify_matching_saved_searches = function(uploader_id, item)
     end
   end)
   if not ok then
-    print("[image-gallery-lua] saved-search match notification failed for uploader " .. tostring(uploader_id) .. ": " .. tostring(err))
+    print("[nyxframe] saved-search match notification failed for uploader " .. tostring(uploader_id) .. ": " .. tostring(err))
   end
 end
 
@@ -6008,7 +6008,7 @@ function M.media_load_diagnostic(req)
   local media_kind = tostring(nn(payload.media_kind) or ""):lower():sub(1, 16)
   local selected_source = tostring(nn(payload.selected_source) or ""):lower():sub(1, 32)
   print(string.format(
-    "[image-gallery-lua] media load diagnostic media_id=%s outcome=%s context=%s selected=%s media_kind=%s viewer_id=%s",
+    "[nyxframe] media load diagnostic media_id=%s outcome=%s context=%s selected=%s media_kind=%s viewer_id=%s",
     tostring(media_id), outcome ~= "" and outcome or "unknown", context ~= "" and context or "unknown",
     selected_source ~= "" and selected_source or "none", media_kind ~= "" and media_kind or "unknown",
     tostring(auth and auth.id or 0)

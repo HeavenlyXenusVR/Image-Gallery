@@ -38,7 +38,7 @@ export function Shell({ ctx, children, className = "", style }) {
           <div className="locked-state">
             <AlertTriangle size={42} />
             <h2>Under maintenance</h2>
-            <p>{site.maintenance_message || "Image Gallery is temporarily unavailable. Please check back soon."}</p>
+            <p>{site.maintenance_message || "Nyxframe is temporarily unavailable. Please check back soon."}</p>
           </div>
         </main>
       </div>
@@ -60,7 +60,7 @@ export function Shell({ ctx, children, className = "", style }) {
         <Link className="brand" to="/">
           <span className="brand-mark"><ImageIcon size={18} /></span>
           <span className="brand-copy">
-            <strong>Image Gallery</strong>
+            <strong>Nyxframe</strong>
             <small>Curated Media Deck</small>
           </span>
         </Link>
@@ -107,7 +107,7 @@ export function Shell({ ctx, children, className = "", style }) {
       </header>
       <main className="main-stage">{children}</main>
       <footer className="site-footer">
-        <span>Image Gallery // HeavenlyXenusVR</span>
+        <span>Nyxframe // HeavenlyXenusVR</span>
         <a href="https://discord.com/users/1304564041863266347" target="_blank" rel="noreferrer">Discord</a>
       </footer>
     </div>

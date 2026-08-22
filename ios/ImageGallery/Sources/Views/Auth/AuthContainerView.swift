@@ -13,7 +13,7 @@ struct AuthContainerView: View {
                     LoginView(showingRegister: $showingRegister)
                 }
             }
-            .navigationTitle("Image Gallery")
+            .navigationTitle("Nyxframe")
             .safeAreaInset(edge: .top) {
                 // Explains *why* the app dropped back to login — most
                 // commonly an expired session, but also the only place a

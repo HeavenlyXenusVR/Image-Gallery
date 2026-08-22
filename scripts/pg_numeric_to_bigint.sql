@@ -1,4 +1,4 @@
--- Image Gallery: normalize every numeric(20,0) column (produced mechanically by
+-- Nyxframe: normalize every numeric(20,0) column (produced mechanically by
 -- the original MariaDB `bigint unsigned` -> Postgres conversion) to bigint.
 --
 -- Why: all PK/identity columns in this schema are already `bigint` (see

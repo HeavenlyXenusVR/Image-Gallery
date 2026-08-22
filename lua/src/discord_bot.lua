@@ -35,7 +35,7 @@ local function api_call(method, path, body_table)
   local body = body_table and cjson.encode(body_table) or nil
   local headers = {
     ["Authorization"] = "Bot " .. token,
-    ["User-Agent"] = "ImageGalleryBot (https://github.com/HeavenlyXenusVR/Image-Gallery, 1.0)",
+    ["User-Agent"] = "NyxframeBot (https://github.com/HeavenlyXenusVR/Image-Gallery, 1.0)",
   }
   if body then
     headers["Content-Type"] = "application/json"

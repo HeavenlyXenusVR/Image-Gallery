@@ -3,7 +3,7 @@ import Security
 
 /// Minimal Keychain wrapper for the session bearer token. Unlike Lumisound's
 /// single shared "apiKey" (fine for a personal single-owner tool, kept in
-/// UserDefaults), Image Gallery has real per-user login/password accounts, so
+/// UserDefaults), Nyxframe has real per-user login/password accounts, so
 /// the session token gets Keychain storage instead — see the iOS plan's notes.
 enum KeychainHelper {
     private static let service = "com.imagegallery.ios.session"

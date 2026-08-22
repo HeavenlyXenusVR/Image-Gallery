@@ -1,8 +1,8 @@
-# Image Gallery
+# Nyxframe
 
 ![Witch Knot site icon](favicon.ico)
 
-Image Gallery is the React and FastAPI media site for uploaded images, GIFs, wallpapers, profile pictures, memes, and videos. It is built around a MySQL-backed account system, local or tunnel-backed media delivery, AI-assisted tagging, and social profile discovery.
+Nyxframe is the React and FastAPI media site for uploaded images, GIFs, wallpapers, profile pictures, memes, and videos. It is built around a MySQL-backed account system, local or tunnel-backed media delivery, AI-assisted tagging, and social profile discovery.
 
 ## What It Does
 

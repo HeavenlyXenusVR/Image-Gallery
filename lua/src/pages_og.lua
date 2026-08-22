@@ -61,7 +61,7 @@ function M.render_media_preview(origin, media_id)
 
   local title = row.title and row.title ~= "" and row.title or ("Post by @" .. tostring(row.username))
   local description = (row.description and row.description ~= "") and row.description
-    or ("Shared by @" .. tostring(row.username) .. " on Image Gallery")
+    or ("Shared by @" .. tostring(row.username) .. " on Nyxframe")
   local thumb_url = origin .. "/api/media/" .. tostring(media_id) .. "/thumb?w=1200"
   local page_url = origin .. "/media/" .. tostring(media_id)
   local esc_title, esc_desc, esc_thumb, esc_url = html.esc(title), html.esc(description), html.esc(thumb_url), html.esc(page_url)
@@ -72,7 +72,7 @@ function M.render_media_preview(origin, media_id)
 <meta charset="utf-8">
 <title>%s</title>
 <meta property="og:type" content="website">
-<meta property="og:site_name" content="Image Gallery">
+<meta property="og:site_name" content="Nyxframe">
 <meta property="og:title" content="%s">
 <meta property="og:description" content="%s">
 <meta property="og:image" content="%s">

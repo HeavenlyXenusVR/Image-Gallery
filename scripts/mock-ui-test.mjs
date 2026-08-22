@@ -521,7 +521,7 @@ async function main() {
     console.error(failures.join("\n"));
     process.exit(1);
   }
-  console.log("image_gallery_mock_ui=passed");
+  console.log("nyxframe_mock_ui=passed");
 }
 
 main().catch((error) => {

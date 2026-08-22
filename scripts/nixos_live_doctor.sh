@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PORT="${1:-8788}"
 export PATH="/run/current-system/sw/bin:${HOME}/.nix-profile/bin:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"
 
-echo "Image Gallery NixOS live doctor"
+echo "Nyxframe NixOS live doctor"
 echo "Root: $ROOT_DIR"
 echo "Port: $PORT"
 echo

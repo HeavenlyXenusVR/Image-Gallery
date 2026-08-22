@@ -28,7 +28,7 @@ local HTML_HEADERS = { ["Content-Type"] = "text/html; charset=utf-8" }
 local function layout_error(message)
   return ([[<!doctype html><html><head><meta charset="utf-8"><title>Admin</title></head>
 <body style="background:#101318;color:#e7e9ee;font-family:sans-serif;padding:40px;">
-<p>%s</p><p><a href="/" style="color:#37c9a7;">Back to Image Gallery</a></p>
+<p>%s</p><p><a href="/" style="color:#37c9a7;">Back to Nyxframe</a></p>
 </body></html>]]):format(esc(message))
 end
 
@@ -104,7 +104,7 @@ local function layout(body_html, flash)
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Admin // Image Gallery</title>
+<title>Admin // Nyxframe</title>
 %s
 </head>
 <body>
