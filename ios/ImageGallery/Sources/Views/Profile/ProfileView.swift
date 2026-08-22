@@ -117,8 +117,8 @@ struct ProfileView: View {
     /// same profile there for anyone without the app installed.
     private func profileShareURL(username: String) -> URL {
         let encoded = username.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? username
-        return URL(string: "https://heavenlyxenusvr.github.io/Image-Gallery/users/\(encoded)")
-            ?? URL(string: "https://heavenlyxenusvr.github.io/Image-Gallery/")!
+        return URL(string: "https://heavenlyxenusvr.github.io/Nyxframe/users/\(encoded)")
+            ?? URL(string: "https://heavenlyxenusvr.github.io/Nyxframe/")!
     }
 }
 

@@ -11,7 +11,7 @@ final class LiveConfigService {
 
     private static let overrideKey = "gallery_backend_url_override"
     private static let cachedKey = "gallery_backend_url_cached"
-    private static let liveConfigURL = URL(string: "https://heavenlyxenusvr.github.io/Image-Gallery/live-config.json")!
+    private static let liveConfigURL = URL(string: "https://heavenlyxenusvr.github.io/Nyxframe/live-config.json")!
 
     private let defaults = UserDefaults.standard
 

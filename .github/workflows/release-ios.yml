@@ -229,7 +229,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           IPA_NAME="${{ steps.ipa.outputs.ipa_name }}"
           VERSION_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          DOWNLOAD_URL="https://github.com/HeavenlyXenusVR/Image-Gallery/releases/download/ios%2Fv${VERSION}/${IPA_NAME}"
+          DOWNLOAD_URL="https://github.com/HeavenlyXenusVR/Nyxframe/releases/download/ios%2Fv${VERSION}/${IPA_NAME}"
           IPA_SIZE=$(stat -f%z "ios/build/$IPA_NAME")
 
           python3 - <<EOF

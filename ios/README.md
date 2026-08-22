@@ -48,10 +48,10 @@ Runs `xcodegen generate`, archives in Release configuration, and exports to `bui
 **AltStore (auto-updates):** add this source URL in AltStore → Sources:
 
 ```
-https://raw.githubusercontent.com/HeavenlyXenusVR/Image-Gallery/main/ios/altstore-source.json
+https://raw.githubusercontent.com/HeavenlyXenusVR/Nyxframe/main/ios/altstore-source.json
 ```
 
-**Sideloadly / manual:** download the latest `ImageGallery-*.ipa` from [Releases](https://github.com/HeavenlyXenusVR/Image-Gallery/releases) and install with [Sideloadly](https://sideloadly.io/) or AltServer.
+**Sideloadly / manual:** download the latest `ImageGallery-*.ipa` from [Releases](https://github.com/HeavenlyXenusVR/Nyxframe/releases) and install with [Sideloadly](https://sideloadly.io/) or AltServer.
 
 ## Project layout
 

@@ -59,7 +59,7 @@ function M.load()
     cors_allowed_origins = env_csv("GALLERY_CORS_ALLOWED_ORIGINS"),
     cors_allow_origin_regex = env("GALLERY_CORS_ALLOW_ORIGIN_REGEX", ""),
     trusted_hosts = env_csv("GALLERY_TRUSTED_HOSTS"),
-    pages_public_url = env("GALLERY_PAGES_PUBLIC_URL", "https://heavenlyxenusvr.github.io/Image-Gallery/"),
+    pages_public_url = env("GALLERY_PAGES_PUBLIC_URL", "https://heavenlyxenusvr.github.io/Nyxframe/"),
     -- Backend's own public origin (the cloudflared tunnel target, same value
     -- start_live_tunnel_service.sh already reads from .env) -- used by
     -- digest.lua's background loop to build absolute thumb URLs with no real
