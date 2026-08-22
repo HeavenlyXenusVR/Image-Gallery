@@ -70,6 +70,7 @@ struct UserSettings: Codable, Equatable {
     var cardInfoDisplay: String?
     var columnGap: String?
     var galleryFont: String?
+    var profileHeaderStyle: String?
 }
 
 struct ProfilePageResponse: Codable {

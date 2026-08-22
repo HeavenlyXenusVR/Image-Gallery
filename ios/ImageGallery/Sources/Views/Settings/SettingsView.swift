@@ -35,6 +35,7 @@ struct SettingsView: View {
     @State private var cardInfoDisplay = "below"
     @State private var columnGap = "normal"
     @State private var galleryFont = "system"
+    @State private var profileHeaderStyle = "solid"
     @State private var isSavingAppearance = false
     @State private var loadedAppearance = false
     @State private var showingLogoutConfirm = false
@@ -119,6 +120,13 @@ struct SettingsView: View {
                     Text("Serif").tag("serif")
                     Text("Monospace").tag("mono")
                     Text("Rounded").tag("rounded")
+                }
+                Picker("Profile header", selection: $profileHeaderStyle) {
+                    Text("Solid").tag("solid")
+                    Text("Glass").tag("glass")
+                    Text("Blur").tag("blur")
+                    Text("Transparent").tag("transparent")
+                    Text("Gradient").tag("gradient")
                 }
             }
 
@@ -413,6 +421,7 @@ struct SettingsView: View {
         cardInfoDisplay = settings.cardInfoDisplay ?? "below"
         columnGap = settings.columnGap ?? "normal"
         galleryFont = settings.galleryFont ?? "system"
+        profileHeaderStyle = settings.profileHeaderStyle ?? "solid"
     }
 
     private func saveAppearance() async {
@@ -443,7 +452,8 @@ struct SettingsView: View {
                 mediaBorderStyle: mediaBorderStyle,
                 cardInfoDisplay: cardInfoDisplay,
                 columnGap: columnGap,
-                galleryFont: galleryFont
+                galleryFont: galleryFont,
+                profileHeaderStyle: profileHeaderStyle
             )
             let user = try await GalleryAPIClient.shared.updateSettings(body)
             session.setCurrentUser(user)

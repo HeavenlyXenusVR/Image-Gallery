@@ -201,7 +201,7 @@ private struct ProfileHeader: View {
         }
         .padding(Metrics.Space.lg)
         .background(AccentWash(color: accent, secondaryColor: secondaryAccent))
-        .background(.thinMaterial)
+        .modifier(ProfileHeaderBackground(style: user.userSettings?.profileHeaderStyle))
         .clipShape(RoundedRectangle(cornerRadius: Metrics.Radius.lg, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: Metrics.Radius.lg, style: .continuous)
@@ -217,5 +217,26 @@ private struct ProfileHeader: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
         .softCard(radius: Metrics.Radius.sm)
+    }
+}
+
+/// `profile_header_style` -- the AccentWash gradient (already applied
+/// underneath by ProfileHeader) stays constant across all five modes; this
+/// only changes what sits on top of it, mirroring web's solid/glass/blur/
+/// transparent/gradient header treatments.
+private struct ProfileHeaderBackground: ViewModifier {
+    let style: String?
+
+    func body(content: Content) -> some View {
+        switch style {
+        case "solid":
+            content.background(Color(uiColor: .secondarySystemBackground))
+        case "blur":
+            content.background(.ultraThinMaterial)
+        case "transparent", "gradient":
+            content
+        default:
+            content.background(.thinMaterial)
+        }
     }
 }
