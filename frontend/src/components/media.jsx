@@ -52,19 +52,45 @@ export const MediaCard = memo(function MediaCard({ ctx, item, eager = false, onI
   // video loads (including the one the viewer actually opened) stall or
   // fail. Only mount the live preview once the card has actually scrolled
   // into view, same as "hover preview" already implied but never enforced.
+  //
+  // Two more things this same effect fixes, reported as "little stutters
+  // and freezes when scrolling": (1) inView used to be a one-way latch --
+  // once true, a preview stayed mounted and playing forever even after
+  // scrolling far away, so a long scroll session accumulated more and more
+  // simultaneously-decoding <video> elements instead of settling back
+  // down. Now it un-mounts again on scroll-out, same idea as the iOS grid
+  // preview's onDisappear cleanup. (2) inView flipped true the instant a
+  // card crossed the 200px margin, with no debounce -- fast-scrolling past
+  // a whole row of video cards fired off that many real network requests
+  // (each potentially a full original file, per the fallback above) for
+  // cards the viewer never actually stopped on. A short settle delay,
+  // cancelled if the card leaves the viewport before it elapses, mirrors
+  // the 350ms debounce already used for this exact reason in the iOS app's
+  // MediaCard.
   const cardRef = useRef(null);
   const [inView, setInView] = useState(eager);
   useEffect(() => {
-    if (!previewEligible || inView) return undefined;
+    if (!previewEligible) return undefined;
     const node = cardRef.current;
     if (!node || typeof IntersectionObserver === "undefined") { setInView(true); return undefined; }
+    let settleTimer = null;
     const observer = new IntersectionObserver(
-      ([entry]) => { if (entry.isIntersecting) setInView(true); },
+      ([entry]) => {
+        if (entry.isIntersecting) {
+          settleTimer = window.setTimeout(() => setInView(true), 350);
+        } else {
+          if (settleTimer) { window.clearTimeout(settleTimer); settleTimer = null; }
+          setInView(false);
+        }
+      },
       { rootMargin: "200px" },
     );
     observer.observe(node);
-    return () => observer.disconnect();
-  }, [previewEligible, inView]);
+    return () => {
+      if (settleTimer) window.clearTimeout(settleTimer);
+      observer.disconnect();
+    };
+  }, [previewEligible]);
   const liveVideoPreview = previewEligible && inView;
   const previewSrc = useMemo(() => (liveVideoPreview ? videoPreviewUrl(item, "low") : ""), [liveVideoPreview, item]);
   const categoryLine = useMemo(() => [item.category_name || "Unsorted", ...subcategoryNames(item)].filter(Boolean).join(" / "), [item]);
