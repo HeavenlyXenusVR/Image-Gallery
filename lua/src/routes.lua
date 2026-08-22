@@ -6077,6 +6077,45 @@ local function resolve_media_bytes(item)
   return nil, nil, nil
 end
 
+-- Shared by the file/preview/thumb image routes below. Previously only
+-- serve_media_bytes_response (the ?quality=original "High Quality" /file
+-- endpoint) applied a watermark, so it only ever showed up there --
+-- serve_media_preview and serve_media_thumb (what viewers actually see in
+-- the grid and lightbox the vast majority of the time) rendered straight
+-- from the unwatermarked original bytes. Caches the watermarked ORIGINAL
+-- (keyed by media_id + hash of the current watermark text), so callers
+-- that then resize/re-encode it (render_webp_from_bytes for
+-- previews/thumbs) all inherit the watermark for free instead of each
+-- needing its own cache.
+local function apply_image_watermark_if_configured(media_id, item, content, mime_type)
+  if item.media_kind ~= "image" then return content end
+  local owner = get_user(item.user_id)
+  local watermark_text = owner and owner.user_settings and nn(owner.user_settings.watermark_text)
+  if not watermark_text or watermark_text == "" then return content end
+
+  local cache_key = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(watermark_text)):sub(1, 16)
+  local cache_dir = M.settings.uploads_dir .. "/_watermark_cache"
+  local cache_path = cache_dir .. "/" .. tostring(media_id) .. "_" .. cache_key
+  local cf = io.open(cache_path, "rb")
+  if cf then
+    local cached = cf:read("*a")
+    cf:close()
+    return cached
+  end
+
+  local watermarked = media_files.apply_watermark(content, mime_type, watermark_text)
+  if watermarked then
+    os.execute("mkdir -p " .. shell_quote(cache_dir))
+    local out = io.open(cache_path, "wb")
+    if out then
+      out:write(watermarked)
+      out:close()
+    end
+    return watermarked
+  end
+  return content
+end
+
 function M.serve_media_thumb(req)
   local media_id = tonumber(req.params.media_id)
   if not media_id then return 404, { detail = "Media not found." } end
@@ -6108,6 +6147,7 @@ function M.serve_media_thumb(req)
 
   local content = resolve_media_bytes(item)
   if content then
+    content = apply_image_watermark_if_configured(media_id, item, content, item.mime_type)
     local rendered = media_files.render_webp_from_bytes(content, width, 84, media_kind == "video" and 0.35 or nil)
     if rendered then
       os.execute("mkdir -p " .. (media_kind == "video" and (M.settings.uploads_dir .. "/_thumb_cache/" .. shard) or (M.settings.uploads_dir .. "/_thumb_cache")))
@@ -6222,7 +6262,10 @@ local function ensure_video_quality_cache(media_id, item, content, quality)
   if #content > VIDEO_TRANSCODE_SIZE_LIMIT then return nil end
 
   local sha_row = db.fetchone("SELECT content_sha256 FROM media_items WHERE id=%s", tostring(media_id))
-  local digest_seed = (sha_row and nn(sha_row.content_sha256)) or item.updated_at or item.created_at or tostring(media_id)
+  local owner = get_user(item.user_id)
+  local watermark_text = owner and owner.user_settings and nn(owner.user_settings.watermark_text)
+  local digest_seed = ((sha_row and nn(sha_row.content_sha256)) or item.updated_at or item.created_at or tostring(media_id))
+    .. "|wm=" .. tostring(watermark_text or "")
   local cache_file = video_quality_cache_path(media_id, quality, digest_seed)
 
   local existing = io.open(cache_file, "rb")
@@ -6262,14 +6305,28 @@ local function ensure_video_quality_cache(media_id, item, content, quality)
 
     local tmp_dst = cache_file .. ".tmp." .. tostring(math.random(100000, 999999)) .. ".mp4"
     local scale_filter = video_scale_filter(src, profile.max_width)
+    local wm_filter, wm_text_file = media_files.video_watermark_filter(watermark_text)
+    if wm_filter then scale_filter = scale_filter .. "," .. wm_filter end
+    local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker) .. " " .. shell_quote(tmp_dst)
+    if wm_text_file then cleanup = cleanup .. " " .. shell_quote(wm_text_file) end
+    -- nice/ionice: this whole codepath was already "run detached so it
+    -- doesn't block the event loop", but a CPU-bound ffmpeg encode at
+    -- default (0) priority still competes for the CPU with the luajit
+    -- process itself on a single/few-core box -- confirmed live: a
+    -- watermarked re-encode saturated CPU badly enough that the whole
+    -- site (unrelated requests, even the static SPA) went unresponsive
+    -- for as long as ffmpeg ran, the "random severe slowdown under load"
+    -- symptom in a different guise from the DB-blocking one. Lowest CPU
+    -- ("nice -n 19") and I/O ("ionice -c2 -n7", best-effort lowest) scheduling
+    -- priority so the kernel always favors the request-serving process.
     local cmd = string.format(
-      "( %s -y -hide_banner -loglevel error -i %s -map 0:v:0 -map 0:a:0? -vf %s -c:v libx264 -preset %s -crf %d "
+      "( nice -n 19 ionice -c2 -n7 %s -y -hide_banner -loglevel error -i %s -map 0:v:0 -map 0:a:0? -vf %s -c:v libx264 -preset %s -crf %d "
         .. "-profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s -movflags +faststart -f mp4 %s "
-        .. "&& mv -f %s %s; rm -f %s %s %s ) </dev/null >/dev/null 2>&1 &",
+        .. "&& mv -f %s %s; rm -f %s ) </dev/null >/dev/null 2>&1 &",
       ffmpeg_bin(), shell_quote(src), shell_quote(scale_filter),
       profile.preset, profile.crf, profile.profile, profile.audio_bitrate, shell_quote(tmp_dst),
       shell_quote(tmp_dst), shell_quote(cache_file),
-      shell_quote(src), shell_quote(pending_marker), shell_quote(tmp_dst)
+      cleanup
     )
     os.execute(cmd)
   end
@@ -6296,9 +6353,10 @@ end
 
 local HLS_SEGMENT_SECONDS = 6
 
-local function media_content_digest_seed(media_id, item)
+local function media_content_digest_seed(media_id, item, watermark_text)
   local sha_row = db.fetchone("SELECT content_sha256 FROM media_items WHERE id=%s", tostring(media_id))
-  return (sha_row and nn(sha_row.content_sha256)) or item.updated_at or item.created_at or tostring(media_id)
+  local base = (sha_row and nn(sha_row.content_sha256)) or item.updated_at or item.created_at or tostring(media_id)
+  return base .. "|wm=" .. tostring(watermark_text or "")
 end
 
 local function hls_variant_dir(media_id, quality, digest_seed)
@@ -6337,7 +6395,9 @@ local function ensure_hls_variant(media_id, item, content, quality)
   -- the exact "nothing plays" symptom for large uploads.
   if quality ~= "original" and #content > VIDEO_TRANSCODE_SIZE_LIMIT then return nil end
 
-  local digest_seed = media_content_digest_seed(media_id, item)
+  local owner = get_user(item.user_id)
+  local watermark_text = owner and owner.user_settings and nn(owner.user_settings.watermark_text)
+  local digest_seed = media_content_digest_seed(media_id, item, watermark_text)
   local dir = hls_variant_dir(media_id, quality, digest_seed)
 
   -- Same filesystem-based ".pending" dedup as ensure_video_quality_cache.
@@ -6362,29 +6422,52 @@ local function ensure_hls_variant(media_id, item, content, quality)
   marker:write(tostring(os.time()))
   marker:close()
 
+  local wm_filter, wm_text_file = media_files.video_watermark_filter(watermark_text)
+
   local codec_args
   if quality == "original" then
-    codec_args = "-c copy"
+    if wm_filter then
+      -- A watermark can't be burned in through `-c copy` (stream remux,
+      -- no filter graph runs at all) -- fall back to a visually-lossless
+      -- re-encode at the source resolution so "original" still gets
+      -- watermarked like every other quality instead of silently
+      -- skipping it, which was the actual bug report ("watermark
+      -- doesn't show up at all on videos").
+      codec_args = string.format(
+        "-vf %s -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 320k",
+        shell_quote(wm_filter)
+      )
+    else
+      codec_args = "-c copy"
+    end
   else
     local profile = VIDEO_QUALITY_PROFILES[quality]
     local scale_filter = video_scale_filter(src, profile.max_width)
+    if wm_filter then scale_filter = scale_filter .. "," .. wm_filter end
     codec_args = string.format(
       "-vf %s -c:v libx264 -preset %s -crf %d -profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s",
       shell_quote(scale_filter), profile.preset, profile.crf, profile.profile, profile.audio_bitrate
     )
   end
 
+  local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker)
+  if wm_text_file then cleanup = cleanup .. " " .. shell_quote(wm_text_file) end
+
   -- hls_flags temp_file: each playlist rewrite happens via write-then-
   -- rename, so a concurrent read of playlist.m3u8 (M.serve_hls_playlist,
   -- possibly mid-encode) never sees a torn/partial write.
+  -- nice/ionice: see ensure_video_quality_cache's identical comment --
+  -- keeps a CPU-heavy detached encode from starving the request-serving
+  -- process of CPU, confirmed live to otherwise make the whole site
+  -- unresponsive for the duration of the encode.
   local cmd = string.format(
-    "( %s -y -hide_banner -loglevel error -i %s -map 0:v:0 -map 0:a:0? %s "
+    "( nice -n 19 ionice -c2 -n7 %s -y -hide_banner -loglevel error -i %s -map 0:v:0 -map 0:a:0? %s "
       .. "-f hls -hls_time %d -hls_list_size 0 -hls_playlist_type vod -hls_flags independent_segments+temp_file "
       .. "-hls_segment_filename %s %s "
-      .. "; rm -f %s %s ) </dev/null >/dev/null 2>&1 &",
+      .. "; rm -f %s ) </dev/null >/dev/null 2>&1 &",
     ffmpeg_bin(), shell_quote(src), codec_args, HLS_SEGMENT_SECONDS,
     shell_quote(dir .. "/seg_%05d.ts"), shell_quote(dir .. "/playlist.m3u8"),
-    shell_quote(src), shell_quote(pending_marker)
+    cleanup
   )
   os.execute(cmd)
   return dir
@@ -6517,7 +6600,9 @@ function M.serve_hls_segment(req)
   local item, status, body = hls_check_access(req, media_id)
   if not item then return status, body end
 
-  local digest_seed = media_content_digest_seed(media_id, item)
+  local seg_owner = get_user(item.user_id)
+  local seg_watermark_text = seg_owner and seg_owner.user_settings and nn(seg_owner.user_settings.watermark_text)
+  local digest_seed = media_content_digest_seed(media_id, item, seg_watermark_text)
   local dir = hls_variant_dir(media_id, quality, digest_seed)
   local f = io.open(dir .. "/" .. segment, "rb")
   if not f then return 404, { detail = "Segment not found." } end
@@ -6592,38 +6677,7 @@ local function serve_media_bytes_response(req, media_id, as_download, quality)
     return 404, { detail = "File is missing. Re-upload this post once so it can be saved into the new DB-backed file store." }
   end
 
-  -- Watermark/signature text has had a real Settings-page input and a
-  -- validated user_settings field since before this pass, but was never
-  -- actually applied to anything -- pure dead data. Cached on disk keyed
-  -- by (media_id, hash-of-current-watermark-text) so an ffmpeg pass only
-  -- ever runs once per post per watermark string, and changing your
-  -- watermark text naturally invalidates the old cached file instead of
-  -- requiring an explicit purge step.
-  if item.media_kind == "image" then
-    local owner = get_user(item.user_id)
-    local watermark_text = owner and owner.user_settings and nn(owner.user_settings.watermark_text)
-    if watermark_text and watermark_text ~= "" then
-      local cache_key = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(watermark_text)):sub(1, 16)
-      local cache_dir = M.settings.uploads_dir .. "/_watermark_cache"
-      local cache_path = cache_dir .. "/" .. tostring(media_id) .. "_" .. cache_key
-      local cf = io.open(cache_path, "rb")
-      if cf then
-        content = cf:read("*a")
-        cf:close()
-      else
-        local watermarked = media_files.apply_watermark(content, mime_type, watermark_text)
-        if watermarked then
-          os.execute("mkdir -p " .. shell_quote(cache_dir))
-          local out = io.open(cache_path, "wb")
-          if out then
-            out:write(watermarked)
-            out:close()
-          end
-          content = watermarked
-        end
-      end
-    end
-  end
+  content = apply_image_watermark_if_configured(media_id, item, content, mime_type)
 
   if as_download then
     db.execute("UPDATE media_items SET downloads=downloads+1 WHERE id=%s", tostring(media_id))
@@ -6828,6 +6882,7 @@ function M.serve_media_preview(req)
   if not content then
     return 404, { detail = "Preview is missing. Re-upload this post once so it can be saved into the new DB-backed file store." }
   end
+  content = apply_image_watermark_if_configured(media_id, item, content, item.mime_type)
   local size = tostring(req.query.size or "card")
   local max_edge = ({ mini = 360, detail = 1920 })[size] or 880
   local quality = ({ mini = 78, detail = 92 })[size] or 86

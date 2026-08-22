@@ -32,11 +32,43 @@ end
 -- blocking the WHOLE event loop the way the unwrapped socket did: only
 -- other DB-bound coroutines wait here, video/image byte-serving and
 -- everything else keeps running.
+-- 10s of total wait, not 10s per query -- if the connection is ever stuck
+-- (a wedged socket, a runaway query, a bug in whatever's holding the
+-- lock) this guarantees every OTHER DB-bound coroutine gives up and 500s
+-- instead of queueing forever, which is what actually happened live once
+-- already: one request got stuck deep inside a query and every
+-- subsequent DB-touching request (which is nearly all of them) piled up
+-- behind it with no bound, silently wedging the entire site until a
+-- manual restart. A stuck DB is still a real outage for anything that
+-- needs the DB, but it must not also take down completely unrelated
+-- static/media serving, and it must resolve itself within seconds, not
+-- require someone to notice and restart the process.
+local LOCK_WAIT_TIMEOUT_SECONDS = 10
+
 local function lock_acquire(self)
   local in_coroutine = coroutine.isyieldable()
+  local waited = 0
   while self.busy do
     if copas_ok and in_coroutine then
-      copas.pause(0)
+      -- A real (if tiny) sleep, not pause(0)'s immediate-reschedule: many
+      -- coroutines all requesting "wake up right now" can dominate
+      -- copas's dispatch loop and starve its ability to service actual
+      -- socket I/O, which is the one thing that would ever let the
+      -- lock-holder finish and unblock everyone else.
+      copas.pause(0.02)
+      waited = waited + 0.02
+      if waited >= LOCK_WAIT_TIMEOUT_SECONDS then
+        -- Force-clear a wedged lock rather than hang forever. Also drop
+        -- the connection itself, not just the flag: whatever query was
+        -- stuck may still have a half-read response sitting in the
+        -- socket buffer, and reusing that connection as-is would desync
+        -- the wire protocol for every query after this one (silently
+        -- wrong results, not just another hang). ensure() reconnects
+        -- fresh on next use.
+        self.busy = false
+        self.conn = nil
+        break
+      end
     else
       -- Can't yield outside a coroutine (e.g. main.lua's startup
       -- db.ping()) -- nothing else could be running concurrently at

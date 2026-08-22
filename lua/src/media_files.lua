@@ -750,4 +750,30 @@ function M.apply_watermark(content, mime_type, watermark_text)
   return bytes
 end
 
+-- Video counterpart to M.apply_watermark: video encodes run as DETACHED
+-- background ffmpeg processes (routes.lua's ensure_video_quality_cache/
+-- ensure_hls_variant), so unlike the image path this can't write the
+-- textfile, run ffmpeg, and clean up synchronously -- the text file has
+-- to survive until the background process actually reads it. Returns
+-- (filter_string, text_file_path) for the caller to splice into its own
+-- -vf chain and background shell command (which must `rm -f` the
+-- text_file_path once the encode finishes), or (nil, nil) if there's no
+-- watermark text configured or the font is missing.
+function M.video_watermark_filter(watermark_text)
+  local text = tostring(watermark_text or ""):match("^%s*(.-)%s*$")
+  if text == "" or not file_exists(WATERMARK_FONT) then return nil, nil end
+
+  local text_file = os.tmpname()
+  local tf = io.open(text_file, "wb")
+  if not tf then return nil, nil end
+  tf:write(text:sub(1, 40))
+  tf:close()
+
+  local filter = string.format(
+    "drawtext=fontfile=%s:textfile=%s:fontcolor=white@0.55:fontsize=h/22:x=w-tw-(h/40+12):y=h-th-(h/40+12):shadowcolor=black@0.5:shadowx=2:shadowy=2",
+    ffmpeg_filter_path_escape(WATERMARK_FONT), ffmpeg_filter_path_escape(text_file)
+  )
+  return filter, text_file
+end
+
 return M
