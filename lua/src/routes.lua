@@ -5381,6 +5381,7 @@ function M.admin_list_background_music(req)
   )
   local origin = request_origin(req)
   for _, row in ipairs(rows) do
+    row.id = db.toint(row.id, row.id)
     row.file_size = db.toint(row.file_size, 0)
     row.url = origin .. "/api/background-music/" .. tostring(row.id) .. "/file"
   end
@@ -5448,6 +5449,7 @@ function M.list_background_music(req)
   )
   local origin = request_origin(req)
   for _, row in ipairs(rows) do
+    row.id = db.toint(row.id, row.id)
     row.url = origin .. "/api/background-music/" .. tostring(row.id) .. "/file"
   end
   return 200, { tracks = arr(rows) }
