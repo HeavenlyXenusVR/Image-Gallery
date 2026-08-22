@@ -375,6 +375,20 @@ local function ffmpeg_bin()
   return os.getenv("GALLERY_FFMPEG_BIN") or "ffmpeg"
 end
 
+-- Every call below runs synchronously (os.execute waits for it -- unlike
+-- routes.lua's detached video transcodes, these are single-frame ops:
+-- thumbnails, fingerprints, watermarks, previews), so nicing it doesn't
+-- speed up the request that triggered it -- it's still blocked either way.
+-- What it does do is stop a burst of these (e.g. a bulk import's worth of
+-- never-before-viewed thumbnails, or several visitors' cache misses
+-- landing at once) from taking CPU away from the request-serving luajit
+-- process and every OTHER service on this same host (SwarmPanel, the
+-- Discord bots), same rationale as routes.lua's nice/ionice comment on
+-- the video transcode commands.
+local function ffmpeg_prefix()
+  return "nice -n 15 ionice -c2 -n6 " .. ffmpeg_bin()
+end
+
 -- Renders `src_path` (any image OR video ffmpeg can demux -- a single still
 -- image behaves like a 1-frame video for this purpose, so one helper covers
 -- both serve_media_thumb's image branch and _render_video_frame_thumb) to a
@@ -391,7 +405,7 @@ function M.render_webp(src_path, dst_path, max_edge, quality, seek)
   local seek_args = seek and (" -ss " .. tostring(seek)) or ""
   local cmd = string.format(
     "%s -y -hide_banner -loglevel error%s -i %s -frames:v 1 -vf %s -c:v libwebp -compression_level 5 -quality %d -f webp %s </dev/null >/dev/null 2>&1",
-    ffmpeg_bin(),
+    ffmpeg_prefix(),
     seek_args,
     shell_quote(src_path),
     shell_quote(string.format("scale='min(%d,iw)':-2:flags=lanczos", max_edge)),
@@ -470,7 +484,7 @@ local function raw_gray_frame(src_path, w, h)
   local dst = os.tmpname() .. ".raw"
   local cmd = string.format(
     "%s -y -hide_banner -loglevel error -i %s -vf %s -f rawvideo -pix_fmt gray -frames:v 1 %s </dev/null >/dev/null 2>&1",
-    ffmpeg_bin(),
+    ffmpeg_prefix(),
     shell_quote(src_path),
     shell_quote(string.format("scale=%d:%d:flags=lanczos", w, h)),
     shell_quote(dst)
@@ -499,7 +513,7 @@ local function raw_rgb_frame(src_path, w, h)
   local dst = os.tmpname() .. ".raw"
   local cmd = string.format(
     "%s -y -hide_banner -loglevel error -i %s -vf %s -f rawvideo -pix_fmt rgb24 -frames:v 1 %s </dev/null >/dev/null 2>&1",
-    ffmpeg_bin(),
+    ffmpeg_prefix(),
     shell_quote(src_path),
     shell_quote(string.format("scale=%d:%d:flags=lanczos", w, h)),
     shell_quote(dst)
@@ -647,7 +661,7 @@ function M.jpeg_preview_base64_from_path(src)
   local dst = os.tmpname() .. ".jpg"
   local cmd = string.format(
     "%s -y -hide_banner -loglevel error -i %s -frames:v 1 -vf %s -q:v 3 -f mjpeg %s </dev/null >/dev/null 2>&1",
-    ffmpeg_bin(), shell_quote(src), shell_quote("scale='min(1600,iw)':'min(1600,ih)':force_original_aspect_ratio=decrease:flags=lanczos"),
+    ffmpeg_prefix(), shell_quote(src), shell_quote("scale='min(1600,iw)':'min(1600,ih)':force_original_aspect_ratio=decrease:flags=lanczos"),
     shell_quote(dst)
   )
   local ok = os.execute(cmd)
@@ -733,7 +747,7 @@ function M.apply_watermark(content, mime_type, watermark_text)
   )
   local cmd = string.format(
     "%s -y -hide_banner -loglevel error -i %s -vf %s -frames:v 1 %s </dev/null >/dev/null 2>&1",
-    ffmpeg_bin(), shell_quote(src), shell_quote(filter), shell_quote(dst)
+    ffmpeg_prefix(), shell_quote(src), shell_quote(filter), shell_quote(dst)
   )
   local ok = os.execute(cmd)
   local success = (ok == 0 or ok == true)

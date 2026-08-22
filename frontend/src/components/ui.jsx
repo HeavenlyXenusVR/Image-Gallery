@@ -27,16 +27,35 @@ export function GlassFilterDefs() {
 }
 
 // Attach as onPointerMove on any `.liquid-glass` element to drive its
-// specular-highlight position. Deliberately NOT animated via requestAnimationFrame
-// or state -- setting a CSS custom property directly on the DOM node skips
-// React's render cycle entirely, and only opacity/background-position (not
-// filter/backdrop-filter) respond to it, so this never triggers a repaint of
-// the expensive blur/displacement layer itself.
+// specular-highlight position. Setting a CSS custom property directly on the
+// DOM node (not React state) skips React's render cycle entirely, and only
+// opacity/background-position (not filter/backdrop-filter) respond to it, so
+// this never triggers a repaint of the expensive blur/displacement layer
+// itself.
+//
+// getBoundingClientRect() is real work (a forced layout read on any browser
+// that hasn't already settled layout that frame), and a raw pointermove
+// stream can fire well above 60Hz on a high-poll-rate mouse/trackpad --
+// uncapped, that's a rect read plus two style writes hundreds of times a
+// second on hover, for elements applied to the topbar and nav (something a
+// visitor's cursor sits over/near constantly). rAF-throttled per element (a
+// WeakSet, not a single shared flag, since more than one of these can be
+// live at once -- topbar + a hovered stat tile) so it does that work at
+// most once per animation frame, using whichever event was most recent when
+// the frame actually runs.
+const glassFramePending = new WeakSet();
 export function glassPointerMove(event) {
   const el = event.currentTarget;
-  const rect = el.getBoundingClientRect();
-  el.style.setProperty("--glass-x", `${event.clientX - rect.left}px`);
-  el.style.setProperty("--glass-y", `${event.clientY - rect.top}px`);
+  if (glassFramePending.has(el)) return;
+  glassFramePending.add(el);
+  const clientX = event.clientX;
+  const clientY = event.clientY;
+  requestAnimationFrame(() => {
+    glassFramePending.delete(el);
+    const rect = el.getBoundingClientRect();
+    el.style.setProperty("--glass-x", `${clientX - rect.left}px`);
+    el.style.setProperty("--glass-y", `${clientY - rect.top}px`);
+  });
 }
 
 export function Page({ title, eyebrow, lede = "", actions, className = "", children }) {
