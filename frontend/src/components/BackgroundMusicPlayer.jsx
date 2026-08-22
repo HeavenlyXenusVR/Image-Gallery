@@ -27,9 +27,18 @@ function shuffle(list) {
 // plays while visitors browse, fading down (not fully muting -- keeps a
 // faint bed under video audio, which reads as smoother than an abrupt cut)
 // whenever a video with sound starts, and fading back once it stops.
-// Every browser blocks unmuted autoplay outright, so playback only starts
-// after the visitor's first real interaction with the page -- there is no
-// way to legitimately start audio before that, on any platform.
+//
+// Every browser blocks UNMUTED autoplay outright -- there is no way to
+// legitimately start audible audio before some real interaction, on any
+// platform. But MUTED autoplay is allowed everywhere (same trick this
+// site's own grid video previews already use), so playback now starts
+// the instant tracks are known, muted, and the first interaction just
+// flips audio.muted to false instead of calling play() for the first
+// time -- previously play() itself was deferred until that first
+// interaction, so "loads tracks but stays silent until you click
+// something" read as "doesn't start playing" even though it was only
+// ever a few hundred ms of unavoidable initial mute, not a stuck/broken
+// player.
 export function BackgroundMusicPlayer() {
   const audioRef = useRef(null);
   const queueRef = useRef([]);
@@ -43,7 +52,10 @@ export function BackgroundMusicPlayer() {
       return false;
     }
   });
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
   const [started, setStarted] = useState(false);
+  const interactedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,22 +80,40 @@ export function BackgroundMusicPlayer() {
     audio.play().catch(() => {});
   }
 
-  // Starts on first interaction, once tracks are known.
+  // Starts the instant tracks are known -- muted, which every browser
+  // allows regardless of interaction (see the top-of-file doc comment).
+  // Un-muting (not a fresh play() call) is all the first interaction has
+  // to do, which is what actually makes this feel instant instead of
+  // silent-until-you-click.
   useEffect(() => {
     if (started || tracks.length === 0) return;
-    const start = () => {
-      setStarted(true);
+    setStarted(true);
+    // A visitor who explicitly turned this off last time (localStorage)
+    // shouldn't have audio data downloading in the background at all --
+    // wait for them to turn it back on via the button instead of
+    // muted-autoplaying something they've already said they don't want.
+    if (mutedRef.current) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.volume = NORMAL_VOLUME;
+    audio.muted = true;
+    playNext();
+    if (interactedRef.current) audio.muted = false;
+  }, [tracks, started]);
+
+  // Separate from the effect above because interaction can happen before
+  // OR after tracks finish loading -- either order has to end in "audible
+  // once both have happened, unless the visitor has explicitly muted it."
+  useEffect(() => {
+    const onInteract = () => {
+      interactedRef.current = true;
       const audio = audioRef.current;
-      if (audio && !muted) {
-        audio.volume = NORMAL_VOLUME;
-        playNext();
-      }
+      if (audio && !mutedRef.current) audio.muted = false;
     };
     const events = ["pointerdown", "keydown", "touchstart"];
-    events.forEach((event) => window.addEventListener(event, start, { once: true, passive: true }));
-    return () => events.forEach((event) => window.removeEventListener(event, start));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tracks, started, muted]);
+    events.forEach((event) => window.addEventListener(event, onInteract, { once: true, passive: true }));
+    return () => events.forEach((event) => window.removeEventListener(event, onInteract));
+  }, []);
 
   // Ducking: fades toward the target volume over FADE_MS instead of
   // snapping, which reads as a jarring volume jump rather than a smooth
@@ -121,8 +151,16 @@ export function BackgroundMusicPlayer() {
       const audio = audioRef.current;
       if (audio) {
         if (next) {
+          audio.muted = true;
           audio.pause();
         } else if (started) {
+          // audio.muted explicitly cleared here -- the interaction-based
+          // auto-unmute (see the effects above) only fires while the
+          // visitor's saved preference is already "on," so a visitor who
+          // starts muted and then explicitly clicks this button to turn
+          // it on would otherwise stay muted at the element level forever
+          // even though the button now shows it as on.
+          audio.muted = false;
           audio.volume = duckedRef.current ? DUCK_VOLUME : NORMAL_VOLUME;
           if (!audio.src) playNext(); else audio.play().catch(() => {});
         }

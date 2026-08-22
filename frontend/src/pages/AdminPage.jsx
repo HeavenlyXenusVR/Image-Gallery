@@ -450,6 +450,7 @@ function MusicTab({ ctx }) {
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [busyId, setBusyId] = useState("");
+  const [clearingAll, setClearingAll] = useState(false);
   const [title, setTitle] = useState("");
   const [file, setFile] = useState(null);
   const [playlistUrl, setPlaylistUrl] = useState("");
@@ -538,6 +539,26 @@ function MusicTab({ ctx }) {
     }
   }
 
+  // No bulk-delete endpoint on the backend -- ten is a small enough count
+  // that looping the existing single-track DELETE is simpler than adding
+  // and maintaining a second route just for this.
+  async function clearAll() {
+    if (!window.confirm(`Remove all ${tracks.length} background tracks? This can't be undone.`)) return;
+    setClearingAll(true);
+    try {
+      for (const track of tracks) {
+        await apiFetch(`/api/admin/background-music/${track.id}`, { method: "DELETE" });
+      }
+      setTracks([]);
+      showToast("All background tracks removed.", "success");
+    } catch (error) {
+      showToast(error.message, "error");
+      load();
+    } finally {
+      setClearingAll(false);
+    }
+  }
+
   if (loading) return <SkeletonList />;
 
   return (
@@ -546,6 +567,11 @@ function MusicTab({ ctx }) {
         <div className="settings-cluster-head">
           <h3><Music size={16} /> Background music</h3>
           <p>Shuffled ambient tracks visitors hear while browsing. Ducks out automatically when a video with sound starts playing. Up to {maxTracks} tracks.</p>
+          {tracks.length > 0 ? (
+            <button type="button" onClick={clearAll} disabled={clearingAll || busyId !== ""}>
+              <Trash2 size={16} />{clearingAll ? "Clearing..." : `Clear all (${tracks.length})`}
+            </button>
+          ) : null}
         </div>
         {tracks.length < maxTracks ? (
           <form className="stacked-form" onSubmit={upload}>
