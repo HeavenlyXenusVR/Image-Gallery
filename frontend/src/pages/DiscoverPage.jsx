@@ -19,6 +19,26 @@ function timeOfDayGreeting(user) {
 }
 
 const VIEW_MODE_KEY = "ig_discover_view";
+// Shell.jsx's "Discover" nav item always links to a bare "/" -- clicking it
+// (or the browser back/forward across a route change, which unmounts this
+// whole component) loses whatever's in the URL's query string, so a filter
+// applied here, then abandoned by switching to another tab and back, read
+// as silently reset even though nothing about the filter itself was ever
+// cleared. Mirrors VIEW_MODE_KEY's approach just above -- sessionStorage
+// (not localStorage: a filter feels like "this browsing session," not a
+// standing preference that should still be there after a fresh visit
+// days later) as the fallback source when the URL itself arrives empty,
+// kept in sync every time the URL is.
+const FILTERS_SESSION_KEY = "nyxframe_discover_filters";
+
+function readStoredFilters() {
+  try {
+    const raw = sessionStorage.getItem(FILTERS_SESSION_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (_error) {
+    return null;
+  }
+}
 
 function pageSizeFor(settings) {
   const parsed = Number(settings?.items_per_page);
@@ -55,19 +75,28 @@ function getFilterChips(filters, categories) {
 export function DiscoverPage({ ctx }) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [filters, setFilters] = useState(() => ({
-    q: searchParams.get("q") || "",
-    media_kind: searchParams.get("media_kind") || "",
-    category_id: searchParams.get("category_id") || "",
-    subcategory_id: searchParams.get("subcategory_id") || "",
-    uploader: searchParams.get("uploader") || "",
-    min_size: searchParams.get("min_size") || "",
-    max_size: searchParams.get("max_size") || "",
-    date_from: searchParams.get("date_from") || "",
-    date_to: searchParams.get("date_to") || "",
-    adult: searchParams.get("adult") || "show",
-    sort: searchParams.get("sort") || ctx.settings.default_sort || "new",
-  }));
+  const [filters, setFilters] = useState(() => {
+    // A real (bookmarked/shared) URL with its own query string always wins;
+    // sessionStorage is only consulted when the URL arrives with nothing
+    // filter-related in it at all, which is exactly what a bare nav-link
+    // navigation back to "/" looks like -- see FILTERS_SESSION_KEY's doc
+    // comment above.
+    const hasUrlFilters = [...searchParams.keys()].length > 0;
+    const stored = !hasUrlFilters ? readStoredFilters() : null;
+    return {
+      q: searchParams.get("q") || stored?.q || "",
+      media_kind: searchParams.get("media_kind") || stored?.media_kind || "",
+      category_id: searchParams.get("category_id") || stored?.category_id || "",
+      subcategory_id: searchParams.get("subcategory_id") || stored?.subcategory_id || "",
+      uploader: searchParams.get("uploader") || stored?.uploader || "",
+      min_size: searchParams.get("min_size") || stored?.min_size || "",
+      max_size: searchParams.get("max_size") || stored?.max_size || "",
+      date_from: searchParams.get("date_from") || stored?.date_from || "",
+      date_to: searchParams.get("date_to") || stored?.date_to || "",
+      adult: searchParams.get("adult") || stored?.adult || "show",
+      sort: searchParams.get("sort") || stored?.sort || ctx.settings.default_sort || "new",
+    };
+  });
   const [items, setItems] = useState([]);
   const [hasNext, setHasNext] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -149,6 +178,16 @@ export function DiscoverPage({ ctx }) {
         }
       });
       setSearchParams(next, { replace: true });
+      try {
+        if (Object.keys(next).length > 0) {
+          sessionStorage.setItem(FILTERS_SESSION_KEY, JSON.stringify(next));
+        } else {
+          sessionStorage.removeItem(FILTERS_SESSION_KEY);
+        }
+      } catch (_error) {
+        // Private-browsing/storage-disabled -- filters just won't survive a
+        // tab switch in that case, same as before this fix.
+      }
     }, 300);
     return () => window.clearTimeout(timer);
   }, [filters]); // intentionally omit loadMedia/setSearchParams — stable refs
