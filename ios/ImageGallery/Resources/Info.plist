@@ -60,6 +60,17 @@
     <key>LSRequiresIPhoneOS</key>
     <true/>
 
+    <!-- Required for Picture in Picture (video player + background music)
+         to keep playing once the app is backgrounded -- without this
+         capability declared, AVKit either refuses to activate PiP at all
+         or stops playback the moment the app leaves the foreground, which
+         defeats the point of PiP. Paired with the AVAudioSession .playback
+         category set in AppDelegate. -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>audio</string>
+    </array>
+
     <!-- Supported orientations (iPhone) -->
     <key>UISupportedInterfaceOrientations</key>
     <array>

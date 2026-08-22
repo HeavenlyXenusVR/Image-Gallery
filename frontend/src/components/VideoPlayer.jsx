@@ -517,7 +517,13 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
     if (document.pictureInPictureElement) {
       document.exitPictureInPicture().catch(() => {});
     } else {
-      video.requestPictureInPicture().catch(() => {});
+      // A rejection here (readyState too low, a disallowed cross-origin
+      // source, another tab already holding the one system-wide PiP
+      // window, ...) previously vanished into a swallowed .catch(() =>
+      // {}) -- the button just did nothing with no indication why.
+      video.requestPictureInPicture().catch((err) => {
+        setError(`Couldn't start Picture in Picture: ${err?.message || "try again in a moment."}`);
+      });
     }
   }
 
@@ -828,8 +834,14 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
               </div>
             )}
 
-            {/* PiP */}
-            {"pictureInPictureEnabled" in document && (
+            {/* PiP -- checks the actual flag, not just that the property
+                exists: `"pictureInPictureEnabled" in document` is true in
+                every supporting browser regardless of its VALUE, so a
+                browser/enterprise policy or Permissions-Policy header that
+                disables PiP would still show this button, just make
+                clicking it silently do nothing (requestPictureInPicture()
+                rejects, caught and swallowed by togglePip's .catch). */}
+            {document.pictureInPictureEnabled && (
               <button type="button" className={`vp-btn${pip ? " active" : ""}`} onClick={togglePip} title="Picture in Picture" aria-label="Picture in Picture">
                 <PictureInPicture2 size={18} />
               </button>

@@ -1,3 +1,4 @@
+import AVFoundation
 import Combine
 import Foundation
 import UIKit
@@ -30,6 +31,20 @@ final class QuickActionRouter: ObservableObject {
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        // Picture in Picture requires the audio session category to be
+        // .playback (plus the "audio" UIBackgroundModes capability, see
+        // Info.plist) -- without it, AVKit's PiP either never activates or
+        // stops playback the moment the app is backgrounded, which is the
+        // entire point of PiP. This was previously ONLY ever set as a side
+        // effect of BackgroundMusicService.startIfNeeded() -- which only
+        // runs, and only sets the category, when the admin has actually
+        // uploaded at least one background-music track -- so PiP silently
+        // had no reliable audio session at all on any install where that
+        // feature happens to be unused. Set unconditionally, as early as
+        // possible, independent of that unrelated feature.
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try? AVAudioSession.sharedInstance().setActive(true)
+
         if let shortcutItem = launchOptions?[.shortcutItem] as? UIApplicationShortcutItem {
             Task { @MainActor in QuickActionRouter.shared.handle(shortcutType: shortcutItem.type) }
         }
