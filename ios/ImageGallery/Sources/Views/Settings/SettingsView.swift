@@ -14,6 +14,10 @@ struct SettingsView: View {
     @State private var avatarPickerItem: PhotosPickerItem?
     @State private var isUploadingAvatar = false
     @State private var accentColor = Color(hex: Appearance.defaultAccentHex)
+    // Unlike accentColor, this stays nil when unset -- an optional second
+    // color, not a color with a fallback default (mirrors accent_secondary
+    // being able to be cleared back to "no gradient" on web).
+    @State private var accentSecondary: Color?
     @State private var profileLayout = "spotlight"
     @State private var avatarShape = AvatarShape.circle
     @State private var autoplayPreviews = false
@@ -25,6 +29,7 @@ struct SettingsView: View {
     @State private var profileShowFollowCounts = true
     @State private var profileShowJoinedDate = true
     @State private var watermarkText = ""
+    @State private var discordWebhookUrl = ""
     @State private var isSavingAppearance = false
     @State private var loadedAppearance = false
     @State private var showingLogoutConfirm = false
@@ -48,6 +53,12 @@ struct SettingsView: View {
                     Text("Dark").tag("dark")
                 }
                 ColorPicker("Accent color", selection: $accentColor, supportsOpacity: false)
+                if let accentSecondary {
+                    ColorPicker("Secondary accent", selection: Binding(get: { accentSecondary }, set: { self.accentSecondary = $0 }), supportsOpacity: false)
+                    Button("Clear secondary accent", role: .destructive) { self.accentSecondary = nil }
+                } else {
+                    Button("Add secondary accent") { accentSecondary = accentColor }
+                }
                 Picker("Profile layout", selection: $profileLayout) {
                     Text("Standard").tag("spotlight")
                     Text("Grid First").tag("mosaic")
@@ -157,6 +168,27 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(isChangingPassword || oldPassword.isEmpty || newPassword.count < 8)
+            }
+
+            // Backs both "Send Code to My Webhook" right below and the
+            // per-creator upload-notification digest (routes.lua's upload
+            // webhook + digest.lua) -- previously configurable only from the
+            // web Settings page, so that webhook button here always failed
+            // silently for anyone who'd never touched the web app.
+            Section("Discord Webhook") {
+                TextField("https://discord.com/api/webhooks/…", text: $discordWebhookUrl)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button {
+                    Task { await saveAppearance() }
+                } label: {
+                    if isSavingAppearance {
+                        ProgressView()
+                    } else {
+                        Text("Save webhook URL")
+                    }
+                }
             }
 
             Section("Discord Verification") {
@@ -325,6 +357,7 @@ struct SettingsView: View {
         loadedAppearance = true
         if let theme = settings.themeMode, !theme.isEmpty { themeMode = theme }
         accentColor = Color(hex: settings.accentColor)
+        accentSecondary = (settings.accentSecondary?.isEmpty == false) ? Color(hex: settings.accentSecondary) : nil
         profileLayout = settings.profileLayout ?? "spotlight"
         avatarShape = AvatarShape(settings.profileAvatarShape)
         autoplayPreviews = settings.autoplayPreviews ?? false
@@ -336,6 +369,7 @@ struct SettingsView: View {
         profileShowFollowCounts = settings.profileShowFollowCounts ?? true
         profileShowJoinedDate = settings.profileShowJoinedDate ?? true
         watermarkText = settings.watermarkText ?? ""
+        discordWebhookUrl = settings.discordWebhookUrl ?? ""
     }
 
     private func saveAppearance() async {
@@ -345,6 +379,11 @@ struct SettingsView: View {
             let body = GalleryAPIClient.SettingsUpdateBody(
                 themeMode: themeMode,
                 accentColor: accentColor.toHexString(),
+                // Always sent, never omitted -- "" is what actually clears
+                // it server-side (user_settings.lua's COLOR_FIELDS handling
+                // treats an explicit empty string as "no color", but omitting
+                // the key entirely just leaves whatever was already stored).
+                accentSecondary: accentSecondary?.toHexString() ?? "",
                 profileLayout: profileLayout,
                 profileAvatarShape: avatarShape.rawValue,
                 autoplayPreviews: autoplayPreviews,
@@ -355,7 +394,8 @@ struct SettingsView: View {
                 defaultSort: defaultSort,
                 profileShowFollowCounts: profileShowFollowCounts,
                 profileShowJoinedDate: profileShowJoinedDate,
-                watermarkText: watermarkText
+                watermarkText: watermarkText,
+                discordWebhookUrl: discordWebhookUrl
             )
             let user = try await GalleryAPIClient.shared.updateSettings(body)
             session.setCurrentUser(user)

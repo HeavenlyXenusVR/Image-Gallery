@@ -74,6 +74,7 @@ extension GalleryAPIClient {
     struct SettingsUpdateBody: Encodable {
         var themeMode: String?
         var accentColor: String?
+        var accentSecondary: String?
         var profileLayout: String?
         var profileAvatarShape: String?
         var autoplayPreviews: Bool?
@@ -85,6 +86,7 @@ extension GalleryAPIClient {
         var profileShowFollowCounts: Bool?
         var profileShowJoinedDate: Bool?
         var watermarkText: String?
+        var discordWebhookUrl: String?
     }
 
     func updateSettings(_ body: SettingsUpdateBody) async throws -> GalleryUser {

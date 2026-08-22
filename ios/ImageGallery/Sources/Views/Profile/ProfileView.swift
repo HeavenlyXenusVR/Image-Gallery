@@ -137,6 +137,15 @@ private struct ProfileHeader: View {
 
     private var accent: Color { Color(hex: user.userSettings?.accentColor) }
 
+    // accent_secondary is optional -- unlike accent_color, an unset/empty
+    // value should mean "no second color" (single-color wash), not fall
+    // back to re-deriving a default the way Color(hex:) does for the
+    // primary accent.
+    private var secondaryAccent: Color? {
+        guard let hex = user.userSettings?.accentSecondary, !hex.isEmpty else { return nil }
+        return Color(hex: hex)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 14) {
@@ -191,7 +200,7 @@ private struct ProfileHeader: View {
             .buttonStyle(.plain)
         }
         .padding(Metrics.Space.lg)
-        .background(AccentWash(color: accent))
+        .background(AccentWash(color: accent, secondaryColor: secondaryAccent))
         .background(.thinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: Metrics.Radius.lg, style: .continuous))
         .overlay(

@@ -64,12 +64,25 @@ extension View {
 /// system background.
 struct AccentWash: View {
     var color: Color
+    /// Mirrors `accent_secondary` (web's `colorutil.gradient(accent,
+    /// secondary)`, computed server-side into `accent_gradient` for CSS use)
+    /// -- nil when the user hasn't set a second color, same single-color
+    /// wash as before.
+    var secondaryColor: Color?
 
     var body: some View {
-        LinearGradient(
-            colors: [color.opacity(0.35), color.opacity(0.05), .clear],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
+        if let secondaryColor {
+            LinearGradient(
+                colors: [color.opacity(0.35), secondaryColor.opacity(0.2), .clear],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        } else {
+            LinearGradient(
+                colors: [color.opacity(0.35), color.opacity(0.05), .clear],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
     }
 }

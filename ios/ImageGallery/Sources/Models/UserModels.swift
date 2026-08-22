@@ -52,6 +52,7 @@ struct GalleryUser: Codable, Identifiable, Hashable {
 struct UserSettings: Codable, Equatable {
     var themeMode: String?
     var accentColor: String?
+    var accentSecondary: String?
     var profileLayout: String?
     var profileAvatarShape: String?
     var autoplayPreviews: Bool?
@@ -63,6 +64,7 @@ struct UserSettings: Codable, Equatable {
     var profileShowFollowCounts: Bool?
     var profileShowJoinedDate: Bool?
     var watermarkText: String?
+    var discordWebhookUrl: String?
 }
 
 struct ProfilePageResponse: Codable {
