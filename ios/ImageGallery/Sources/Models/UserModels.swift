@@ -69,6 +69,7 @@ struct UserSettings: Codable, Equatable {
     var mediaBorderStyle: String?
     var cardInfoDisplay: String?
     var columnGap: String?
+    var galleryFont: String?
 }
 
 struct ProfilePageResponse: Codable {

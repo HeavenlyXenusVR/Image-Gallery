@@ -91,6 +91,7 @@ extension GalleryAPIClient {
         var mediaBorderStyle: String?
         var cardInfoDisplay: String?
         var columnGap: String?
+        var galleryFont: String?
     }
 
     func updateSettings(_ body: SettingsUpdateBody) async throws -> GalleryUser {

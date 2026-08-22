@@ -34,6 +34,7 @@ struct SettingsView: View {
     @State private var mediaBorderStyle = "none"
     @State private var cardInfoDisplay = "below"
     @State private var columnGap = "normal"
+    @State private var galleryFont = "system"
     @State private var isSavingAppearance = false
     @State private var loadedAppearance = false
     @State private var showingLogoutConfirm = false
@@ -113,6 +114,12 @@ struct SettingsView: View {
                     Text("Normal").tag("normal")
                     Text("Wide").tag("wide")
                 }
+                Picker("Font", selection: $galleryFont) {
+                    Text("System").tag("system")
+                    Text("Serif").tag("serif")
+                    Text("Monospace").tag("mono")
+                    Text("Rounded").tag("rounded")
+                }
             }
 
             // These sections share the same "Save appearance" action as the
@@ -125,6 +132,7 @@ struct SettingsView: View {
                 Toggle("Autoplay grid previews", isOn: $autoplayPreviews)
                 Toggle("Mute previews", isOn: $mutedPreviews)
                 Toggle("Blur video thumbnails", isOn: $blurVideoPreviews)
+                Toggle("Reduce motion", isOn: $reduceMotion)
             }
 
             Section("Profile Visibility") {
@@ -404,6 +412,7 @@ struct SettingsView: View {
         mediaBorderStyle = settings.mediaBorderStyle ?? "none"
         cardInfoDisplay = settings.cardInfoDisplay ?? "below"
         columnGap = settings.columnGap ?? "normal"
+        galleryFont = settings.galleryFont ?? "system"
     }
 
     private func saveAppearance() async {
@@ -433,7 +442,8 @@ struct SettingsView: View {
                 cardAspectRatio: cardAspectRatio,
                 mediaBorderStyle: mediaBorderStyle,
                 cardInfoDisplay: cardInfoDisplay,
-                columnGap: columnGap
+                columnGap: columnGap,
+                galleryFont: galleryFont
             )
             let user = try await GalleryAPIClient.shared.updateSettings(body)
             session.setCurrentUser(user)
