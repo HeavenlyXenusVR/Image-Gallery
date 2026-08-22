@@ -88,6 +88,10 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
   // Native-HLS (Safari) retry counter for transient network errors — see
   // onError's code===2 branch below for why this exists.
   const nativeNetworkRetriesRef = useRef(0);
+  // Same idea for a decode/unsupported-source error (code 3/4) — one
+  // same-quality retry before assuming it's a genuine codec
+  // incompatibility and auto-downgrading quality. See onError below.
+  const decodeRetriesRef = useRef(0);
 
   // ─── Auto-play tracking ──────────────────────────────────────────────────────
   // Set to true once the user has clicked play; thereafter onCanPlay will resume.
@@ -127,6 +131,7 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
       setBuffering(false);
       setBufferingLong(false);
       nativeNetworkRetriesRef.current = 0;
+      decodeRetriesRef.current = 0;
       if (bufferingTimerRef.current) { clearTimeout(bufferingTimerRef.current); bufferingTimerRef.current = null; }
       // Restore seek position after quality switch
       if (pendingRestoreRef.current) {
@@ -169,6 +174,26 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
         // same thing here (see pickCompatFallbackQuality above), so both
         // get the same auto-fallback instead of only code 4 recovering
         // while code 3 just showed a dead end.
+        //
+        // BUT a genuinely unsupported codec fails immediately and
+        // consistently from the very first load -- a decode error that
+        // shows up mid-playback (a segment truncated by a server hiccup,
+        // not a codec the browser has never seen) looks identical here,
+        // and auto-downgrading on that read as "the format randomly
+        // switches while watching" even though the actual video is fine.
+        // One same-quality reload first (mirroring code 2's retry above)
+        // separates the two: a real incompatibility fails again
+        // immediately and still falls back; a one-off blip just recovers
+        // silently.
+        if (decodeRetriesRef.current < 1) {
+          decodeRetriesRef.current += 1;
+          setTimeout(() => {
+            if (videoRef.current !== vid) return;
+            vid.load();
+            if (shouldAutoPlayRef.current) vid.play().catch(() => {});
+          }, 400);
+          return;
+        }
         const fallback = pickCompatFallbackQuality(quality, qualityOptions);
         if (onQualityChange && fallback) {
           setError(`This format isn't supported by your browser. Switching to ${fallback[1] || fallback[0]}…`);

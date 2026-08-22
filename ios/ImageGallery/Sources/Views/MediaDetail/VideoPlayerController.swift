@@ -16,6 +16,7 @@ final class VideoPlayerController: ObservableObject {
     private var statusObservation: NSKeyValueObservation?
     private var retryAttempt = 0
     private static let maxRetries = 2
+    private var preflightTask: Task<Void, Never>?
 
     /// Set (and playback restarted) whenever the quality selector picks a
     /// different rendition -- the URL, not the player, is the source of truth.
@@ -52,10 +53,52 @@ final class VideoPlayerController: ObservableObject {
 
     private func startPlayback(autoplay: Bool) {
         statusObservation?.invalidate()
+        preflightTask?.cancel()
         var headers: [String: String] = [:]
         if let token = GalleryAPIClient.shared.authToken {
             headers["Authorization"] = "Bearer \(token)"
         }
+
+        // The HLS playlist route 503s with "still starting up" while this
+        // quality's variant is mid-transcode server-side (routes.lua's
+        // serve_hls_playlist) -- completely routine right after picking a
+        // quality that hasn't been requested yet. hls.js/Safari on web
+        // already retry that transparently (see VideoPlayer.jsx), but
+        // AVPlayer has no equivalent visibility: a non-2xx HTTP status on
+        // the playlist fetch surfaces through AVFoundationErrorDomain, not
+        // NSURLErrorDomain, so isTransientNetworkError below never
+        // recognized it as retryable and the player just failed permanently
+        // with an opaque "resource unavailable" -- on literally the very
+        // first watch of any quality, not something rare. Preflight the
+        // playlist with a plain URLSession request and retry through a 503
+        // BEFORE ever handing the URL to AVPlayer, so by the time AVPlayer
+        // sees it, the playlist genuinely exists.
+        preflightTask = Task { [weak self] in
+            guard let self else { return }
+            var request = URLRequest(url: url)
+            for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+
+            var attempt = 0
+            while !Task.isCancelled {
+                do {
+                    let (_, response) = try await URLSession.shared.data(for: request)
+                    let status = (response as? HTTPURLResponse)?.statusCode ?? 200
+                    if status == 503 && attempt < 6 {
+                        attempt += 1
+                        try await Task.sleep(nanoseconds: UInt64(500_000_000 * attempt))
+                        continue
+                    }
+                    break
+                } catch {
+                    break // Let AVPlayer's own load surface the real error for anything else.
+                }
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self.attachPlayer(headers: headers, autoplay: autoplay) }
+        }
+    }
+
+    private func attachPlayer(headers: [String: String], autoplay: Bool) {
         let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         let item = AVPlayerItem(asset: asset)
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] observedItem, _ in
@@ -104,5 +147,6 @@ final class VideoPlayerController: ObservableObject {
 
     deinit {
         statusObservation?.invalidate()
+        preflightTask?.cancel()
     }
 }
