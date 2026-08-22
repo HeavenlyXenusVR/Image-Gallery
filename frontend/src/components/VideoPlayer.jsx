@@ -60,7 +60,12 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
   const [duration, setDuration] = useState(0);
   const [buffered, setBuffered] = useState(0);
   const [volume, setVolume] = useState(1);
-  const [muted, setMuted] = useState(false);
+  // Starts muted, not because the user asked for that, but because it's
+  // the only thing every browser's autoplay policy actually allows without
+  // a prior click/tap: unmuted autoplay is blocked everywhere, muted
+  // autoplay is allowed everywhere. See the fresh-load branch of the
+  // `[src]` effect below, which is what actually starts playback.
+  const [muted, setMuted] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [buffering, setBuffering] = useState(false);
@@ -241,6 +246,19 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
       setCurrentTime(0);
       setBuffered(0);
       setPlaying(false);
+      // Autoplay the first time this player ever loads a video (not on a
+      // quality switch or a same-session sibling nav, both of which take
+      // the isQualitySwitch branch above and already carry playing state
+      // forward on their own). Previously nothing here ever set
+      // shouldAutoPlayRef, so a freshly opened video just sat on its
+      // poster frame until the viewer clicked play themselves. Force
+      // video.muted directly on the element -- browsers gate autoplay on
+      // the element's actual muted property at play() time, not on
+      // whatever React state/props say -- the mute button still works
+      // normally afterward via toggleMute()/onVolumeChange.
+      video.muted = true;
+      setMuted(true);
+      shouldAutoPlayRef.current = true;
     }
     if (pendingRestore) pendingRestoreRef.current = pendingRestore;
     prevSrcRef.current = src;
@@ -587,6 +605,16 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
       {!playing && !error && !buffering && currentTime === 0 && (
         <button type="button" className="vp-big-play" onClick={togglePlay} aria-label="Play">
           <Play size={48} />
+        </button>
+      )}
+
+      {/* Autoplay always starts muted (browser policy) -- this is the
+          affordance that tells the viewer sound is available and one tap
+          away, since a silently-muted video with no indicator reads as
+          broken rather than intentional. */}
+      {playing && muted && !error && (
+        <button type="button" className="vp-sound-hint" onClick={(e) => { e.stopPropagation(); toggleMute(); }} aria-label="Unmute">
+          <VolumeX size={15} /> Tap for sound
         </button>
       )}
 
