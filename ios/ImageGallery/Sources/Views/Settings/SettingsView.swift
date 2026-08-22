@@ -37,6 +37,9 @@ struct SettingsView: View {
     @State private var galleryFont = "system"
     @State private var profileHeaderStyle = "solid"
     @State private var openOriginalInNewTab = false
+    @State private var profileHeroAlignment = "split"
+    @State private var profileStatStyle = "tiles"
+    @State private var profileNameStyle = "display"
     @State private var isSavingAppearance = false
     @State private var loadedAppearance = false
     @State private var showingLogoutConfirm = false
@@ -129,6 +132,25 @@ struct SettingsView: View {
                     Text("Transparent").tag("transparent")
                     Text("Gradient").tag("gradient")
                 }
+                Picker("Profile alignment", selection: $profileHeroAlignment) {
+                    Text("Split").tag("split")
+                    Text("Start").tag("start")
+                    Text("Center").tag("center")
+                }
+                .pickerStyle(.segmented)
+                Picker("Profile stats", selection: $profileStatStyle) {
+                    Text("Tiles").tag("tiles")
+                    Text("Ribbon").tag("ribbon")
+                    Text("Minimal").tag("minimal")
+                }
+                .pickerStyle(.segmented)
+                Picker("Profile name", selection: $profileNameStyle) {
+                    Text("Display").tag("display")
+                    Text("Gradient").tag("gradient")
+                    Text("Glow").tag("glow")
+                    Text("Outline").tag("outline")
+                }
+                .pickerStyle(.segmented)
             }
 
             // These sections share the same "Save appearance" action as the
@@ -425,6 +447,9 @@ struct SettingsView: View {
         galleryFont = settings.galleryFont ?? "system"
         profileHeaderStyle = settings.profileHeaderStyle ?? "solid"
         openOriginalInNewTab = settings.openOriginalInNewTab ?? false
+        profileHeroAlignment = settings.profileHeroAlignment ?? "split"
+        profileStatStyle = settings.profileStatStyle ?? "tiles"
+        profileNameStyle = settings.profileNameStyle ?? "display"
     }
 
     private func saveAppearance() async {
@@ -457,7 +482,10 @@ struct SettingsView: View {
                 columnGap: columnGap,
                 galleryFont: galleryFont,
                 profileHeaderStyle: profileHeaderStyle,
-                openOriginalInNewTab: openOriginalInNewTab
+                openOriginalInNewTab: openOriginalInNewTab,
+                profileHeroAlignment: profileHeroAlignment,
+                profileStatStyle: profileStatStyle,
+                profileNameStyle: profileNameStyle
             )
             let user = try await GalleryAPIClient.shared.updateSettings(body)
             session.setCurrentUser(user)

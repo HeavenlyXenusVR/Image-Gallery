@@ -72,6 +72,9 @@ struct UserSettings: Codable, Equatable {
     var galleryFont: String?
     var profileHeaderStyle: String?
     var openOriginalInNewTab: Bool?
+    var profileHeroAlignment: String?
+    var profileStatStyle: String?
+    var profileNameStyle: String?
 }
 
 struct ProfilePageResponse: Codable {
