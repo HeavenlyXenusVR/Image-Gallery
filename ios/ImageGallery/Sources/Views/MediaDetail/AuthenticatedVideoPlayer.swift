@@ -31,10 +31,37 @@ struct AuthenticatedVideoPlayer: View {
                 .background(Color.black)
             } else if let player = controller.player {
                 VideoPlayer(player: player)
+                    .overlay(alignment: .topTrailing) { watermark }
             } else {
                 Color.black.overlay(ProgressView())
             }
         }
         .onAppear { controller.startIfNeeded() }
+    }
+
+    /// Matches the web player's `.vp-watermark` (VideoPlayer.jsx): the same
+    /// fixed brand mark regardless of the viewer's own accent-color
+    /// customization, since this identifies the *site's* player, not the
+    /// user's theme. Top-trailing, same as web -- AVKit's native transport
+    /// controls sit bottom-center/tap-to-toggle, so this corner stays clear.
+    private var watermark: some View {
+        HStack(spacing: 6) {
+            LinearGradient(
+                colors: [Color(hex: "#37c9a7"), Color(hex: "#6ec7ff"), Color(hex: "#ffcf6a")],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .frame(width: 20, height: 20)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            Text("Nyxframe")
+                .font(.caption2.weight(.bold))
+        }
+        .padding(.vertical, 5)
+        .padding(.leading, 5)
+        .padding(.trailing, 10)
+        .foregroundStyle(.white.opacity(0.82))
+        .background(.black.opacity(0.5), in: Capsule())
+        .padding(14)
+        .allowsHitTesting(false)
     }
 }
