@@ -13,6 +13,22 @@ final class LiveConfigService {
     private static let cachedKey = "gallery_backend_url_cached"
     private static let liveConfigURL = URL(string: "https://heavenlyxenusvr.github.io/Nyxframe/live-config.json")!
 
+    // The backend now sits behind a stable Cloudflare custom domain
+    // (GALLERY_TUNNEL_PROVIDER=static in the server's .env), not a
+    // rotating quick-tunnel URL the way this class's original design
+    // comment above assumed -- confirmed live: it hasn't changed across
+    // this whole session. Used only as a last resort, when nothing has
+    // ever been cached yet AND the live-config.json fetch fails, so a
+    // fresh install isn't left with a genuinely empty origin (confirmed
+    // live: this actually happened -- GitHub Pages was never enabled for
+    // this repo, so every fresh install's very first launch 404'd on
+    // live-config.json with nothing cached from a prior run to fall back
+    // on, i.e. exactly "the app doesn't have the backend integrated").
+    // Pages is fixed now too, but this removes a fresh install's hard
+    // dependency on a third-party static host being up at that exact
+    // moment.
+    private static let fallbackOrigin = "https://gallery.xenusanimations.studio"
+
     private let defaults = UserDefaults.standard
 
     /// Manual override, e.g. "http://127.0.0.1:8788" for local development.
@@ -27,11 +43,18 @@ final class LiveConfigService {
         set { defaults.set(newValue, forKey: Self.cachedKey) }
     }
 
+    /// cachedOrigin, or the hardcoded fallback if nothing's ever been
+    /// cached -- see fallbackOrigin's doc comment.
+    private var cachedOrDefaultOrigin: String {
+        let cached = cachedOrigin
+        return cached.isEmpty ? Self.fallbackOrigin : cached
+    }
+
     /// Best-known origin right now, without making a network call.
     var currentOrigin: String {
         let override = manualOverride.trimmingCharacters(in: .whitespacesAndNewlines)
         if !override.isEmpty { return normalizeOrigin(override) }
-        return cachedOrigin
+        return cachedOrDefaultOrigin
     }
 
     /// Refreshes from live-config.json (ignored if a manual override is set)
@@ -52,9 +75,12 @@ final class LiveConfigService {
                 return origin
             }
         } catch {
-            // Network error or offline tunnel — fall back to whatever we last cached.
+            // Network error, live-config.json unreachable, or the GitHub
+            // Pages host it's served from being down -- fall back to
+            // whatever we last cached, or the hardcoded default if this is
+            // the very first launch and nothing's cached yet.
         }
-        return cachedOrigin
+        return cachedOrDefaultOrigin
     }
 
     private func normalizeOrigin(_ value: String) -> String {
