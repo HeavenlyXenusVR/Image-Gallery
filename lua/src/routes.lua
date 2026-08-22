@@ -1615,6 +1615,84 @@ local function viewer_adult_allowed(viewer_id)
   return viewer ~= nil and nn(viewer.age_verified_at) ~= nil and viewer.adult_content_consent
 end
 
+-- "Related media": scored by tag overlap (reusing the same jsonb `?|`
+-- helper the boolean tag search uses) OR-ed with same-category, ranked by
+-- overlap count with category match as a tiebreaker. Falls back to the
+-- original category-only/newest behavior when the seed post has no tags,
+-- so an untagged post still gets a non-empty related list. Deliberately
+-- skips perceptual-hash comparison here -- find_possible_duplicates
+-- already showed that's expensive even scoped to a single user's 1500
+-- most recent uploads; not worth it for a "you might also like" widget
+-- spanning every user's media.
+--
+-- Shared by M.media_detail (the on-page rail, limit=12/offset=0) and
+-- M.similar_media (a real "More like this" paginated feed -- previously
+-- a second, independently-written, slightly-worse copy of this exact
+-- logic that nothing in either frontend ever actually called).
+local function compute_similar_media(req, media_id, item, adult_allowed, limit, offset)
+  local seed_tags = {}
+  if item.tags and item.tags ~= cjson.null then
+    local ok, decoded = pcall(cjson.decode, item.tags)
+    if ok and type(decoded) == "table" then seed_tags = decoded end
+  end
+
+  local similar_sql, similar_params
+  if #seed_tags > 0 then
+    local where_tag_parts, where_tag_params = {}, {}
+    append_tag_array_clause(where_tag_parts, where_tag_params, seed_tags, "m.tags", false, "any")
+
+    local order_placeholders, order_tag_params = {}, {}
+    for _, tag in ipairs(seed_tags) do
+      order_placeholders[#order_placeholders + 1] = "%s"
+      order_tag_params[#order_tag_params + 1] = tag
+    end
+    local order_tag_array_sql = "ARRAY[" .. table.concat(order_placeholders, ",") .. "]"
+
+    similar_sql = string.format([[
+      SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.media_kind, m.mime_type,
+             m.original_filename, m.storage_path, m.is_adult, m.created_at, m.views
+      FROM media_items m
+      WHERE m.id != %%s AND m.deleted_at IS NULL AND m.visibility='public'
+        AND (m.publish_at IS NULL OR m.publish_at <= now())
+        AND (m.category_id = %%s OR %s)
+      ORDER BY
+        (CASE WHEN m.category_id = %%s THEN 1 ELSE 0 END)
+        + (SELECT count(*) FROM jsonb_array_elements_text(m.tags::jsonb) t WHERE t = ANY(%s::text[])) DESC,
+        m.created_at DESC
+      LIMIT %%s OFFSET %%s
+    ]], where_tag_parts[1], order_tag_array_sql)
+
+    similar_params = { tostring(media_id), tostring(item.category_id) }
+    for _, p in ipairs(where_tag_params) do similar_params[#similar_params + 1] = p end
+    similar_params[#similar_params + 1] = tostring(item.category_id)
+    for _, p in ipairs(order_tag_params) do similar_params[#similar_params + 1] = p end
+    similar_params[#similar_params + 1] = tostring(limit)
+    similar_params[#similar_params + 1] = tostring(offset)
+  else
+    similar_sql = [[
+      SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.media_kind, m.mime_type,
+             m.original_filename, m.storage_path, m.is_adult, m.created_at, m.views
+      FROM media_items m
+      WHERE m.category_id = %s AND m.id != %s AND m.deleted_at IS NULL AND m.visibility='public'
+        AND (m.publish_at IS NULL OR m.publish_at <= now())
+      ORDER BY m.created_at DESC
+      LIMIT %s OFFSET %s
+    ]]
+    similar_params = { tostring(item.category_id), tostring(media_id), tostring(limit), tostring(offset) }
+  end
+  local similar = db.fetchall(similar_sql, unpack(similar_params))
+  for _, row in ipairs(similar) do
+    row.id = db.toint(row.id, row.id)
+    row.user_id = db.toint(row.user_id, row.user_id)
+    row.category_id = db.toint(row.category_id, row.category_id)
+    row.views = db.toint(row.views, 0)
+    row.is_adult = db.tobool(row.is_adult)
+    with_urls(req, row, adult_allowed)
+  end
+  attach_media_subcategories(similar)
+  return similar
+end
+
 -- Mirrors _ensure_media_visible_to_viewer(): returns nil on success, or
 -- (status, body) the caller should return immediately.
 local function ensure_media_visible(item, viewer_id)
@@ -1694,73 +1772,7 @@ function M.media_detail(req)
     my_reaction = r and r.emoji or nil
   end
 
-  -- "Related media": scored by tag overlap (reusing the same jsonb `?|`
-  -- helper the boolean tag search uses) OR-ed with same-category, ranked by
-  -- overlap count with category match as a tiebreaker. Falls back to the
-  -- original category-only/newest behavior when the seed post has no tags,
-  -- so an untagged post still gets a non-empty related list. Deliberately
-  -- skips perceptual-hash comparison here -- find_possible_duplicates
-  -- already showed that's expensive even scoped to a single user's 1500
-  -- most recent uploads; not worth it for a "you might also like" widget
-  -- spanning every user's media.
-  local seed_tags = {}
-  if item.tags and item.tags ~= cjson.null then
-    local ok, decoded = pcall(cjson.decode, item.tags)
-    if ok and type(decoded) == "table" then seed_tags = decoded end
-  end
-
-  local similar_sql, similar_params
-  if #seed_tags > 0 then
-    local where_tag_parts, where_tag_params = {}, {}
-    append_tag_array_clause(where_tag_parts, where_tag_params, seed_tags, "m.tags", false, "any")
-
-    local order_placeholders, order_tag_params = {}, {}
-    for _, tag in ipairs(seed_tags) do
-      order_placeholders[#order_placeholders + 1] = "%s"
-      order_tag_params[#order_tag_params + 1] = tag
-    end
-    local order_tag_array_sql = "ARRAY[" .. table.concat(order_placeholders, ",") .. "]"
-
-    similar_sql = string.format([[
-      SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.media_kind, m.mime_type,
-             m.original_filename, m.storage_path, m.is_adult, m.created_at, m.views
-      FROM media_items m
-      WHERE m.id != %%s AND m.deleted_at IS NULL AND m.visibility='public'
-        AND (m.publish_at IS NULL OR m.publish_at <= now())
-        AND (m.category_id = %%s OR %s)
-      ORDER BY
-        (CASE WHEN m.category_id = %%s THEN 1 ELSE 0 END)
-        + (SELECT count(*) FROM jsonb_array_elements_text(m.tags::jsonb) t WHERE t = ANY(%s::text[])) DESC,
-        m.created_at DESC
-      LIMIT 12
-    ]], where_tag_parts[1], order_tag_array_sql)
-
-    similar_params = { tostring(media_id), tostring(item.category_id) }
-    for _, p in ipairs(where_tag_params) do similar_params[#similar_params + 1] = p end
-    similar_params[#similar_params + 1] = tostring(item.category_id)
-    for _, p in ipairs(order_tag_params) do similar_params[#similar_params + 1] = p end
-  else
-    similar_sql = [[
-      SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.media_kind, m.mime_type,
-             m.original_filename, m.storage_path, m.is_adult, m.created_at, m.views
-      FROM media_items m
-      WHERE m.category_id = %s AND m.id != %s AND m.deleted_at IS NULL AND m.visibility='public'
-        AND (m.publish_at IS NULL OR m.publish_at <= now())
-      ORDER BY m.created_at DESC
-      LIMIT 12
-    ]]
-    similar_params = { tostring(item.category_id), tostring(media_id) }
-  end
-  local similar = db.fetchall(similar_sql, unpack(similar_params))
-  for _, row in ipairs(similar) do
-    row.id = db.toint(row.id, row.id)
-    row.user_id = db.toint(row.user_id, row.user_id)
-    row.category_id = db.toint(row.category_id, row.category_id)
-    row.views = db.toint(row.views, 0)
-    row.is_adult = db.tobool(row.is_adult)
-    with_urls(req, row, adult_allowed)
-  end
-  attach_media_subcategories(similar)
+  local similar = compute_similar_media(req, media_id, item, adult_allowed, 12, 0)
 
   -- Personal tags (see the "Personal/private tags" section below) are
   -- private to the viewer -- only ever fetched/shown for the logged-in
@@ -3387,6 +3399,12 @@ function M.delete_comment(req)
   return 200, { deleted = true }
 end
 
+-- Real paginated "More like this" feed, not just the fixed 12-item rail
+-- M.media_detail shows inline -- previously this route existed with its
+-- own independently-written (and slightly cruder: fixed to the first 8
+-- tags, no offset/pagination at all) copy of that same scoring logic,
+-- but nothing in either frontend ever actually called it. Now backs a
+-- real dedicated "more like this" page/infinite-scroll feed.
 function M.similar_media(req)
   local media_id = tonumber(req.params.media_id)
   if not media_id then return 404, { detail = "Media not found." } end
@@ -3397,52 +3415,10 @@ function M.similar_media(req)
   local source = fetch_media_by_id(media_id, viewer_id or "0")
   if not source or nn(source.deleted_at) then return 200, { media = {} } end
 
-  local tags = {}
-  if source.tags and source.tags ~= cjson.null then
-    local ok, decoded = pcall(cjson.decode, source.tags)
-    if ok and type(decoded) == "table" then tags = decoded end
-  end
-  local tag_conditions, tag_params = {}, {}
-  for i = 1, math.min(#tags, 8) do
-    tag_conditions[#tag_conditions + 1] = "(m.tags::jsonb @> jsonb_build_array(%s::text))::int"
-    tag_params[#tag_params + 1] = tostring(tags[i])
-  end
-  local tag_score_sql = #tag_conditions > 0 and table.concat(tag_conditions, " + ") or "0"
-  local adult_clause = viewer_id and "" or "AND m.is_adult=false"
-
-  local sql = string.format([[
-    SELECT m.id, m.user_id, m.category_id, m.subcategory_id, m.title, m.media_kind, m.mime_type,
-           m.original_filename, m.storage_path, m.is_adult, m.created_at, m.views,
-           (%s + (m.category_id=%%s)::int) AS relevance
-    FROM media_items m
-    WHERE m.id != %%s AND m.deleted_at IS NULL AND m.visibility='public'
-          AND (m.publish_at IS NULL OR m.publish_at <= now())
-          %s
-          AND (m.category_id=%%s OR %s > 0)
-    ORDER BY relevance DESC, m.created_at DESC
-    LIMIT %%s
-  ]], tag_score_sql, adult_clause, tag_score_sql)
-
-  local sql_params = {}
-  for _, p in ipairs(tag_params) do sql_params[#sql_params + 1] = p end
-  sql_params[#sql_params + 1] = tostring(source.category_id)
-  sql_params[#sql_params + 1] = tostring(media_id)
-  sql_params[#sql_params + 1] = tostring(source.category_id)
-  for _, p in ipairs(tag_params) do sql_params[#sql_params + 1] = p end
-  sql_params[#sql_params + 1] = "12"
-
-  local rows, err = db.fetchall(sql, unpack(sql_params))
-  if err then return 500, { detail = "Query failed: " .. tostring(err) } end
-  for _, row in ipairs(rows) do
-    row.id = db.toint(row.id, row.id)
-    row.user_id = db.toint(row.user_id, row.user_id)
-    row.category_id = db.toint(row.category_id, row.category_id)
-    row.views = db.toint(row.views, 0)
-    row.is_adult = db.tobool(row.is_adult)
-    with_urls(req, row, adult_allowed)
-  end
-  attach_media_subcategories(rows)
-  return 200, { media = arr(rows) }
+  local limit = bounded_limit(req.query.limit, 24, 60)
+  local offset = bounded_offset(req.query.offset)
+  local rows = compute_similar_media(req, media_id, source, adult_allowed, limit, offset)
+  return 200, { media = arr(rows), limit = limit, offset = offset }
 end
 
 local BULK_PATCH_FIELDS = {

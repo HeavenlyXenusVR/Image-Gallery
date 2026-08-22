@@ -349,7 +349,10 @@ export function MediaDetailPage({ ctx }) {
       </section>
       {similar.length ? (
         <section className="similar-media-panel">
-          <div className="section-head"><h2>More like this</h2></div>
+          <div className="section-head">
+            <h2>More like this</h2>
+            <Link to={`/media/${media.id}/similar`} className="similar-media-see-all">See all</Link>
+          </div>
           <div className="similar-media-rail">
             {similar.map((item) => (
               <Link

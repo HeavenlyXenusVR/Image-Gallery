@@ -20,6 +20,7 @@ import { MessagesPage } from "./pages/MessagesPage.jsx";
 import { OtherProjectsPage } from "./pages/OtherProjectsPage.jsx";
 import { ProfilePage } from "./pages/ProfilePage.jsx";
 import { SettingsPage } from "./pages/SettingsPage.jsx";
+import { SimilarMediaPage } from "./pages/SimilarMediaPage.jsx";
 import { StudioPage } from "./pages/StudioPage.jsx";
 import { TrendingPage } from "./pages/TrendingPage.jsx";
 import { UploadPage } from "./pages/UploadPage.jsx";
@@ -402,6 +403,7 @@ function App() {
         <Route path="/following" element={<FeedPage ctx={ctx} mode="following" />} />
         <Route path="/liked" element={<FeedPage ctx={ctx} mode="liked" />} />
         <Route path="/media/:mediaId" element={<MediaDetailPage ctx={ctx} />} />
+        <Route path="/media/:mediaId/similar" element={<SimilarMediaPage ctx={ctx} />} />
         <Route path="/collections" element={<CollectionsPage ctx={ctx} />} />
         <Route path="/users" element={<UsersPage ctx={ctx} />} />
         <Route path="/users/:username" element={<ProfilePage ctx={ctx} />} />

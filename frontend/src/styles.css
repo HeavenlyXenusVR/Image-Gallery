@@ -5577,6 +5577,11 @@ textarea:focus {
   margin-top: 18px;
 }
 
+.similar-media-see-all {
+  font-size: 0.85rem;
+  color: var(--accent, #37c9a7);
+}
+
 .similar-media-rail {
   display: flex;
   gap: 12px;
