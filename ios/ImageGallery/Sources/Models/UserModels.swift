@@ -54,6 +54,15 @@ struct UserSettings: Codable, Equatable {
     var accentColor: String?
     var profileLayout: String?
     var profileAvatarShape: String?
+    var autoplayPreviews: Bool?
+    var mutedPreviews: Bool?
+    var blurVideoPreviews: Bool?
+    var reduceMotion: Bool?
+    var gridDensity: String?
+    var defaultSort: String?
+    var profileShowFollowCounts: Bool?
+    var profileShowJoinedDate: Bool?
+    var watermarkText: String?
 }
 
 struct ProfilePageResponse: Codable {

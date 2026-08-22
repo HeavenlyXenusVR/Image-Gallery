@@ -40,7 +40,10 @@ struct CategoryMediaView: View {
     let title: String
 
     @StateObject private var viewModel = FeedViewModel()
-    private let columns = [GridItem(.adaptive(minimum: 110), spacing: 8)]
+    @EnvironmentObject private var session: SessionStore
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity)), spacing: 8)]
+    }
 
     var body: some View {
         ScrollView {

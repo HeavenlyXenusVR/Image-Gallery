@@ -8,8 +8,11 @@ struct StudioView: View {
     @State private var bulkTagInput = ""
     @State private var downloadURL: URL?
     @State private var showingDownloadShare = false
+    @EnvironmentObject private var session: SessionStore
 
-    private let columns = [GridItem(.adaptive(minimum: 150), spacing: 12)]
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity, default_: 150)), spacing: 12)]
+    }
 
     private var filteredItems: [MediaItem] {
         switch filter {

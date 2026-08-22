@@ -152,8 +152,11 @@ struct CollectionDetailView: View {
     @State private var isDownloading = false
     @State private var downloadURL: URL?
     @State private var showingDownloadShare = false
+    @EnvironmentObject private var session: SessionStore
 
-    private let columns = [GridItem(.adaptive(minimum: 100), spacing: 8)]
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity, default_: 100)), spacing: 8)]
+    }
 
     var body: some View {
         ScrollView {

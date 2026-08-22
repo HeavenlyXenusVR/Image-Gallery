@@ -15,8 +15,11 @@ struct FollowingLikedView: View {
     @State private var items: [MediaItem] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @EnvironmentObject private var session: SessionStore
 
-    private let columns = [GridItem(.adaptive(minimum: 110), spacing: 8)]
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity)), spacing: 8)]
+    }
 
     var body: some View {
         ScrollView {

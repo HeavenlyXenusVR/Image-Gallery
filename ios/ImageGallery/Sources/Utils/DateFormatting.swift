@@ -25,6 +25,12 @@ enum DateFormatting {
         return formatter
     }()
 
+    private static let joinedFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMMM yyyy"
+        return formatter
+    }()
+
     static func parse(_ iso: String?) -> Date? {
         guard let iso else { return nil }
         return isoParser.date(from: iso) ?? isoParserNoFraction.date(from: iso)
@@ -44,5 +50,13 @@ enum DateFormatting {
             return timeFormatter.string(from: date)
         }
         return relativeFormatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    /// "August 2026" — profile "Joined ..." line. Returns nil (not an empty
+    /// string) on a missing/unparseable date so callers can omit the whole
+    /// row rather than showing "Joined ".
+    static func joined(_ iso: String?) -> String? {
+        guard let date = parse(iso) else { return nil }
+        return joinedFormatter.string(from: date)
     }
 }

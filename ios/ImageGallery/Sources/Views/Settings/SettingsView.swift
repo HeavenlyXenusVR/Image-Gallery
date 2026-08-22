@@ -16,6 +16,15 @@ struct SettingsView: View {
     @State private var accentColor = Color(hex: Appearance.defaultAccentHex)
     @State private var profileLayout = "spotlight"
     @State private var avatarShape = AvatarShape.circle
+    @State private var autoplayPreviews = false
+    @State private var mutedPreviews = true
+    @State private var blurVideoPreviews = false
+    @State private var reduceMotion = false
+    @State private var gridDensity = "comfortable"
+    @State private var defaultSort = "new"
+    @State private var profileShowFollowCounts = true
+    @State private var profileShowJoinedDate = true
+    @State private var watermarkText = ""
     @State private var isSavingAppearance = false
     @State private var loadedAppearance = false
     @State private var showingLogoutConfirm = false
@@ -50,6 +59,43 @@ struct SettingsView: View {
                     Text("Square").tag(AvatarShape.square)
                 }
                 .pickerStyle(.segmented)
+                Picker("Grid density", selection: $gridDensity) {
+                    Text("Compact").tag("compact")
+                    Text("Comfortable").tag("comfortable")
+                    Text("Wide").tag("wide")
+                }
+                .pickerStyle(.segmented)
+                Picker("Default sort", selection: $defaultSort) {
+                    Text("New").tag("new")
+                    Text("Popular").tag("popular")
+                    Text("Downloads").tag("downloads")
+                    Text("Views").tag("views")
+                    Text("Old").tag("old")
+                }
+            }
+
+            // These sections share the same "Save appearance" action as the
+            // Appearance section above -- one PATCH sends the whole
+            // SettingsUpdateBody, so a button per section would just be the
+            // same save repeated with no independent effect. Grouped as
+            // separate Form sections purely for scannability; the single
+            // save button lives at the bottom of this group.
+            //
+            // autoplay_previews/muted_previews/blur_video_previews are NOT
+            // exposed here yet even though the model/API layer supports them
+            // (see UserSettings/SettingsUpdateBody) -- the web app applies
+            // them to a live-playing preview video on every grid card, and
+            // iOS's MediaCard has no such preview mechanism at all yet
+            // (static thumbnail only). Surfacing toggles for a feature that
+            // doesn't exist on this platform would store a value nothing
+            // reads -- shipping that is worse than not shipping the toggle.
+            Section("Profile Visibility") {
+                Toggle("Show follow counts", isOn: $profileShowFollowCounts)
+                Toggle("Show joined date", isOn: $profileShowJoinedDate)
+            }
+
+            Section("Watermark") {
+                TextField("Watermark text (applied to your images)", text: $watermarkText)
                 Button {
                     Task { await saveAppearance() }
                 } label: {
@@ -284,6 +330,15 @@ struct SettingsView: View {
         accentColor = Color(hex: settings.accentColor)
         profileLayout = settings.profileLayout ?? "spotlight"
         avatarShape = AvatarShape(settings.profileAvatarShape)
+        autoplayPreviews = settings.autoplayPreviews ?? false
+        mutedPreviews = settings.mutedPreviews ?? true
+        blurVideoPreviews = settings.blurVideoPreviews ?? false
+        reduceMotion = settings.reduceMotion ?? false
+        gridDensity = settings.gridDensity ?? "comfortable"
+        defaultSort = settings.defaultSort ?? "new"
+        profileShowFollowCounts = settings.profileShowFollowCounts ?? true
+        profileShowJoinedDate = settings.profileShowJoinedDate ?? true
+        watermarkText = settings.watermarkText ?? ""
     }
 
     private func saveAppearance() async {
@@ -294,7 +349,16 @@ struct SettingsView: View {
                 themeMode: themeMode,
                 accentColor: accentColor.toHexString(),
                 profileLayout: profileLayout,
-                profileAvatarShape: avatarShape.rawValue
+                profileAvatarShape: avatarShape.rawValue,
+                autoplayPreviews: autoplayPreviews,
+                mutedPreviews: mutedPreviews,
+                blurVideoPreviews: blurVideoPreviews,
+                reduceMotion: reduceMotion,
+                gridDensity: gridDensity,
+                defaultSort: defaultSort,
+                profileShowFollowCounts: profileShowFollowCounts,
+                profileShowJoinedDate: profileShowJoinedDate,
+                watermarkText: watermarkText
             )
             let user = try await GalleryAPIClient.shared.updateSettings(body)
             session.setCurrentUser(user)

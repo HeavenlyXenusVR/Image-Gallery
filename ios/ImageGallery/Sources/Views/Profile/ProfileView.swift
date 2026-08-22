@@ -4,7 +4,9 @@ struct ProfileView: View {
     @StateObject private var viewModel: ProfileViewModel
     @EnvironmentObject private var session: SessionStore
 
-    private let columns = [GridItem(.adaptive(minimum: 100), spacing: 8)]
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity, default_: 100)), spacing: 8)]
+    }
 
     init(username: String) {
         _viewModel = StateObject(wrappedValue: ProfileViewModel(username: username))
@@ -148,16 +150,35 @@ private struct ProfileHeader: View {
                     if let bio = user.bio, !bio.isEmpty {
                         Text(bio).font(.footnote)
                     }
+                    // The backend already nulls out created_at server-side
+                    // for a non-owner viewer when profile_show_joined_date
+                    // is off (routes.lua's decode_user) -- so a missing date
+                    // here always means "hidden", never "unknown", and this
+                    // row can just not render rather than needing its own
+                    // separate owner/viewer check.
+                    if let joined = DateFormatting.joined(user.createdAt) {
+                        Label("Joined \(joined)", systemImage: "calendar")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
 
             HStack(spacing: 10) {
                 statPill("Posts", user.mediaCount)
-                NavigationLink(destination: UserListView(userId: user.id, kind: .followers)) {
-                    statPill("Followers", user.followerCount)
+                // followerCount/followingCount are likewise already nil'd
+                // server-side when the owner has profile_show_follow_counts
+                // off -- hide the whole pill rather than showing a
+                // misleading "0".
+                if let followerCount = user.followerCount {
+                    NavigationLink(destination: UserListView(userId: user.id, kind: .followers)) {
+                        statPill("Followers", followerCount)
+                    }
                 }
-                NavigationLink(destination: UserListView(userId: user.id, kind: .following)) {
-                    statPill("Following", user.followingCount)
+                if let followingCount = user.followingCount {
+                    NavigationLink(destination: UserListView(userId: user.id, kind: .following)) {
+                        statPill("Following", followingCount)
+                    }
                 }
                 statPill("Friends", user.friendCount)
             }

@@ -7,7 +7,9 @@ struct FeedView: View {
     @State private var showingFilters = false
     @FocusState private var searchFocused: Bool
 
-    private let columns = [GridItem(.adaptive(minimum: 110), spacing: 12)]
+    private var columns: [GridItem] {
+        [GridItem(.adaptive(minimum: Appearance.gridColumnMinWidth(session.currentUser?.userSettings?.gridDensity)), spacing: 12)]
+    }
 
     var body: some View {
         ScrollView {
@@ -86,6 +88,15 @@ struct FeedView: View {
         }
         .task {
             if viewModel.items.isEmpty {
+                // Only on the genuinely first load -- applying the saved
+                // default_sort preference here (not in FeedViewModel's own
+                // init, which runs before session.currentUser is
+                // necessarily populated) instead of every time this view
+                // reappears, so it never clobbers a sort the viewer already
+                // picked for this session via SortChipsRow.
+                if let defaultSort = session.currentUser?.userSettings?.defaultSort, !defaultSort.isEmpty {
+                    viewModel.sort = defaultSort
+                }
                 await viewModel.loadInitial()
             }
         }

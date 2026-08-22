@@ -16,6 +16,19 @@ enum Appearance {
     static func isGridFirstLayout(_ profileLayout: String?) -> Bool {
         profileLayout == "mosaic"
     }
+
+    /// Maps `grid_density` ("compact"/"comfortable"/"wide", same three
+    /// choices the web app's Settings page offers) to a `GridItem(.adaptive
+    /// (minimum:))` column width. `default_` is what every media grid used
+    /// unconditionally before this setting existed, so it stays the
+    /// fallback for "comfortable" and anything unrecognized.
+    static func gridColumnMinWidth(_ gridDensity: String?, default_: CGFloat = 110) -> CGFloat {
+        switch gridDensity {
+        case "compact": return max(70, default_ - 30)
+        case "wide": return default_ + 40
+        default: return default_
+        }
+    }
 }
 
 enum AvatarShape: String {
