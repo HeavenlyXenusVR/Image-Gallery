@@ -6670,7 +6670,20 @@ local function hls_variant_ready(dir)
   return text ~= nil and text:find("#EXT-X-ENDLIST", 1, true) ~= nil
 end
 
-local function ensure_hls_variant(media_id, item, content, quality)
+-- `item` alone (no pre-read file bytes) is enough to check whether a
+-- variant is already cached -- the size cap uses the DB's file_size
+-- column rather than an actual read, and pending/ready checks are pure
+-- filesystem stats. The full source is only read from disk/DB (via
+-- content_fn, called at most once) on a genuine cache miss, right before
+-- it's written to source.bin. This matters because M.serve_hls_playlist
+-- calls this on every playlist request, including hls.js's periodic
+-- re-polls of a still-growing (no #EXT-X-ENDLIST yet) playlist during an
+-- active transcode -- previously that read the ENTIRE source file into
+-- memory on every one of those polls, for every concurrent viewer,
+-- regardless of whether anything actually needed launching. On a public
+-- gallery with several people watching different in-progress transcodes
+-- at once, that was real, repeated, avoidable memory/disk pressure.
+local function ensure_hls_variant(media_id, item, content_fn, quality)
   if quality ~= "original" and not VIDEO_QUALITY_PROFILES[quality] then return nil end
   -- "original" is a `-c copy` remux (no re-encode -- see the codec_args
   -- branch below), not a real transcode, so the size cap that exists to
@@ -6679,7 +6692,7 @@ local function ensure_hls_variant(media_id, item, content, quality)
   -- the one rendition explicitly meant to "be available almost instantly
   -- regardless of source length" per this section's own header comment --
   -- the exact "nothing plays" symptom for large uploads.
-  if quality ~= "original" and #content > VIDEO_TRANSCODE_SIZE_LIMIT then return nil end
+  if quality ~= "original" and db.toint(item.file_size, 0) > VIDEO_TRANSCODE_SIZE_LIMIT then return nil end
 
   local owner = get_user(item.user_id)
   local watermark_text = owner and owner.user_settings and nn(owner.user_settings.watermark_text)
@@ -6698,11 +6711,15 @@ local function ensure_hls_variant(media_id, item, content, quality)
   -- live work just because the playlist hasn't gotten its ENDLIST yet).
   if hls_variant_ready(dir) or still_encoding then return dir end
 
+  local content = content_fn()
+  if not content then return nil, "missing" end
+
   os.execute("mkdir -p " .. shell_quote(dir))
   local src = dir .. "/source.bin"
   local f = assert(io.open(src, "wb"))
   f:write(content)
   f:close()
+  content = nil
 
   local marker = assert(io.open(pending_marker, "wb"))
   marker:write(tostring(os.time()))
@@ -6825,12 +6842,11 @@ function M.serve_hls_playlist(req)
   local item, status, body = hls_check_access(req, media_id)
   if not item then return status, body end
 
-  local content = resolve_media_bytes(item)
-  if not content then return 404, { detail = "File is missing." } end
-
-  local dir = ensure_hls_variant(media_id, item, content, quality)
-  if not dir then return 404, { detail = "This quality is not available for this video." } end
-  content = nil -- done with the full blob; let it go before the poll loop below
+  local dir, err = ensure_hls_variant(media_id, item, function() return resolve_media_bytes(item) end, quality)
+  if not dir then
+    if err == "missing" then return 404, { detail = "File is missing." } end
+    return 404, { detail = "This quality is not available for this video." }
+  end
 
   -- Bounded, yielding wait for the first segment(s): a cold cache means
   -- the background ffmpeg job was JUST launched a moment ago by the call
