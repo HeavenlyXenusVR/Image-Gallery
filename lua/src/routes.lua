@@ -6639,9 +6639,13 @@ end
 
 local HLS_SEGMENT_SECONDS = 6
 
+-- media_id kept as a param (unused now) rather than reshuffling both call
+-- sites -- item.content_sha256 (fetch_media_stream_row above) replaces
+-- what used to be this function's own db.fetchone, which fired a second,
+-- redundant query for the same row on every call -- including
+-- serve_hls_segment's per-segment call, i.e. every ~6s of playback.
 local function media_content_digest_seed(media_id, item, watermark_text)
-  local sha_row = db.fetchone("SELECT content_sha256 FROM media_items WHERE id=%s", tostring(media_id))
-  local base = (sha_row and nn(sha_row.content_sha256)) or item.updated_at or item.created_at or tostring(media_id)
+  local base = nn(item.content_sha256) or item.updated_at or item.created_at or tostring(media_id)
   return base .. "|wm=" .. tostring(watermark_text or "")
 end
 
@@ -6792,13 +6796,31 @@ local function hls_propagated_qs(req)
   return nil
 end
 
+-- fetch_media_by_id joins categories/subcategories/users and aggregates
+-- likes/comments/bookmarks with 3 COUNT DISTINCTs -- built for rendering a
+-- post's full detail view, not for an auth check. hls_check_access runs on
+-- EVERY segment request (every ~6s of playback, per viewer, per active
+-- stream) as well as every playlist load, so on a public gallery with
+-- several people streaming at once that heavy query was firing constantly
+-- for no reason -- none of the joined/aggregated columns are used past
+-- this function. This lean, join-free query carries only what
+-- hls_check_access/ensure_hls_variant/resolve_media_bytes/serve_hls_segment
+-- actually read.
+local function fetch_media_stream_row(media_id)
+  return db.fetchone([[
+    SELECT id, user_id, media_kind, mime_type, original_filename, storage_path, file_size,
+           created_at, updated_at, visibility, is_adult, deleted_at, content_sha256
+    FROM media_items WHERE id = %s
+  ]], tostring(media_id))
+end
+
 -- Shared by all three HLS routes below: 404s (not 403 -- matches this
 -- file's "don't leak existence" convention elsewhere) on anything that
 -- would also 404/403 through the regular file-serving path.
 local function hls_check_access(req, media_id)
   local auth = auth_optional(req)
   local viewer_id = auth and tostring(auth.id) or nil
-  local item = fetch_media_by_id(media_id, viewer_id or "0")
+  local item = fetch_media_stream_row(media_id)
   if not item or nn(item.deleted_at) ~= nil then return nil, 404, { detail = "Media not found." } end
   item.is_adult = db.tobool(item.is_adult)
   local owner = viewer_id and tostring(item.user_id) == tostring(viewer_id)
