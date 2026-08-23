@@ -166,16 +166,20 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
         // MEDIA_ERR_NETWORK — on Safari's native HLS path (no hls.js
         // involved) this is what a transient 503 from the still-transcoding
         // HLS playlist route (see routes.lua's serve_hls_playlist) surfaces
-        // as. Retry the load a few times with backoff before giving up,
-        // same rationale as hls.js's startLoad() recovery in the branch
-        // below for the non-Safari path.
-        if (nativeNetworkRetriesRef.current < 4) {
+        // as. Retry the load with backoff before giving up, same rationale
+        // as hls.js's startLoad() recovery in the branch below for the
+        // non-Safari path. Capped backoff (not unbounded linear) because a
+        // higher-quality rendition (1080p scale+drawtext+libx264) can
+        // legitimately take a couple minutes to produce its first segments
+        // on a long source -- a handful of retries totaling a few seconds
+        // gave up long before that finished.
+        if (nativeNetworkRetriesRef.current < 40) {
           nativeNetworkRetriesRef.current += 1;
           setTimeout(() => {
             if (videoRef.current !== vid) return;
             vid.load();
             if (shouldAutoPlayRef.current) vid.play().catch(() => {});
-          }, 500 * nativeNetworkRetriesRef.current);
+          }, Math.min(500 * nativeNetworkRetriesRef.current, 3000));
           return;
         }
         setError("Network error — check your connection and try again.");
@@ -337,20 +341,26 @@ export function VideoPlayer({ src, poster, quality, onQualityChange, qualityOpti
         // decode error. Only give up (and show the banner) after repeated
         // recovery attempts for the same error type, capped and backed off
         // so a genuinely dead stream doesn't retry forever.
+        // NETWORK_RETRIES is high (with backoff capped, not unbounded
+        // linear) because a higher-quality rendition (1080p
+        // scale+drawtext+libx264) can legitimately take a couple minutes to
+        // produce its first segments on a long source -- 4 retries over ~5s
+        // gave up long before a real transcode like that finished.
         let networkRetries = 0;
         let mediaRetries = 0;
-        const MAX_RETRIES = 4;
+        const MAX_NETWORK_RETRIES = 40;
+        const MAX_MEDIA_RETRIES = 4;
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (!data.fatal) return;
           if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            if (networkRetries < MAX_RETRIES) {
+            if (networkRetries < MAX_NETWORK_RETRIES) {
               networkRetries += 1;
-              setTimeout(() => { if (!cancelled) hls.startLoad(); }, 500 * networkRetries);
+              setTimeout(() => { if (!cancelled) hls.startLoad(); }, Math.min(500 * networkRetries, 3000));
               return;
             }
             setError("Network error — check your connection and try again.");
           } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-            if (mediaRetries < MAX_RETRIES) {
+            if (mediaRetries < MAX_MEDIA_RETRIES) {
               mediaRetries += 1;
               hls.recoverMediaError();
               return;
