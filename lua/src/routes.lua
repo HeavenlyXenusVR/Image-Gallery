@@ -6527,6 +6527,44 @@ end
 
 local VIDEO_TRANSCODE_PENDING_STALE_SECONDS = 5 * 60
 
+-- uploads_dir lives on a single USB-attached drive that negotiates plain
+-- usb-storage/Bulk-Only Transport rather than UAS -- confirmed live via
+-- `lsblk`/`journalctl -k` -- which allows only one outstanding I/O command
+-- at a time at the protocol level, regardless of how fast the underlying
+-- media is. ffmpeg's transcodes were launched with no concurrency limit at
+-- all, so any moment with 2+ cold caches (a fresh upload, a watermark
+-- change invalidating every existing HLS variant, or just two viewers
+-- landing on different never-watched videos at once) piled up simultaneous
+-- detached ffmpeg jobs that all serialize on that same link -- every one
+-- of them, plus any unrelated segment reads sharing the disk, slows down
+-- enough to blow past the player's retry budget. Reported live as "random
+-- errors on a lot of videos", not a single slow one. Capping how many
+-- transcodes are allowed to be in flight at once (checked via the same
+-- filesystem ".pending" markers already used for per-item dedup, so no new
+-- state) keeps new jobs from piling onto an already-saturated link --
+-- a request that can't get a slot just leaves the existing "still starting
+-- up" 503 in place, which the player already retries.
+local MAX_CONCURRENT_TRANSCODES = 2
+
+local function active_transcode_count(uploads_dir)
+  local now = os.time()
+  local count = 0
+  local handle = io.popen(string.format(
+    "find %s %s -maxdepth 1 -name '*.pending' -printf '%%T@ %%p\\n' 2>/dev/null",
+    shell_quote(uploads_dir .. "/_hls_cache"), shell_quote(uploads_dir .. "/_video_cache")
+  ))
+  if not handle then return 0 end
+  for line in handle:lines() do
+    local mtime_str = line:match("^(%S+) ")
+    local mtime = mtime_str and tonumber(mtime_str)
+    if mtime and (now - mtime) < VIDEO_TRANSCODE_PENDING_STALE_SECONDS then
+      count = count + 1
+    end
+  end
+  handle:close()
+  return count
+end
+
 -- Returns (transcoded_bytes, "video/mp4") on success, or (nil) to signal
 -- "serve the original instead" (quality is "original", no ffmpeg profile
 -- for that quality name, the file is too large to transcode, or a
@@ -6577,6 +6615,10 @@ local function ensure_video_quality_cache(media_id, item, content, quality)
     pf:close()
   end
   local already_pending = pending_age and (os.time() - pending_age) < VIDEO_TRANSCODE_PENDING_STALE_SECONDS
+
+  if not already_pending and active_transcode_count(M.settings.uploads_dir) >= MAX_CONCURRENT_TRANSCODES then
+    return nil
+  end
 
   if not already_pending then
     os.execute("mkdir -p " .. shell_quote(M.settings.uploads_dir .. "/_video_cache"))
@@ -6697,6 +6739,15 @@ local function ensure_hls_variant(media_id, item, content, quality)
   -- transcode for it is still actively running (don't stomp on/duplicate
   -- live work just because the playlist hasn't gotten its ENDLIST yet).
   if hls_variant_ready(dir) or still_encoding then return dir end
+
+  -- At capacity: leave this variant un-launched rather than piling another
+  -- ffmpeg job onto an already-saturated disk link. The directory has no
+  -- pending marker, so the very next request (this same viewer's retry, or
+  -- anyone else's) re-checks capacity and launches as soon as a slot frees
+  -- up. Still returns dir so serve_hls_playlist's poll loop times out with
+  -- its normal "still starting up" 503 -- correct and retryable -- instead
+  -- of the "not available" 404 a bare nil here would cause.
+  if active_transcode_count(M.settings.uploads_dir) >= MAX_CONCURRENT_TRANSCODES then return dir end
 
   os.execute("mkdir -p " .. shell_quote(dir))
   local src = dir .. "/source.bin"
