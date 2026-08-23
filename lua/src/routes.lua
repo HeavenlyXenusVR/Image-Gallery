@@ -6715,8 +6715,27 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   -- live work just because the playlist hasn't gotten its ENDLIST yet).
   if hls_variant_ready(dir) or still_encoding then return dir end
 
+  -- Claim this slot BEFORE calling content_fn(), not after: content_fn()
+  -- reads through resolve_media_bytes, which can hit the DB (potentially a
+  -- large blob fetch) and therefore genuinely yields to copas's scheduler
+  -- (see swarmlua/pg.lua's single-shared-connection lock). If the marker
+  -- write happened after that yield, two viewers' requests landing on the
+  -- same cold digest within the same moment could both pass the check
+  -- above before either had written the marker, and both go on to launch
+  -- their own duplicate ffmpeg job against the same output directory.
+  -- Writing the marker here, before the one yielding step in this
+  -- function, keeps the check-then-claim sequence atomic with respect to
+  -- other coroutines the same way it was when content was always resolved
+  -- up front by the caller.
+  local marker = assert(io.open(pending_marker, "wb"))
+  marker:write(tostring(os.time()))
+  marker:close()
+
   local content = content_fn()
-  if not content then return nil, "missing" end
+  if not content then
+    os.remove(pending_marker)
+    return nil, "missing"
+  end
 
   os.execute("mkdir -p " .. shell_quote(dir))
   local src = dir .. "/source.bin"
@@ -6724,10 +6743,6 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   f:write(content)
   f:close()
   content = nil
-
-  local marker = assert(io.open(pending_marker, "wb"))
-  marker:write(tostring(os.time()))
-  marker:close()
 
   local wm_filter, wm_text_file = media_files.video_watermark_filter(watermark_text)
 
