@@ -6718,8 +6718,10 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   -- Claim this slot BEFORE calling content_fn(), not after: content_fn()
   -- reads through resolve_media_bytes, which can hit the DB (potentially a
   -- large blob fetch) and therefore genuinely yields to copas's scheduler
-  -- (see swarmlua/pg.lua's single-shared-connection lock). If the marker
-  -- write happened after that yield, two viewers' requests landing on the
+  -- (a query still queues on whichever pooled connection db.lua hands it,
+  -- and pgmoon's socket I/O yields regardless -- see db.lua's pool and
+  -- swarmlua/pg.lua's per-connection lock). If the marker write happened
+  -- after that yield, two viewers' requests landing on the
   -- same cold digest within the same moment could both pass the check
   -- above before either had written the marker, and both go on to launch
   -- their own duplicate ffmpeg job against the same output directory.

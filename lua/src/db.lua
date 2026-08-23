@@ -1,8 +1,23 @@
 -- Postgres access layer built on the vendored lib/swarmlua/pg.lua.
 --
 -- Unlike SwarmPanel's db.lua, this backend only ever talks to one database
--- (image_gallery), so there's no per-dbname pool table -- just one lazily-
--- connected Pg instance.
+-- (image_gallery), so there's no per-dbname pool table -- just a flat pool
+-- of Pg instances, all against that one database.
+--
+-- Previously this held exactly one Pg instance, and every DB-bound request
+-- serialized behind pg.lua's own busy-flag lock (see that file's header
+-- comment) -- necessary to stop concurrent coroutines corrupting a SHARED
+-- connection's wire protocol, but it meant literally every query anywhere
+-- in the app -- an HLS segment auth check, an unrelated comment post, a
+-- background digest job -- queued behind whichever one currently held that
+-- single socket. Real concurrent viewers (this is a public gallery) turned
+-- that into a genuine bottleneck independent of any specific route's own
+-- query cost. A pool of independent Pg instances lets that many requests'
+-- queries actually run in parallel; each instance still has its own
+-- pg.lua-level lock protecting IT specifically, unchanged, so nothing about
+-- that safety property is touched here -- this only adds a layer above it
+-- that hands out whichever instance is currently idle instead of forcing
+-- everyone onto the same one.
 --
 -- NUMERIC precision note: unlike SwarmPanel's image_gallery access (which
 -- kept the columns as NUMERIC(20,0) and patched pgmoon's oid-1700
@@ -17,30 +32,50 @@
 local Pg = require("swarmlua.pg")
 
 local M = {}
-local pg = nil
+local pool = {}
+local round_robin = 0
 local cfg = nil
 
 function M.init(settings)
   cfg = settings
 end
 
-local function conn()
-  if not pg then
-    pg = Pg.new({
-      host = cfg.db_host,
-      port = cfg.db_port,
-      user = cfg.db_user,
-      password = cfg.db_password,
-      database = cfg.db_name,
-    })
+local function new_conn()
+  return Pg.new({
+    host = cfg.db_host,
+    port = cfg.db_port,
+    user = cfg.db_user,
+    password = cfg.db_password,
+    database = cfg.db_name,
+  })
+end
+
+-- Hands back an idle Pg instance where possible, growing the pool lazily
+-- (up to db_pool_size) as concurrent demand actually shows up rather than
+-- opening every connection at startup -- most of the time this app isn't
+-- under concurrent DB load, so there's no reason to hold open connections
+-- nothing is using yet. If every existing instance is currently mid-query,
+-- round-robin across them instead of always piling onto pool[1]: each one
+-- still queues safely on its own pg.lua-level lock (unchanged), this just
+-- spreads that wait across db_pool_size sockets instead of concentrating
+-- all of it on one.
+local function acquire()
+  for _, p in ipairs(pool) do
+    if not p.busy then return p end
   end
-  return pg
+  if #pool < (cfg.db_pool_size or 1) then
+    local p = new_conn()
+    pool[#pool + 1] = p
+    return p
+  end
+  round_robin = (round_robin % #pool) + 1
+  return pool[round_robin]
 end
 
 -- Runs `sql` (with %s-style placeholders, pgmoon-escaped) against the db.
 -- Returns rows (array of column->value tables) or nil, err.
 function M.query(sql, ...)
-  local p = conn()
+  local p = acquire()
   local rows, err = p:query(sql, ...)
   if rows == nil then return nil, err end
   if rows == true then return {} end -- DDL/DML with no result set

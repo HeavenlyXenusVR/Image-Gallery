@@ -52,6 +52,14 @@ function M.load()
     db_user = env("GALLERY_DB_USER") or env("DB_USER") or env("MYSQL_USER") or "botuser",
     db_password = env("GALLERY_DB_PASSWORD") or env("DB_PASSWORD") or env("MYSQL_PASSWORD") or "bot_logins",
     db_name = env("GALLERY_DB_SCHEMA", "image_gallery"),
+    -- The shared Postgres instance behind this (see the Aria/SwarmPanel
+    -- migration notes) already runs ~90/150 max_connections across every
+    -- Music bot (~6 each), SwarmPanel, and Aria -- 6 here keeps this
+    -- backend consistent with that sibling convention rather than either
+    -- starving itself (1 connection serializes ALL concurrent DB-bound
+    -- requests through one socket -- see db.lua's pool) or eating into the
+    -- cluster-wide budget more than its neighbors do.
+    db_pool_size = math.max(1, env_int("GALLERY_DB_POOL_SIZE", 6)),
 
     session_secret = env("GALLERY_SESSION_SECRET", ""),
     api_token_ttl_seconds = env_int("GALLERY_API_TOKEN_TTL_SECONDS", 1209600),
