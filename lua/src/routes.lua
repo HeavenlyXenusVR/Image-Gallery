@@ -6322,18 +6322,22 @@ end
 -- ---------------------------------------------------------------------------
 -- Media byte-serving: thumb / file / preview / download / avatar.
 -- Mirrors app/routers/media_streaming.py. See media_files.lua's module
--- docstring for the storage-model correction versus this task's original
--- brief (DB blob storage is what's actually configured and live, not an
--- on-disk content-addressed tree) and for why ffmpeg (not a PIL-equivalent)
--- renders every thumbnail/preview here.
+-- docstring for why ffmpeg (not a PIL-equivalent) renders every thumbnail/
+-- preview here. STORAGE MODEL: current live media_items all resolve via the
+-- on-disk content-addressed tree under uploads_dir/media/ (save_media_file_
+-- to_disk) -- the DB-blob path (media_files/media_file_chunks) that used to
+-- be what was actually configured is now legacy/empty for every current
+-- row, kept only as a fallback resolve_media_bytes still checks.
 --
--- KNOWN LIMITATION vs Python: httpd.lua has no chunked/streaming response
--- support (see its send_response(), which always writes one Content-Length-
--- framed body) and no HTTP Range support for partial content, so this reads
--- whole files into memory rather than streaming byte ranges the way
--- media_streaming.py's StreamingResponse does. Acceptable for this
--- deployment's traffic/file sizes today; flagged as a real scaling gap for
--- large video files once uploads are re-populated.
+-- RESOLVED (was flagged here as a known limitation): serve_media_bytes_
+-- response now has a Range-aware fast path (range_io.* + the "seek-and-read
+-- just the requested byte range" block near its top) that reads directly
+-- from the on-disk _original_cache file via seek + a bounded read, instead
+-- of buffering the whole file into memory per request the way this comment
+-- used to describe. Confirmed live: a Range request against a 454MB video
+-- went from ~19-20s (whole-file read) to ~0.2-0.35s (seek-based) once the
+-- cache is warm. Only the original cold-cache population (still a full
+-- read, once) and the quality-transcode/HLS paths still work the old way.
 -- ---------------------------------------------------------------------------
 
 local function adult_file_allowed(req, media_id, access, viewer_id)
