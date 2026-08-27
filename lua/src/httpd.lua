@@ -275,21 +275,83 @@ local function handle_ws_upgrade(sock, headers, path, query, handler)
   pcall(function() sock:close() end)
 end
 
+-- ---------------------------------------------------------------------------
+-- Access logging (Feature: request/status logging).
+--
+-- Previously this server logged nothing per-request at all -- no method,
+-- path, status, timing, or client IP for any request, successful or not.
+-- Combined with the unhandled-error swallowing this same file used to have
+-- (see the 500 path below), that meant there was no way to answer "what did
+-- the last hour of traffic actually look like" short of adding print()
+-- statements by hand, reproducing, and removing them again -- exactly what
+-- happened while diagnosing the HLS transcode-slot leak this same session.
+--
+-- One line per request, written to stdout (captured by journald under this
+-- service's unit, same as every other log line here) once the response has
+-- actually been sent, so the logged status always reflects what the client
+-- received -- not what a handler intended to send before some later step
+-- (CORS headers, body encoding) failed.
+-- ---------------------------------------------------------------------------
+
+local function access_log_line(method, path, status, duration_ms, client_ip, user_agent)
+  local level = (status and status >= 500) and "ERROR"
+    or (status and status >= 400) and "WARN"
+    or "INFO"
+  print(string.format(
+    "[access] %-5s %-45s %3d  %6.1fms  ip=%s  level=%s ua=%s",
+    tostring(method or "?"), tostring(path or "?"), tonumber(status) or 0,
+    duration_ms, tostring(client_ip or "?"), level,
+    tostring((user_agent or ""):sub(1, 80))
+  ))
+end
+
 local function handle_connection(sock)
+  local start_time = socket.gettime()
+  -- Populated as the request is parsed, so a log line can still be written
+  -- (with whatever's known so far) even for a request that fails before a
+  -- route was ever matched -- e.g. a malformed request line.
+  local log_method, log_path, log_status, log_ip, log_ua = nil, nil, nil, nil, nil
+
+  -- Every response in this function should go through this instead of
+  -- calling send_response directly, purely so log_status always reflects
+  -- what actually got sent to the client, from every exit path below.
+  local function respond(status, status_text, headers, body)
+    log_status = status
+    send_response(sock, status, status_text, headers, body)
+  end
+
   local ok, err = pcall(function()
     local first_line, headers = read_headers(sock)
     if not first_line then return end
     local method, path_and_query = first_line:match("^(%u+)%s+(%S+)%s+HTTP/")
+    log_method = method or "?"
     if not method then
-      send_response(sock, 400, "Bad Request", {}, cjson.encode({ detail = "Malformed request line" }))
+      respond(400, "Bad Request", {}, cjson.encode({ detail = "Malformed request line" }))
       return
     end
     local path, qs = path_and_query:match("^([^?]*)%??(.*)$")
+    log_path = path
     local query = parse_query(qs)
+
+    -- Client IP + User-Agent computed here (not just on the matched-route
+    -- path below) so even a 400/404/OPTIONS response still logs who sent
+    -- it. Prefers X-Forwarded-For (this backend sits behind the
+    -- cloudflared tunnel / nyxframe-proxy), falling back to the raw peer
+    -- address for direct/local connections. Mirrors security.py's
+    -- _client_ip().
+    local xff = (headers["x-forwarded-for"] or ""):match("^[^,]+")
+    local client_ip = (xff and xff:match("^%s*(.-)%s*$") ~= "" and xff:match("^%s*(.-)%s*$")) or nil
+    if not client_ip then
+      local peer_ok, peer_ip = pcall(function() return (sock:getpeername()) end)
+      client_ip = (peer_ok and peer_ip) or "unknown"
+    end
+    log_ip = client_ip
+    log_ua = headers["user-agent"]
 
     if method == "GET" and (headers["upgrade"] or ""):lower() == "websocket" then
       local ws_handler = match_ws_route(path)
       if ws_handler then
+        log_status = 101
         handle_ws_upgrade(sock, headers, path, query, ws_handler)
         return
       end
@@ -308,7 +370,7 @@ local function handle_connection(sock)
     apply_cors(resp_headers, headers)
 
     if method == "OPTIONS" then
-      send_response(sock, 204, "No Content", resp_headers, "")
+      respond(204, "No Content", resp_headers, "")
       return
     end
 
@@ -318,24 +380,13 @@ local function handle_connection(sock)
         local fb_status, fb_body, fb_headers = M.fallback_handler(method, path, headers)
         if fb_status then
           for k, v in pairs(fb_headers or {}) do resp_headers[k] = v end
-          send_response(sock, fb_status, STATUS_TEXT[fb_status] or "OK", resp_headers, fb_body)
+          respond(fb_status, STATUS_TEXT[fb_status] or "OK", resp_headers, fb_body)
           return
         end
       end
       resp_headers["Content-Type"] = "application/json"
-      send_response(sock, 404, "Not Found", resp_headers, cjson.encode({ detail = "Not found" }))
+      respond(404, "Not Found", resp_headers, cjson.encode({ detail = "Not found" }))
       return
-    end
-
-    -- Client IP: prefer X-Forwarded-For (this panel typically sits behind
-    -- the cloudflared/ngrok tunnel in .bin/, see task #12), falling back to
-    -- the raw peer address for direct/local connections. Mirrors
-    -- security.py's _client_ip().
-    local xff = (headers["x-forwarded-for"] or ""):match("^[^,]+")
-    local client_ip = (xff and xff:match("^%s*(.-)%s*$") ~= "" and xff:match("^%s*(.-)%s*$")) or nil
-    if not client_ip then
-      local peer_ok, peer_ip = pcall(function() return (sock:getpeername()) end)
-      client_ip = (peer_ok and peer_ip) or "unknown"
     end
 
     local req = {
@@ -373,7 +424,7 @@ local function handle_connection(sock)
     else
       body_out = tostring(resp_body or "")
     end
-    send_response(sock, status, STATUS_TEXT[status] or "OK", resp_headers, body_out)
+    respond(status, STATUS_TEXT[status] or "OK", resp_headers, body_out)
   end)
   if not ok then
     -- Previously silent: `err` was caught but never logged anywhere, so
@@ -382,8 +433,15 @@ local function handle_connection(sock)
     -- and removed by hand. print() here goes to the unit's stdout, same as
     -- every other log line this service already emits.
     print("[nyxframe] unhandled error: " .. tostring(err))
+    log_status = 500
+    pcall(respond, 500, "Internal Server Error", { ["Content-Type"] = "application/json" }, cjson.encode({ detail = "Internal server error" }))
+  end
+  if log_method then
+    -- log_method is only nil for a connection that closed before sending
+    -- any request line at all (e.g. a TCP health-check probe) -- nothing
+    -- meaningful to log for those.
+    access_log_line(log_method, log_path, log_status, (socket.gettime() - start_time) * 1000, log_ip, log_ua)
     io.stdout:flush()
-    pcall(send_response, sock, 500, "Internal Server Error", { ["Content-Type"] = "application/json" }, cjson.encode({ detail = "Internal server error" }))
   end
   pcall(function() sock:close() end)
 end
