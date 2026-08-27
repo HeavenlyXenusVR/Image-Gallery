@@ -6981,6 +6981,17 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   -- function, keeps the check-then-claim sequence atomic with respect to
   -- other coroutines the same way it was when content was always resolved
   -- up front by the caller.
+  --
+  -- mkdir -p the top-level _hls_cache dir BEFORE this write, not just
+  -- `dir` further below: pending_marker lives at _hls_cache/<variant>.pending
+  -- (a sibling of `dir`, not inside it), so it only ever worked before
+  -- because _hls_cache/ already existed from some earlier variant's own
+  -- mkdir -p. Confirmed live: with a fully empty uploads dir (no _hls_cache
+  -- at all yet), io.open here threw "No such file or directory" and the
+  -- concurrency slot claimed above leaked (never reached its cleanup),
+  -- which is exactly what "server is busy" for every subsequent request
+  -- traced back to.
+  os.execute("mkdir -p " .. shell_quote(M.settings.uploads_dir .. "/_hls_cache"))
   local marker = assert(io.open(pending_marker, "wb"))
   marker:write(tostring(os.time()))
   marker:close()

@@ -376,6 +376,13 @@ local function handle_connection(sock)
     send_response(sock, status, STATUS_TEXT[status] or "OK", resp_headers, body_out)
   end)
   if not ok then
+    -- Previously silent: `err` was caught but never logged anywhere, so
+    -- every 500 was completely invisible in `journalctl` -- the only way
+    -- to diagnose one was reproducing it with ad-hoc print() patches added
+    -- and removed by hand. print() here goes to the unit's stdout, same as
+    -- every other log line this service already emits.
+    print("[nyxframe] unhandled error: " .. tostring(err))
+    io.stdout:flush()
     pcall(send_response, sock, 500, "Internal Server Error", { ["Content-Type"] = "application/json" }, cjson.encode({ detail = "Internal server error" }))
   end
   pcall(function() sock:close() end)
