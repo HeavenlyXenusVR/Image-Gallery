@@ -289,17 +289,50 @@ else
   print("[nyxframe] WARNING: Postgres not reachable at startup: " .. tostring(err))
 end
 
+-- Telegram polling and the weekly digest are process-wide singletons (one
+-- Telegram bot token can only have one active getUpdates long-poller --
+-- Telegram itself errors the second one with "terminated by other
+-- getUpdates request" -- and the digest would otherwise send one duplicate
+-- Discord message per worker). Now that this backend can run as multiple
+-- worker processes behind proxy.lua (see that file's header comment), only
+-- the worker whose GALLERY_HTTP_PORT matches GALLERY_PRIMARY_WORKER_PORT
+-- (or the single-worker deployment, where this is simply unset) starts
+-- either one. Sub-worker instances still serve HTTP requests normally --
+-- this only skips the two background singleton jobs.
+local primary_port = tonumber(os.getenv("GALLERY_PRIMARY_WORKER_PORT"))
+local is_primary_worker = not primary_port or primary_port == settings.port
+
 -- Telegram control-panel bridge (see lua/src/telegram.lua) -- runs as a
 -- copas background coroutine within this same event loop, started before
 -- httpd.run() so it's polling by the time the first HTTP request arrives.
 -- No-op if no bot token is configured.
 local telegram = require("telegram")
-telegram.start(settings)
+if is_primary_worker then telegram.start(settings) end
 
 -- Weekly per-creator Discord stats digest (see lua/src/digest.lua) -- same
 -- copas-background-coroutine pattern as telegram above.
 local digest = require("digest")
-digest.start(settings)
+if is_primary_worker then digest.start(settings) end
+
+-- Background media warmer (see routes.lua's "Background media warmer"
+-- section) -- proactively pre-transcodes every video's quality renditions
+-- so a viewer's first request for a given quality is already cached. Same
+-- primary-worker gate as telegram/digest above: every worker shares the
+-- same on-disk cache, so running this in both would just have them race
+-- each other for no benefit, not corrupt anything.
+-- BUGFIX 2026-08-26: this had no off switch at all -- confirmed live on the
+-- shared host this runs on: the warmer's ffmpeg jobs (nice 19/ionice as they
+-- are) sustained 6-7 of the host's 8 cores for hours, pushed load average to
+-- 37-54 and the system deep into swap, and starved an unrelated Discord
+-- voice-bot swarm on the same box of the CPU/scheduling headroom real-time
+-- audio needs -- manifesting as chronic voice disconnects with zero actual
+-- network fault. On-demand transcoding (a viewer actually requesting a
+-- quality) is untouched by this flag -- ensure_video_quality_cache/
+-- ensure_hls_variant still run from the live request path either way; this
+-- only gates the proactive whole-library sweep.
+local warmer_enabled = (os.getenv("GALLERY_ENABLE_MEDIA_WARMER") or "true"):lower()
+warmer_enabled = warmer_enabled == "true" or warmer_enabled == "1" or warmer_enabled == "yes"
+if is_primary_worker and warmer_enabled then routes.start_media_warmer() end
 
 httpd.listen(settings.host, settings.port)
 print(string.format("[nyxframe] listening on %s:%d", settings.host, settings.port))

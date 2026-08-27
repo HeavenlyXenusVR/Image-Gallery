@@ -61,6 +61,20 @@ local unpack = table.unpack or unpack
 -- alongside the rest of the 2FA enroll/confirm/disable code it belongs with.
 local verify_totp_or_recovery
 
+-- Same forward-declaration need as verify_totp_or_recovery above: register/
+-- login/verify_2fa/me/update_profile/update_settings/update_avatar/
+-- verify_age/discord_link/discord_unlink all need to run avatar_url (and
+-- site_owner) shaping on the user object they hand back to the client, but
+-- with_user_urls' real definition (and request_origin, which it calls) live
+-- much further down, near the other user-row-shaping helpers they were
+-- ported alongside. Without this, none of those self-account endpoints ever
+-- set avatar_url on the returned user -- which is why a freshly uploaded
+-- avatar (or any avatar at all) never rendered in the navbar or Settings:
+-- Avatar (ui.jsx) reads user.avatar_url, and every one of those endpoints
+-- was returning the row with avatar_path but no avatar_url computed from it.
+local request_origin
+local with_user_urls
+
 local M = {}
 M.settings = nil -- set by main.lua
 
@@ -372,7 +386,7 @@ function M.register(req)
   local user = get_user(row.id)
   local token = gauth.issue_token(M.settings.session_secret, user, M.settings.api_token_ttl_seconds)
   return 200, {
-    user = user,
+    user = with_user_urls(req, user),
     token = token,
     email_verification_sent = false,
     email_error = nil,
@@ -422,7 +436,7 @@ function M.login(req)
     return 200, { needs_2fa = true, pending_token = pending }
   end
   local token = gauth.issue_token(M.settings.session_secret, user, M.settings.api_token_ttl_seconds)
-  return 200, { user = user, token = token }, { ["Set-Cookie"] = gauth.session_cookie(token, M.settings.api_token_ttl_seconds) }
+  return 200, { user = with_user_urls(req, user), token = token }, { ["Set-Cookie"] = gauth.session_cookie(token, M.settings.api_token_ttl_seconds) }
 end
 
 function M.verify_2fa(req)
@@ -439,7 +453,7 @@ function M.verify_2fa(req)
   local user = get_user(user_id)
   if not user then return 404, { detail = "Account not found." } end
   local token = gauth.issue_token(M.settings.session_secret, user, M.settings.api_token_ttl_seconds)
-  return 200, { user = user, token = token }, { ["Set-Cookie"] = gauth.session_cookie(token, M.settings.api_token_ttl_seconds) }
+  return 200, { user = with_user_urls(req, user), token = token }, { ["Set-Cookie"] = gauth.session_cookie(token, M.settings.api_token_ttl_seconds) }
 end
 
 function M.logout(req)
@@ -450,7 +464,7 @@ function M.me(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
   user.site_owner = is_site_owner(user)
-  return 200, { user = with_derived_accent(user) }
+  return 200, { user = with_user_urls(req, with_derived_accent(user)) }
 end
 
 -- Port of app/routers/account.py's PATCH /api/me/profile. Previously
@@ -475,7 +489,7 @@ function M.update_profile(req)
   )
   local refreshed = get_user(user.id)
   refreshed.site_owner = is_site_owner(refreshed)
-  return 200, { user = with_derived_accent(refreshed) }
+  return 200, { user = with_user_urls(req, with_derived_accent(refreshed)) }
 end
 
 -- Port of app/routers/account.py's PATCH /api/me/settings + app/db/
@@ -497,7 +511,7 @@ function M.update_settings(req)
   db.execute("UPDATE users SET user_settings=%s WHERE id=%s", cjson.encode(result), user.id)
   local refreshed = get_user(user.id)
   refreshed.site_owner = is_site_owner(refreshed)
-  return 200, { user = with_derived_accent(refreshed) }
+  return 200, { user = with_user_urls(req, with_derived_accent(refreshed)) }
 end
 
 -- Server-owned appearance presets (see gallery_looks.lua), mirroring
@@ -735,7 +749,7 @@ end
 -- different origin (GitHub Pages / a tunnel domain) than the API, so
 -- relative URLs in JSON responses would resolve against the WRONG origin in
 -- the browser -- these must be absolute.
-local function request_origin(req)
+function request_origin(req)
   local proto = (req.headers["x-forwarded-proto"] or "http"):match("^[^,%s]+") or "http"
   local host = (req.headers["x-forwarded-host"] or req.headers["host"] or "localhost"):match("^[^,%s]+") or "localhost"
   return proto .. "://" .. host
@@ -2267,7 +2281,7 @@ function M.update_avatar(req)
 
   local refreshed = get_user(user.id)
   refreshed.site_owner = is_site_owner(refreshed)
-  return 200, { user = with_derived_accent(refreshed) }
+  return 200, { user = with_user_urls(req, with_derived_accent(refreshed)) }
 end
 
 function M.verify_age(req)
@@ -2299,7 +2313,7 @@ function M.verify_age(req)
   )
   local refreshed = get_user(user.id)
   refreshed.site_owner = is_site_owner(refreshed)
-  return 200, { user = with_derived_accent(refreshed) }
+  return 200, { user = with_user_urls(req, with_derived_accent(refreshed)) }
 end
 
 function M.change_password(req)
@@ -2507,7 +2521,7 @@ function M.discord_verify_confirm(req)
 
   local refreshed = get_user(user.id)
   refreshed.site_owner = is_site_owner(refreshed)
-  return 200, { user = with_derived_accent(refreshed) }
+  return 200, { user = with_user_urls(req, with_derived_accent(refreshed)) }
 end
 
 function M.discord_unlink(req)
@@ -2520,7 +2534,7 @@ function M.discord_unlink(req)
   db.execute("DELETE FROM discord_verifications WHERE user_id=%s", user.id)
   local refreshed = get_user(user.id)
   refreshed.site_owner = is_site_owner(refreshed)
-  return 200, { user = with_derived_accent(refreshed) }
+  return 200, { user = with_user_urls(req, with_derived_accent(refreshed)) }
 end
 
 -- Mirrors _normalize_upload_tag()/_parse_tags().
@@ -4042,7 +4056,7 @@ end
 
 -- Mirrors app/routers/_shared.py's _with_user_urls(): fills in avatar_url +
 -- site_owner for a user-shaped row that has an avatar_path/avatar_file_id.
-local function with_user_urls(req, user)
+function with_user_urls(req, user)
   if not user then return nil end
   if user.avatar_path and user.avatar_path ~= cjson.null then
     local origin = request_origin(req)
@@ -5730,7 +5744,7 @@ local function referenced_media_ids()
   return set
 end
 
-local ORPHAN_CACHE_DIR_NAMES = { "_thumb_cache", "_video_cache", "_watermark_cache" }
+local ORPHAN_CACHE_DIR_NAMES = { "_thumb_cache", "_video_cache", "_watermark_cache", "_original_cache" }
 local ORPHAN_MIN_AGE_SECONDS = 24 * 3600
 
 -- Lua's %q escapes for a *Lua* string literal, not a shell argument -- use
@@ -6338,29 +6352,149 @@ local function private_file_allowed(media_id, access, owner)
   return access ~= nil and access ~= "" and access == gauth.media_access_token(M.settings.session_secret, media_id)
 end
 
+-- Disk cache for resolve_media_bytes' DB-blob branch, same convention as
+-- _thumb_cache/_video_cache/_watermark_cache/_hls_cache. Every other byte-
+-- serving path in this file caches its OWN derived output (a resize, a
+-- transcode, a watermark) but nothing ever cached the raw resolved
+-- original -- so every single call to resolve_media_bytes() re-ran
+-- media_files.get_media_file()'s full `SELECT ... content bytea` (plus, for
+-- any chunked upload, a second query and a table.concat over every chunk)
+-- straight from Postgres. That's the ONE thing on the request path that
+-- genuinely can't be avoided for a cache MISS, but respond_with_range's
+-- caller (serve_media_bytes_response) re-hits it on every request -- and a
+-- <video> element issues many Range requests per playback (an initial probe
+-- plus one per seek/buffer refill), each previously re-running this same
+-- multi-hundred-MB blob fetch from scratch. Confirmed live: this is what
+-- made a single video "take a while" to start (the first byte doesn't ship
+-- until the whole blob round-trips from Postgres into a Lua string) and
+-- made an unrelated concurrent request stall too, for the same reason
+-- flagged in ensure_video_quality_cache's header comment -- the fetch runs
+-- inline on copas' single-threaded loop, so a large blob read blocks
+-- everyone else's request handling for its own duration, and a page
+-- refresh (the <video> tag re-requesting the same file) reliably
+-- re-triggered it. Keying the cache filename by media_id + updated_at (no
+-- extra content_sha256 query -- the whole point is avoiding an extra DB
+-- round trip on the hot path) means an edit that changes updated_at simply
+-- misses once and re-populates, same self-correcting behavior already
+-- documented for the video-quality/HLS caches below.
+local function original_bytes_cache_path(media_id, item)
+  local digest_seed = tostring(item.updated_at or item.created_at or media_id)
+  local key = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(digest_seed)):sub(1, 16)
+  local shard = string.format("%02x", db.toint(media_id, 0) % 256)
+  return M.settings.uploads_dir .. "/_original_cache/" .. shard .. "/" .. tostring(media_id) .. "_" .. key .. ".bin"
+end
+
+-- Grouped into one table (rather than three top-level locals) purely to
+-- stay under this file's 200-local-variable ceiling -- routes.lua is
+-- already near it (Lua's own hard per-chunk limit), so a bare `local
+-- function` per helper here was enough to push it over. `range_io.*` reads
+-- exactly like three plain functions at every call site below.
+local range_io = {}
+
+-- Cheap size lookup (seek-to-end, no read) so the Range math below never
+-- has to load a file's bytes just to learn how big it is.
+function range_io.file_size(path)
+  local f = io.open(path, "rb")
+  if not f then return nil end
+  local size = f:seek("end")
+  f:close()
+  return size
+end
+
+-- Reads only [start_byte, end_byte] (inclusive, 0-based) from a file on
+-- disk via seek + a bounded read -- never materializes the rest of the
+-- file. Companion to range_io.parse below: together these let a Range
+-- request against an already-cached original touch only the bytes it
+-- actually asked for, instead of resolve_media_bytes' cf:read("*a")
+-- whole-file read.
+function range_io.read_file_range(path, start_byte, end_byte)
+  local f = io.open(path, "rb")
+  if not f then return nil end
+  if start_byte > 0 then f:seek("set", start_byte) end
+  local data = f:read(end_byte - start_byte + 1)
+  f:close()
+  return data
+end
+
+-- Same Range-header parsing as respond_with_range below, but against a
+-- known total size rather than an in-memory content string -- lets a
+-- caller compute which bytes it actually needs to read BEFORE reading
+-- anything. Returns (status, start_byte, end_byte, headers); status is 200
+-- (no/ignored Range -- caller should serve the whole file), 206 (a real
+-- satisfiable range), or 416 (unsatisfiable -- caller sends an empty body).
+function range_io.parse(req, total, mime_type, extra_headers)
+  local headers = { ["Content-Type"] = mime_type or "application/octet-stream", ["Accept-Ranges"] = "bytes" }
+  for k, v in pairs(extra_headers or {}) do headers[k] = v end
+
+  local range = req.headers and req.headers["range"]
+  if not range then return 200, 0, total - 1, headers end
+
+  local start_s, end_s = tostring(range):match("^bytes=(%d*)-(%d*)$")
+  if not start_s or (start_s == "" and end_s == "") then
+    return 200, 0, total - 1, headers
+  end
+  local start_byte, end_byte
+  if start_s == "" then
+    local suffix_len = tonumber(end_s) or 0
+    start_byte = math.max(0, total - suffix_len)
+    end_byte = total - 1
+  else
+    start_byte = tonumber(start_s) or 0
+    end_byte = (end_s ~= "" and tonumber(end_s)) or (total - 1)
+  end
+  end_byte = math.min(end_byte, total - 1)
+  if start_byte > end_byte or start_byte >= total then
+    headers["Content-Range"] = "bytes */" .. total
+    return 416, 0, -1, headers
+  end
+
+  headers["Content-Range"] = string.format("bytes %d-%d/%d", start_byte, end_byte, total)
+  return 206, start_byte, end_byte, headers
+end
+
 -- Resolves what to actually serve for a media item: DB blob (preferred) or
 -- legacy on-disk file. Returns (content_bytes, mime_type) or (nil, nil) if
 -- genuinely missing -- callers must 404 cleanly on the latter, not crash
 -- (this is the common case for the current, April-29-restored dataset: see
 -- media_files.lua's docstring -- media_files is empty for all 540 rows).
 local function resolve_media_bytes(item)
+  local cache_path = item.id and original_bytes_cache_path(item.id, item)
+  if cache_path then
+    local cf = io.open(cache_path, "rb")
+    if cf then
+      local bytes = cf:read("*a")
+      cf:close()
+      if bytes and #bytes > 0 then return bytes, item.mime_type, item.original_filename end
+    end
+  end
+
+  local content, mime_type, original_filename
   local file_info = media_files.get_media_file_info(item.id)
   if file_info then
     local full = media_files.get_media_file(item.id)
     if full and full.content and #full.content > 0 then
-      return full.content, full.mime_type or item.mime_type, full.original_filename or item.original_filename
+      content, mime_type, original_filename = full.content, full.mime_type or item.mime_type, full.original_filename or item.original_filename
     end
   end
-  local legacy = media_files.legacy_upload_path(M.settings.uploads_dir, item.storage_path)
-  if legacy then
-    local f = io.open(legacy, "rb")
-    if f then
-      local content = f:read("*a")
-      f:close()
-      return content, item.mime_type, item.original_filename
+  if not content then
+    local legacy = media_files.legacy_upload_path(M.settings.uploads_dir, item.storage_path)
+    if legacy then
+      local f = io.open(legacy, "rb")
+      if f then
+        content = f:read("*a")
+        f:close()
+        mime_type, original_filename = item.mime_type, item.original_filename
+      end
     end
   end
-  return nil, nil, nil
+
+  if content and cache_path then
+    os.execute("mkdir -p " .. shell_quote(cache_path:match("^(.*)/[^/]+$")))
+    local out = io.open(cache_path, "wb")
+    if out then out:write(content); out:close() end
+  end
+
+  return content, mime_type, original_filename
 end
 
 -- Shared by the file/preview/thumb image routes below. Previously only
@@ -6527,6 +6661,112 @@ end
 
 local VIDEO_TRANSCODE_PENDING_STALE_SECONDS = 5 * 60
 
+-- Global cap on concurrently-running detached ffmpeg transcodes, shared by
+-- both ensure_video_quality_cache below and ensure_hls_variant further
+-- down. Confirmed live (2026-08-23): with no cap, a burst of cold-cache
+-- requests -- several distinct videos with no ready transcode yet, e.g.
+-- right after a backend restart orphans whatever was mid-encode -- each
+-- launched their own full libx264 job simultaneously. nice -n 19/ionice
+-- only lower scheduling PRIORITY, not a hard core reservation, so 2-3
+-- concurrent encodes on an 8-core box still starved the request-serving
+-- worker processes badly enough that even trivial endpoints (GET /api/me)
+-- timed out for real users. Filesystem-based (one file per running job
+-- under _transcode_slots/), same convention as the .pending markers below
+-- -- correct across a restart AND across this backend's multiple worker
+-- processes (an in-memory counter would only ever see its own process'
+-- jobs, not the other worker's).
+--
+-- Degrades gracefully rather than queuing: a request that can't get a slot
+-- just doesn't launch a job this time, exactly like the existing
+-- "transcode isn't ready yet" cache-miss path already does (serve the
+-- original / 404 "not available yet", per caller) -- no new coordination
+-- machinery, consistent with this file's existing tolerance for "rare,
+-- self-correcting" over building a real queue for this deployment's
+-- traffic level.
+local MAX_CONCURRENT_TRANSCODES = 2
+
+local function transcode_slots_dir()
+  local dir = M.settings.uploads_dir .. "/_transcode_slots"
+  os.execute("mkdir -p " .. shell_quote(dir))
+  return dir
+end
+
+-- Shared by acquire_transcode_slot (below) and the background warmer's own
+-- pre-flight check: counts slot files younger than the staleness bound,
+-- i.e. jobs genuinely still running right now.
+local function count_active_transcode_slots()
+  local dir = transcode_slots_dir()
+  local now = os.time()
+  local active = 0
+  local handle = io.popen(string.format("find %s -maxdepth 1 -type f -printf '%%T@ %%p\\n' 2>/dev/null", shell_quote(dir)))
+  if handle then
+    for line in handle:lines() do
+      local mtime = tonumber(line:match("^(%S+)"))
+      if mtime and (now - mtime) < VIDEO_TRANSCODE_PENDING_STALE_SECONDS then
+        active = active + 1
+      end
+    end
+    handle:close()
+  end
+  return active
+end
+
+-- Cheap peek, no claim: lets a caller decide whether it's even worth doing
+-- the expensive work leading up to a transcode attempt (e.g. the warmer
+-- below resolving a video's full bytes into memory) before finding out the
+-- cap is full. Racy against a concurrent claim by design -- same "rare,
+-- self-correcting" tolerance as everything else in this section, not worth
+-- real locking for this deployment's traffic level.
+local function transcode_slot_available()
+  return count_active_transcode_slots() < MAX_CONCURRENT_TRANSCODES
+end
+
+-- Returns a slot path for the caller to `rm -f` as part of its own job
+-- cleanup command (so the slot releases itself the instant the job ends,
+-- success or failure), or nil if every slot is currently held by a
+-- still-fresh job. Stale slot files (owner process died without cleaning
+-- up -- e.g. killed by a `systemctl restart` landing mid-transcode, same
+-- failure mode the .pending markers already guard against) don't count
+-- against the cap.
+--
+-- BUGFIX 2026-08-26: the old version checked count_active_transcode_slots()
+-- and THEN wrote a uniquely-named file -- a check-then-act race, not an
+-- atomic claim. Confirmed live: a burst of near-simultaneous callers (e.g.
+-- several live requests landing on different worker processes at the same
+-- moment the warmer also fires -- exactly the "right after a backend
+-- restart" scenario this section's header comment already called out as a
+-- known trigger, and this backend really was crash-looping at the time) can
+-- all read the same "count < cap" snapshot before any of them has written
+-- their own file, so every one of them passes the check and launches a
+-- job. Observed live: 5-6 real concurrent ffmpeg encodes against a cap of
+-- 2, saturating most of the host's CPU.
+--
+-- Fixed by claiming one of exactly MAX_CONCURRENT_TRANSCODES fixed slot
+-- names (slot_1..slot_N) via the shell's `noclobber` option instead of a
+-- random per-job filename: `set -C; > path` is an atomic OS-level
+-- O_CREAT|O_EXCL, so exactly one caller can ever win a given slot name --
+-- no window between checking and claiming. A stale slot (owner died
+-- without cleaning up) is removed before the claim attempt so it doesn't
+-- permanently wedge that slot index.
+local function acquire_transcode_slot()
+  local dir = transcode_slots_dir()
+  local now = os.time()
+  for i = 1, MAX_CONCURRENT_TRANSCODES do
+    local slot_path = dir .. "/slot_" .. i
+    local handle = io.popen(string.format("find %s -maxdepth 0 -type f -printf '%%T@' 2>/dev/null", shell_quote(slot_path)))
+    local mtime = handle and tonumber(handle:read("*a"))
+    if handle then handle:close() end
+    if mtime and (now - mtime) >= VIDEO_TRANSCODE_PENDING_STALE_SECONDS then
+      os.execute("rm -f " .. shell_quote(slot_path))
+    end
+    local claimed = os.execute(string.format("set -C; : > %s 2>/dev/null", shell_quote(slot_path)))
+    if claimed == 0 or claimed == true then
+      return slot_path
+    end
+  end
+  return nil
+end
+
 -- Returns (transcoded_bytes, "video/mp4") on success, or (nil) to signal
 -- "serve the original instead" (quality is "original", no ffmpeg profile
 -- for that quality name, the file is too large to transcode, or a
@@ -6578,7 +6818,11 @@ local function ensure_video_quality_cache(media_id, item, content, quality)
   end
   local already_pending = pending_age and (os.time() - pending_age) < VIDEO_TRANSCODE_PENDING_STALE_SECONDS
 
-  if not already_pending then
+  -- acquire_transcode_slot() first, before touching disk at all: no point
+  -- writing the .src.bin/.pending files for a job that's just going to
+  -- decline to launch anyway because every slot is taken.
+  local slot_path = not already_pending and acquire_transcode_slot() or nil
+  if slot_path then
     os.execute("mkdir -p " .. shell_quote(M.settings.uploads_dir .. "/_video_cache"))
     local src = cache_file .. ".src." .. tostring(math.random(100000, 999999)) .. ".bin"
     local f = assert(io.open(src, "wb"))
@@ -6593,7 +6837,7 @@ local function ensure_video_quality_cache(media_id, item, content, quality)
     local scale_filter = video_scale_filter(src, profile.max_width)
     local wm_filter, wm_text_file = media_files.video_watermark_filter(watermark_text)
     if wm_filter then scale_filter = scale_filter .. "," .. wm_filter end
-    local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker) .. " " .. shell_quote(tmp_dst)
+    local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker) .. " " .. shell_quote(tmp_dst) .. " " .. shell_quote(slot_path)
     if wm_text_file then cleanup = cleanup .. " " .. shell_quote(wm_text_file) end
     -- nice/ionice: this whole codepath was already "run detached so it
     -- doesn't block the event loop", but a CPU-bound ffmpeg encode at
@@ -6715,6 +6959,14 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   -- live work just because the playlist hasn't gotten its ENDLIST yet).
   if hls_variant_ready(dir) or still_encoding then return dir end
 
+  -- Global concurrency cap (see acquire_transcode_slot's header comment)
+  -- checked BEFORE claiming the .pending marker below: a capacity-blocked
+  -- request that still wrote the marker would block every other viewer's
+  -- retry for this same variant for the next 5 minutes even though no job
+  -- is actually running.
+  local capacity_slot_path = acquire_transcode_slot()
+  if not capacity_slot_path then return nil, "busy" end
+
   -- Claim this slot BEFORE calling content_fn(), not after: content_fn()
   -- reads through resolve_media_bytes, which can hit the DB (potentially a
   -- large blob fetch) and therefore genuinely yields to copas's scheduler
@@ -6736,6 +6988,7 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   local content = content_fn()
   if not content then
     os.remove(pending_marker)
+    os.remove(capacity_slot_path)
     return nil, "missing"
   end
 
@@ -6774,7 +7027,7 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
     )
   end
 
-  local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker)
+  local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker) .. " " .. shell_quote(capacity_slot_path)
   if wm_text_file then cleanup = cleanup .. " " .. shell_quote(wm_text_file) end
 
   -- hls_flags temp_file: each playlist rewrite happens via write-then-
@@ -6795,6 +7048,138 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   )
   os.execute(cmd)
   return dir
+end
+
+-- ---------------------------------------------------------------------------
+-- Background media warmer: proactively pre-transcodes every video's mp4
+-- quality-variant renditions (144p/480p/720p/1080p, via
+-- ensure_video_quality_cache above) plus the HLS "original" remux (the one
+-- rendition every HLS playback needs first regardless of which adaptive
+-- quality a player eventually settles on -- see M.serve_hls_master's own
+-- ordering), so a viewer's FIRST request for a given quality is already a
+-- cache hit instead of falling back to the full original while a
+-- just-launched background job catches up. That fallback is still correct
+-- and still happens for anything the warmer hasn't reached yet or that a
+-- capacity-full moment skipped -- this only shrinks how often it's needed.
+--
+-- Deliberately does NOT also warm the other HLS-specific quality
+-- directories (144p/480p/720p/1080p under _hls_cache/): that would re-run
+-- the exact same encode a second time in a different container purely for
+-- adaptive-HLS playback, doubling total transcode CPU-time for a rendition
+-- the mp4 quality-cache path above already covers for the traffic pattern
+-- actually observed in production (plain `/file?quality=` requests, not
+-- per-rendition HLS playlist fetches). Revisit if HLS adaptive playback
+-- becomes the dominant client path.
+--
+-- Runs as a slow, perpetual copas background coroutine, gated to the
+-- primary worker only (see main.lua's is_primary_worker) -- every worker
+-- shares the same on-disk cache, so a second worker warming in parallel
+-- would just race the first one for the same slot files and cache paths
+-- with zero benefit. Never claims a transcode slot itself: it only ever
+-- asks ensure_video_quality_cache/ensure_hls_variant to do so, exactly like
+-- a live request would, and backs off when none are free -- so foreground
+-- traffic and the warmer draw from the exact same MAX_CONCURRENT_TRANSCODES
+-- budget, never a separate one.
+-- ---------------------------------------------------------------------------
+
+local WARM_QUALITIES = { "480p", "720p", "1080p", "144p" }
+local WARM_BATCH_SIZE = 25
+local WARM_IDLE_PAUSE_SECONDS = 20    -- whole library scanned, nothing needs warming right now
+local WARM_LAUNCH_PAUSE_SECONDS = 3   -- after actually launching one transcode
+local WARM_BUSY_PAUSE_SECONDS = 15    -- found a cache miss but every slot is taken
+local WARM_SCAN_PAUSE_SECONDS = 0.2   -- between cheap existence-checks (no launch happened)
+
+-- One warming attempt over a small batch of media_items, ordered by id so
+-- repeated calls sweep the whole library deterministically. Returns
+-- ("wrap", cursor_id) when the batch is empty (reached the end -- caller
+-- should restart from 0, which also naturally picks up new uploads),
+-- ("launched", last_id) after starting exactly one real transcode job,
+-- ("busy", last_id) if a cache miss was found but no slot was free, or
+-- ("batch_done", last_id) if this whole batch was already fully warm.
+-- Launching (or finding "busy") at most once per call, rather than
+-- draining the whole batch in one pass, is what keeps this a gentle
+-- trickle instead of a burst -- the driver loop below paces calls with its
+-- own sleep between them.
+local function warm_one_pass(cursor_id)
+  local rows = db.fetchall([[
+    SELECT id, user_id, storage_path, mime_type, original_filename, file_size,
+           media_kind, updated_at, created_at, content_sha256
+    FROM media_items
+    WHERE media_kind='video' AND deleted_at IS NULL AND id > %s
+    ORDER BY id ASC
+    LIMIT %s
+  ]], tostring(cursor_id), tostring(WARM_BATCH_SIZE))
+
+  if #rows == 0 then return "wrap", cursor_id end
+
+  local last_id = cursor_id
+  for _, item in ipairs(rows) do
+    last_id = db.toint(item.id, item.id)
+    item.id = last_id
+    item.file_size = db.toint(item.file_size, 0)
+
+    -- Same size cap ensure_video_quality_cache itself enforces -- skip
+    -- entirely rather than repeatedly rediscovering "too large" every pass.
+    if item.file_size > 0 and item.file_size <= VIDEO_TRANSCODE_SIZE_LIMIT then
+      local owner = get_user(item.user_id)
+      local watermark_text = owner and owner.user_settings and nn(owner.user_settings.watermark_text)
+      local digest_seed = (nn(item.content_sha256) or item.updated_at or item.created_at or tostring(item.id))
+        .. "|wm=" .. tostring(watermark_text or "")
+
+      for _, quality in ipairs(WARM_QUALITIES) do
+        local cache_file = video_quality_cache_path(item.id, quality, digest_seed)
+        local cf = io.open(cache_file, "rb")
+        if cf then
+          cf:close()
+        else
+          if not transcode_slot_available() then return "busy", last_id end
+          local content = resolve_media_bytes(item)
+          if content then ensure_video_quality_cache(item.id, item, content, quality) end
+          return "launched", last_id
+        end
+      end
+
+      local hls_dir = hls_variant_dir(item.id, "original", digest_seed)
+      if not hls_variant_ready(hls_dir) then
+        if not transcode_slot_available() then return "busy", last_id end
+        ensure_hls_variant(item.id, item, function() return resolve_media_bytes(item) end, "original")
+        return "launched", last_id
+      end
+    end
+  end
+
+  return "batch_done", last_id
+end
+
+-- Starts the warmer. Call once from main.lua, already gated to the primary
+-- worker there. A pcall around each pass means one bad row or a transient
+-- filesystem error logs and backs off instead of ever killing the
+-- coroutine (and, since this runs inside the same process as request
+-- serving, instead of ever taking the whole worker down with it).
+function M.start_media_warmer()
+  local copas = require("copas")
+  copas.addthread(function()
+    local cursor = 0
+    while true do
+      local ok, status, next_cursor = pcall(warm_one_pass, cursor)
+      if not ok then
+        print("[nyxframe] media warmer error: " .. tostring(status))
+        copas.sleep(WARM_IDLE_PAUSE_SECONDS)
+      elseif status == "wrap" then
+        cursor = 0
+        copas.sleep(WARM_IDLE_PAUSE_SECONDS)
+      elseif status == "busy" then
+        cursor = next_cursor or cursor
+        copas.sleep(WARM_BUSY_PAUSE_SECONDS)
+      elseif status == "launched" then
+        cursor = next_cursor or cursor
+        copas.sleep(WARM_LAUNCH_PAUSE_SECONDS)
+      else -- "batch_done": nothing to launch in this batch, keep sweeping forward briskly
+        cursor = next_cursor or cursor
+        copas.sleep(WARM_SCAN_PAUSE_SECONDS)
+      end
+    end
+  end)
 end
 
 -- Builds the query string to propagate onto sub-resource URLs (master
@@ -6884,6 +7269,13 @@ function M.serve_hls_playlist(req)
   local dir, err = ensure_hls_variant(media_id, item, function() return resolve_media_bytes(item) end, quality)
   if not dir then
     if err == "missing" then return 404, { detail = "File is missing." } end
+    -- "busy" (see acquire_transcode_slot) means the transcode queue is
+    -- full, not that this quality doesn't exist -- 503 + Retry-After so a
+    -- player/client can distinguish "try again shortly" from "give up and
+    -- fall back to another quality permanently".
+    if err == "busy" then
+      return 503, { detail = "Server is busy transcoding other videos right now. Try again in a few seconds." }, { ["Retry-After"] = "5" }
+    end
     return 404, { detail = "This quality is not available for this video." }
   end
 
@@ -7011,6 +7403,40 @@ local function serve_media_bytes_response(req, media_id, as_download, quality)
   end
   if item.is_adult and not adult_file_allowed(req, media_id, req.query.access, viewer_id) then
     return 403, { detail = "Age verification required for this 18+ post." }
+  end
+
+  -- Fast path: seek-and-read just the requested byte range straight from
+  -- the on-disk original-bytes cache, instead of resolve_media_bytes()
+  -- reading the whole (up to several-hundred-MB) file into memory first.
+  -- A <video> element issues many Range requests per playback (an initial
+  -- probe plus one per seek/buffer refill); this server runs on copas'
+  -- single-threaded event loop, so a full-file read for EACH of those
+  -- blocked every other in-flight request on the server for the duration
+  -- of that read too, not just the one video's own load time. Scoped to
+  -- videos at "original" quality: images are small enough not to matter
+  -- (and may still need watermarking below), and the quality-transcode
+  -- path already reads from its own, typically much smaller, transcoded
+  -- cache file. Only fires on a warm cache -- a MISS still has to fetch
+  -- the whole thing once via the existing path below (same cost as
+  -- before), but every request after that hits this fast path instead.
+  if not as_download and item.media_kind == "video" and normalize_video_quality(quality) == "original" then
+    local fast_cache_path = item.id and original_bytes_cache_path(item.id, item)
+    local total = fast_cache_path and range_io.file_size(fast_cache_path)
+    if total then
+      local status, start_byte, end_byte, headers = range_io.parse(
+        req, total, item.mime_type, { ["Cache-Control"] = "public, max-age=86400" }
+      )
+      if status == 416 then
+        return 416, "", headers
+      end
+      local slice = range_io.read_file_range(fast_cache_path, start_byte, end_byte)
+      if slice then
+        return status, slice, headers
+      end
+      -- Cache file vanished between the size check and the read (e.g. an
+      -- eviction mid-request) -- fall through to the normal path below
+      -- rather than 500ing.
+    end
   end
 
   local content, mime_type, original_filename = resolve_media_bytes(item)
