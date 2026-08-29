@@ -81,22 +81,44 @@ final class VideoPlayerController: ObservableObject {
             for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
 
             var attempt = 0
+            var resolvedURL: URL?
             while !Task.isCancelled {
                 do {
                     let (_, response) = try await URLSession.shared.data(for: request)
-                    let status = (response as? HTTPURLResponse)?.statusCode ?? 200
+                    let http = response as? HTTPURLResponse
+                    let status = http?.statusCode ?? 200
                     if status == 503 && attempt < 6 {
                         attempt += 1
                         try await Task.sleep(nanoseconds: UInt64(500_000_000 * attempt))
                         continue
                     }
+                    // A busy non-"original" quality gets a 302 to the
+                    // original rendition server-side (routes.lua's
+                    // serve_hls_playlist) -- URLSession follows it
+                    // transparently here, but AVFoundation's own header
+                    // propagation across an HTTP redirect is unreliable
+                    // (the same limitation routes.lua's playlist rewriting
+                    // already works around for segment requests -- see its
+                    // "relying on AVURLAssetHTTPHeaderFieldsKey propagating"
+                    // comment). Hand AVPlayer the already-resolved URL
+                    // directly instead of the pre-redirect one, so it never
+                    // has to replay that redirect (and its auth header)
+                    // itself -- matters for private/adult-gated videos,
+                    // where the redirect target needs the same Bearer token
+                    // the original request carried.
+                    resolvedURL = http?.url
                     break
                 } catch {
                     break // Let AVPlayer's own load surface the real error for anything else.
                 }
             }
             guard !Task.isCancelled else { return }
-            await MainActor.run { self.attachPlayer(headers: headers, autoplay: autoplay) }
+            await MainActor.run {
+                if let resolvedURL, resolvedURL != self.url {
+                    self.url = resolvedURL
+                }
+                self.attachPlayer(headers: headers, autoplay: autoplay)
+            }
         }
     }
 
