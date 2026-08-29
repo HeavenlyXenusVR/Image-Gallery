@@ -2990,17 +2990,70 @@ end
 -- lazily on each init call rather than on a timer.
 -- ---------------------------------------------------------------------------
 
-local UPLOAD_CHUNK_SESSION_TTL_SECONDS = 2 * 3600
-local upload_chunk_sessions = {}
+-- Lua's %q escapes for a *Lua* string literal, not a shell argument -- use
+-- real single-quote shell escaping instead (same convention as
+-- media_files.lua's own shell_quote(), duplicated here since that one is
+-- local to that module). Defined this early so upload_chunk_storage.prune()
+-- below and the HLS/orphan-cleanup helpers further down the file can both
+-- see it as an upvalue -- Lua locals are only visible from their
+-- declaration point onward, so a single shared definition has to sit above
+-- every caller in source order, not just above whichever caller was added
+-- first.
+local function shell_quote(s)
+  return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+end
 
-local function prune_upload_chunk_sessions()
+local UPLOAD_CHUNK_SESSION_TTL_SECONDS = 2 * 3600
+local upload_chunk_storage = {}
+
+function upload_chunk_storage.session_path(session_id)
+  return M.settings.uploads_dir .. "/_upload_sessions_" .. tostring(session_id) .. ".json"
+end
+
+function upload_chunk_storage.write(session_id, session)
+  local path = upload_chunk_storage.session_path(session_id)
+  local tmp = path .. ".tmp." .. tostring(math.random(100000, 999999))
+  local f, err = io.open(tmp, "wb")
+  if not f then return nil, err end
+  f:write(cjson.encode(session))
+  f:close()
+  local ok, rename_err = os.rename(tmp, path)
+  if not ok then
+    os.remove(tmp)
+    return nil, rename_err
+  end
+  return true
+end
+
+function upload_chunk_storage.read(session_id)
+  local f = io.open(upload_chunk_storage.session_path(session_id), "rb")
+  if not f then return nil end
+  local text = f:read("*a")
+  f:close()
+  local ok, session = pcall(cjson.decode, text or "")
+  return ok and type(session) == "table" and session or nil
+end
+
+function upload_chunk_storage.remove(session_id)
+  os.remove(upload_chunk_storage.session_path(session_id))
+end
+
+function upload_chunk_storage.prune()
   local now = os.time()
-  for id, session in pairs(upload_chunk_sessions) do
-    if now - session.created_at > UPLOAD_CHUNK_SESSION_TTL_SECONDS then
-      pcall(os.remove, session.temp_path)
-      upload_chunk_sessions[id] = nil
+  local handle = io.popen(string.format(
+    "find %s -maxdepth 1 -type f -name '_upload_sessions_*.json' -print 2>/dev/null",
+    shell_quote(M.settings.uploads_dir)
+  ))
+  if not handle then return end
+  for path in handle:lines() do
+    local session_id = path:match("_upload_sessions_([%x]+)%.json$")
+    local session = session_id and upload_chunk_storage.read(session_id)
+    if not session or now - (tonumber(session.created_at) or 0) > UPLOAD_CHUNK_SESSION_TTL_SECONDS then
+      if session and session.temp_path then pcall(os.remove, session.temp_path) end
+      pcall(os.remove, path)
     end
   end
+  handle:close()
 end
 
 function M.upload_chunk_init(req)
@@ -3010,7 +3063,7 @@ function M.upload_chunk_init(req)
   local rl_status, rl_body = ratelimit.check("upload:" .. user.id, M.settings.upload_rate_limit_per_hour, 3600)
   if rl_status then return rl_status, rl_body end
 
-  prune_upload_chunk_sessions()
+  upload_chunk_storage.prune()
 
   local json = req.json or {}
   local total_size = tonumber(json.total_size)
@@ -3028,7 +3081,7 @@ function M.upload_chunk_init(req)
   if not f then return 500, { detail = "Could not start upload: " .. tostring(ferr) } end
   f:close()
 
-  upload_chunk_sessions[session_id] = {
+  local session = {
     user_id = user.id,
     temp_path = temp_path,
     filename = filename,
@@ -3037,6 +3090,11 @@ function M.upload_chunk_init(req)
     next_index = 0,
     created_at = os.time(),
   }
+  local saved, save_err = upload_chunk_storage.write(session_id, session)
+  if not saved then
+    os.remove(temp_path)
+    return 500, { detail = "Could not persist upload session: " .. tostring(save_err) }
+  end
 
   -- 20MB keeps every individual request comfortably under the ~100MB
   -- Cloudflare edge ceiling even accounting for retries/overhead; it's a
@@ -3051,7 +3109,7 @@ function M.upload_chunk_append(req)
 
   local session_id = nn(req.query and req.query.session_id)
   local index = tonumber(req.query and req.query.index)
-  local session = session_id and upload_chunk_sessions[session_id]
+  local session = session_id and upload_chunk_storage.read(session_id)
   if not session or session.user_id ~= user.id then
     return 404, { detail = "Upload session not found or expired." }
   end
@@ -3064,7 +3122,7 @@ function M.upload_chunk_append(req)
   end
   if session.received_bytes + #chunk > session.total_size then
     pcall(os.remove, session.temp_path)
-    upload_chunk_sessions[session_id] = nil
+    upload_chunk_storage.remove(session_id)
     return 413, { detail = "Received more bytes than declared at upload start." }
   end
 
@@ -3075,6 +3133,10 @@ function M.upload_chunk_append(req)
 
   session.received_bytes = session.received_bytes + #chunk
   session.next_index = session.next_index + 1
+  local saved, save_err = upload_chunk_storage.write(session_id, session)
+  if not saved then
+    return 500, { detail = "Could not persist upload progress: " .. tostring(save_err) }
+  end
   return 200, { ok = true, received_bytes = session.received_bytes }
 end
 
@@ -3084,7 +3146,7 @@ function M.upload_chunk_finish(req)
 
   local form = req.json or {}
   local session_id = nn(form.session_id)
-  local session = session_id and upload_chunk_sessions[session_id]
+  local session = session_id and upload_chunk_storage.read(session_id)
   if not session or session.user_id ~= user.id then
     return 404, { detail = "Upload session not found or expired." }
   end
@@ -3094,7 +3156,7 @@ function M.upload_chunk_finish(req)
 
   local temp_path = session.temp_path
   local total_size = session.total_size
-  upload_chunk_sessions[session_id] = nil
+  upload_chunk_storage.remove(session_id)
 
   if not total_size or total_size == 0 then
     pcall(os.remove, temp_path)
@@ -5747,14 +5809,6 @@ end
 local ORPHAN_CACHE_DIR_NAMES = { "_thumb_cache", "_video_cache", "_watermark_cache", "_original_cache" }
 local ORPHAN_MIN_AGE_SECONDS = 24 * 3600
 
--- Lua's %q escapes for a *Lua* string literal, not a shell argument -- use
--- real single-quote shell escaping instead (same convention as
--- media_files.lua's own shell_quote(), duplicated here since that one is
--- local to that module).
-local function shell_quote(s)
-  return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
-end
-
 -- Duplicated from media_files.lua's own local ffmpeg_bin() for the same
 -- reason as shell_quote above.
 local function ffmpeg_bin()
@@ -6763,7 +6817,13 @@ local function acquire_transcode_slot()
     if mtime and (now - mtime) >= VIDEO_TRANSCODE_PENDING_STALE_SECONDS then
       os.execute("rm -f " .. shell_quote(slot_path))
     end
-    local claimed = os.execute(string.format("set -C; : > %s 2>/dev/null", shell_quote(slot_path)))
+    -- The noclobber redirect failure (expected whenever the slot is already
+    -- held) is a shell-level error raised while opening ">%s", which runs
+    -- BEFORE the trailing "2>/dev/null" takes effect -- redirects apply
+    -- left to right, so that message reached the journal on every contended
+    -- claim instead of being suppressed. Wrapping in a `{ ; }` group applies
+    -- 2>/dev/null to the whole group before the inner redirect executes.
+    local claimed = os.execute(string.format("set -C; { : > %s ; } 2>/dev/null", shell_quote(slot_path)))
     if claimed == 0 or claimed == true then
       return slot_path
     end
@@ -6962,6 +7022,11 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   -- transcode for it is still actively running (don't stomp on/duplicate
   -- live work just because the playlist hasn't gotten its ENDLIST yet).
   if hls_variant_ready(dir) or still_encoding then return dir end
+  -- A stale marker means the previous encoder died. Remove the incomplete
+  -- directory before relaunching so old segments can never be served as a
+  -- newly-started variant.
+  os.execute("rm -rf " .. shell_quote(dir))
+  os.remove(pending_marker)
 
   -- Global concurrency cap (see acquire_transcode_slot's header comment)
   -- checked BEFORE claiming the .pending marker below: a capacity-blocked
@@ -7154,12 +7219,16 @@ local function warm_one_pass(cursor_id)
         end
       end
 
-      local hls_dir = hls_variant_dir(item.id, "original", digest_seed)
-      if not hls_variant_ready(hls_dir) then
-        if not transcode_slot_available() then return "busy", last_id end
-        ensure_hls_variant(item.id, item, function() return resolve_media_bytes(item) end, "original")
-        return "launched", last_id
-      end
+    end
+
+    -- Original HLS is a remux and deliberately has no size cap. Warm it for
+    -- large uploads too, otherwise those videos always begin with a cold
+    -- playlist even though this rendition does not require re-encoding.
+    local hls_dir = hls_variant_dir(item.id, "original", digest_seed)
+    if not hls_variant_ready(hls_dir) then
+      if not transcode_slot_available() then return "busy", last_id end
+      ensure_hls_variant(item.id, item, function() return resolve_media_bytes(item) end, "original")
+      return "launched", last_id
     end
   end
 
@@ -7289,6 +7358,13 @@ function M.serve_hls_playlist(req)
     -- player/client can distinguish "try again shortly" from "give up and
     -- fall back to another quality permanently".
     if err == "busy" then
+      if quality ~= "original" then
+        local fallback_qs = hls_propagated_qs(req) or ""
+        return 302, "", {
+          ["Location"] = string.format("/api/media/%d/hls/original/playlist.m3u8%s", media_id, fallback_qs),
+          ["Cache-Control"] = "no-store",
+        }
+      end
       return 503, { detail = "Server is busy transcoding other videos right now. Try again in a few seconds." }, { ["Retry-After"] = "5" }
     end
     return 404, { detail = "This quality is not available for this video." }

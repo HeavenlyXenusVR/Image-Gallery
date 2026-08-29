@@ -6,6 +6,8 @@ import { MAX_UPLOAD_BYTES } from "../config.js";
 import { ChipRow, Page, RequireLogin } from "../components/ui.jsx";
 
 const SUBCATEGORY_SLOT_COUNT = 3;
+const EDGE_SAFE_UPLOAD_BYTES = 80 * 1024 * 1024;
+const DEFAULT_CHUNK_BYTES = 20 * 1024 * 1024;
 
 function blankSubcategorySlots() {
   return Array.from({ length: SUBCATEGORY_SLOT_COUNT }, () => "");
@@ -15,6 +17,29 @@ function normalizeSlots(values) {
   const slots = Array.isArray(values) ? values.slice(0, SUBCATEGORY_SLOT_COUNT) : [];
   while (slots.length < SUBCATEGORY_SLOT_COUNT) slots.push("");
   return slots.map((value) => String(value || ""));
+}
+
+function xhrJson(url, { method = "POST", body, contentType, onProgress } = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const token = readToken();
+    xhr.open(method, url, true);
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.setRequestHeader("Accept", "application/json");
+    if (contentType) xhr.setRequestHeader("Content-Type", contentType);
+    xhr.withCredentials = true;
+    if (onProgress) xhr.upload.addEventListener("progress", onProgress);
+    xhr.addEventListener("load", () => {
+      let payload = null;
+      try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch { /* handled below */ }
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(payload);
+      const detail = payload?.detail;
+      reject(new Error(detail ? (Array.isArray(detail) ? detail.map((item) => item?.msg || item).join("; ") : String(detail)) : `Upload failed (${xhr.status})`));
+    });
+    xhr.addEventListener("error", () => reject(new Error("Network error during upload.")));
+    xhr.addEventListener("abort", () => reject(new Error("Upload cancelled.")));
+    xhr.send(body);
+  });
 }
 
 export function UploadPage({ ctx }) {
@@ -172,42 +197,46 @@ export function UploadPage({ ctx }) {
       body.set("check_site_duplicates", String(form.check_site_duplicates));
       if (form.publish_at) body.set("publish_at", new Date(form.publish_at).toISOString());
 
-      // Use XHR for upload progress tracking
-      const data = await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        const token = readToken();
-        resolveApiUrl("/api/media").then((url) => {
-          xhr.open("POST", url, true);
-          if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
-          xhr.setRequestHeader("Accept", "application/json");
-          xhr.withCredentials = true;
-          xhr.upload.addEventListener("progress", (progressEvent) => {
-            if (progressEvent.lengthComputable) {
-              setUploadProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
-            }
+      let data;
+      if (form.file.size <= EDGE_SAFE_UPLOAD_BYTES) {
+        const url = await resolveApiUrl("/api/media");
+        data = await xhrJson(url, {
+          body,
+          onProgress: (progressEvent) => {
+            if (progressEvent.lengthComputable) setUploadProgress(Math.round((progressEvent.loaded / progressEvent.total) * 100));
+          },
+        });
+      } else {
+        const init = await apiFetch("/api/media/upload/init", {
+          method: "POST",
+          body: { total_size: form.file.size, filename: form.file.name },
+        });
+        const chunkSize = Number(init.chunk_size) > 0 ? Number(init.chunk_size) : DEFAULT_CHUNK_BYTES;
+        const initUrl = await resolveApiUrl("/api/media/upload/chunk");
+        let uploaded = 0;
+        for (let index = 0; uploaded < form.file.size; index += 1) {
+          const chunk = form.file.slice(uploaded, Math.min(uploaded + chunkSize, form.file.size));
+          await xhrJson(`${initUrl}?session_id=${encodeURIComponent(init.session_id)}&index=${index}`, {
+            body: chunk,
+            contentType: "application/octet-stream",
+            onProgress: (progressEvent) => {
+              const chunkLoaded = progressEvent.lengthComputable ? progressEvent.loaded : 0;
+              setUploadProgress(Math.round(((uploaded + chunkLoaded) / form.file.size) * 100));
+            },
           });
-          xhr.addEventListener("load", () => {
-            if (xhr.status >= 200 && xhr.status < 300) {
-              try {
-                resolve(JSON.parse(xhr.responseText));
-              } catch {
-                reject(new Error("Invalid server response."));
-              }
-            } else {
-              let message = `Upload failed (${xhr.status})`;
-              try {
-                const payload = JSON.parse(xhr.responseText);
-                if (payload?.detail) message = Array.isArray(payload.detail) ? payload.detail.map((item) => item?.msg || item).join("; ") : String(payload.detail);
-                else if (payload?.message) message = payload.message;
-              } catch { /* ignore parse errors */ }
-              reject(new Error(message));
-            }
-          });
-          xhr.addEventListener("error", () => reject(new Error("Network error during upload.")));
-          xhr.addEventListener("abort", () => reject(new Error("Upload cancelled.")));
-          xhr.send(body);
-        }).catch(reject);
-      });
+          uploaded += chunk.size;
+          setUploadProgress(Math.round((uploaded / form.file.size) * 100));
+        }
+        const metadata = Object.fromEntries([...body.entries()].filter(([key]) => key !== "file"));
+        data = await apiFetch("/api/media/upload/finish", {
+          method: "POST",
+          body: {
+            ...metadata,
+            session_id: init.session_id,
+            total_size: form.file.size,
+          },
+        });
+      }
 
       clearApiCache();
       ctx.refreshLookups();
