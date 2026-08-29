@@ -364,7 +364,23 @@ function M.register(req)
   local display_name = trim(nn(payload.display_name) or username):sub(1, 80)
   if display_name == "" then display_name = username end
 
+  -- Character-class + length validation dropped somewhere in the Lua
+  -- rewrite -- normalize_username() only trims/lowercases/truncates, so
+  -- literally anything (spaces, "/", emoji, ...) was reaching the DB.
+  -- Both clients still document and enforce this exact rule client-side
+  -- (iOS's RegisterView.swift, web's presumed equivalent) on the
+  -- assumption the server does too -- and it's not just cosmetic: username
+  -- is placed directly into a URL path segment at GET /api/users/:username
+  -- (main.lua), where an unrestricted value (a literal "/" in particular)
+  -- would break that route's matching. (pages_og.lua/pages_admin.lua do
+  -- already html.esc() every username before rendering it, so this isn't
+  -- closing an XSS hole -- just the routing hazard and the client/server
+  -- validation-contract mismatch.)
   if username == "" then return 400, { detail = "Username is required." } end
+  if #username < 3 then return 400, { detail = "Username must be at least 3 characters." } end
+  if not username:match("^[%w_.%-]+$") then
+    return 400, { detail = "Username may only contain letters, numbers, \".\", \"_\", and \"-\"." }
+  end
   if #password < 8 then return 400, { detail = "Password must be at least 8 characters." } end
 
   -- LOWER() on both sides here too: an exact-match check would let someone
