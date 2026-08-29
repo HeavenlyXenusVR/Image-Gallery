@@ -89,7 +89,7 @@ extension GalleryAPIClient {
         return response.user
     }
 
-    /// Mirrors `SettingsUpdateRequest` on the backend (`app/schemas.py`) — only
+    /// Mirrors `M.update_settings` on the backend (`lua/src/routes.lua`) — only
     /// the subset of ~40 settings keys the iOS app edits. Omitted (nil) fields
     /// are sent as JSON null, which the backend already treats as "don't
     /// change this key" (it filters `value is not None` before applying), so
@@ -561,8 +561,8 @@ extension GalleryAPIClient {
     }
 }
 
-/// Mirrors `SMART_COLLECTION_FILTER_KEYS` in `app/db/feed_collections.py` —
-/// the one filter shape shared by smart collections and saved searches.
+/// Mirrors `SMART_FILTER_KEYS` in `lua/src/routes.lua` — the one filter
+/// shape shared by smart collections and saved searches.
 struct DiscoverFilterPayload: Encodable {
     var mediaKind: String?
     var categoryId: Int?

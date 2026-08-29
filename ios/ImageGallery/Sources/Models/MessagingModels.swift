@@ -1,6 +1,6 @@
 import Foundation
 
-/// A 1:1 DM thread summary. Mirrors `list_message_threads` in `app/db/messages.py`.
+/// A 1:1 DM thread summary. Mirrors `M.message_threads` in `lua/src/routes.lua`.
 struct MessageThread: Codable, Identifiable {
     var id: Int
     var userId: Int?
@@ -21,9 +21,9 @@ struct DirectMessage: Codable, Identifiable {
     var createdAt: String?
 }
 
-/// A multi-member group thread. Mirrors `list_my_threads` in `app/db/threads.py`
-/// — `displayName` is pre-computed server-side (the thread's name, or a
-/// comma-joined list of the other members if unnamed).
+/// A multi-member group thread. Mirrors `M.list_groups` in
+/// `lua/src/routes.lua` — `displayName` is pre-computed server-side (the
+/// thread's name, or a comma-joined list of the other members if unnamed).
 struct GroupThread: Codable, Identifiable {
     var id: Int
     var name: String?

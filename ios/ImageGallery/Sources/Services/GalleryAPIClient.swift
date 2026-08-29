@@ -20,7 +20,7 @@ enum GalleryAPIError: LocalizedError {
     }
 }
 
-/// Async/await networking client for the FastAPI backend. Mirrors the request
+/// Async/await networking client for the Lua backend. Mirrors the request
 /// shape `frontend/src/api.js`'s `apiFetch` already uses today (Bearer token
 /// header, `/api/...` paths, `{"detail": "..."}` error bodies) so the backend
 /// itself needs zero changes to support this client.

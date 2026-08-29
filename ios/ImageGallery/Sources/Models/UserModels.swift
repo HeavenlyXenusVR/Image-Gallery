@@ -43,8 +43,8 @@ struct GalleryUser: Codable, Identifiable, Hashable {
 }
 
 /// The handful of `user_settings` keys (out of ~40 on the backend, see
-/// `DEFAULT_USER_SETTINGS` in `app/db/_shared.py`) the iOS app reads and
-/// writes. Decoding is lenient by design — extra keys in the JSON object are
+/// `DEFAULT_USER_SETTINGS` in `lua/src/user_settings.lua`) the iOS app reads
+/// and writes. Decoding is lenient by design — extra keys in the JSON object are
 /// simply ignored, so this stays forward-compatible as the web app's settings
 /// schema grows. Values reuse the exact same strings the web app stores
 /// (`profile_layout`, `profile_avatar_shape`) so switching a setting on

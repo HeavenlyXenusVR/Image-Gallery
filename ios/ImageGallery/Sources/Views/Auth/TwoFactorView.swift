@@ -8,7 +8,7 @@ struct TwoFactorView: View {
     @State private var code = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
-    // Mirrors the backend's TOTP_PENDING_TTL_SECONDS (app/auth.py) — the
+    // Mirrors the backend's TOTP_PENDING_TTL_SECONDS (lua/src/gallery_auth.lua) — the
     // pending-login token this view is verifying against expires server-side
     // after 5 minutes, so this counts down to explain a stale attempt instead
     // of the code just mysteriously failing.

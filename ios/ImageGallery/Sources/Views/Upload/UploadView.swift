@@ -6,7 +6,7 @@ struct UploadView: View {
     @StateObject private var viewModel = UploadViewModel()
     @State private var showingSuccess = false
 
-    // The backend (app/config.py's max_tags_per_upload/max_tag_length,
+    // The backend (lua/src/config.lua's max_tags_per_upload/max_tag_length,
     // defaults 12/32) silently truncates instead of rejecting an
     // over-the-limit submission — surface a heads-up client-side instead of
     // letting tags quietly disappear with no explanation.

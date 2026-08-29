@@ -11,9 +11,9 @@ struct RegisterView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
 
-    // Mirrors the backend's actual rules (app/db/_shared.py's USERNAME_RE,
-    // app/db/account.py's password length check) so an invalid submission
-    // fails instantly instead of after a round trip.
+    // Mirrors the backend's actual rules (lua/src/routes.lua's M.register:
+    // 3-40 chars, [%w_.%-] only, and an 8-char password minimum) so an
+    // invalid submission fails instantly instead of after a round trip.
     private var trimmedUsername: String { username.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var isUsernameValid: Bool {
         let count = trimmedUsername.count

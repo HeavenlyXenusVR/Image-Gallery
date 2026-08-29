@@ -1,7 +1,7 @@
 import Foundation
 
-/// Mirrors the JSON shape produced by `app/routers/_shared.py:_with_urls` on
-/// the backend. Decoded with `.convertFromSnakeCase`, so `media_kind` ->
+/// Mirrors the JSON shape produced by `with_urls()` in `lua/src/routes.lua`
+/// on the backend. Decoded with `.convertFromSnakeCase`, so `media_kind` ->
 /// `mediaKind` etc. Optional almost everywhere on purpose: the backend's
 /// response shape varies slightly by endpoint (e.g. locked/adult media strips
 /// several fields), and a strict non-optional model would throw on any of

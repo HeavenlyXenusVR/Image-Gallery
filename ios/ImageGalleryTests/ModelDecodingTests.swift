@@ -57,8 +57,8 @@ final class ModelDecodingTests: XCTestCase {
 
     func testGalleryUserDecodesUserSettingsAndIgnoresUnmappedKeys() throws {
         // The backend's user_settings object has ~40 keys (see DEFAULT_USER_SETTINGS
-        // in app/db/_shared.py); the app only models a handful, so this also proves
-        // unrecognized keys (grid_density, watermark_text, ...) don't break decoding.
+        // in lua/src/user_settings.lua); the app only models a handful, so this also
+        // proves unrecognized keys (grid_density, watermark_text, ...) don't break decoding.
         let json = """
         {
           "id": 7,

@@ -1,9 +1,10 @@
 import Foundation
 
-/// The backend returns timestamps as ISO 8601 strings (see `_jsonable` in
-/// `app/routers/_shared.py`); this renders them the way a chat/notification
-/// list should — relative for anything recent, a short date otherwise —
-/// instead of showing the raw ISO string.
+/// The backend returns timestamps as ISO 8601 strings (Postgres's own
+/// timestamp text output, passed through as-is by lua/src/routes.lua); this
+/// renders them the way a chat/notification list should — relative for
+/// anything recent, a short date otherwise — instead of showing the raw
+/// ISO string.
 enum DateFormatting {
     private static let isoParser: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
