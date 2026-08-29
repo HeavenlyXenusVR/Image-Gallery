@@ -5468,7 +5468,7 @@ local function sniff_audio_magic(content)
   local head = content:sub(1, 64)
   if head:sub(1, 3) == "ID3" then return "audio/mpeg" end
   -- Frame-sync MP3 with no ID3 tag: 11 set bits (0xFFE.. / 0xFFF..).
-  if #head >= 2 and head:byte(1) == 0xFF and (head:byte(2) & 0xE0) == 0xE0 then return "audio/mpeg" end
+  if #head >= 2 and head:byte(1) == 0xFF and bit.band(head:byte(2), 0xE0) == 0xE0 then return "audio/mpeg" end
   if head:sub(1, 4) == "RIFF" and head:sub(9, 12) == "WAVE" then return "audio/wav" end
   if head:sub(1, 4) == "OggS" then return "audio/ogg" end
   if head:sub(1, 4) == "fLaC" then return "audio/flac" end

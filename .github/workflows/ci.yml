@@ -20,8 +20,16 @@ jobs:
           cd lua
           status=0
           for f in $(find . -name '*.lua' -not -path './lib/*'); do
-            out=$(luajit -e "local f, err = loadfile('$f'); if not f then print(err); os.exit(1) end" 2>&1)
-            if [ $? -ne 0 ]; then
+            # `if ! out=$(...)` (not a plain assignment followed by a `$?`
+            # check) -- this whole workflow runs under `bash -e`, and a
+            # plain `out=$(failing_cmd)` statement aborts the script right
+            # there under errexit, before the `if [ $? -ne 0 ]` below it
+            # ever runs. Confirmed live: a real syntax error at
+            # routes.lua:5471 made this step fail with a bare "exit code 1"
+            # and zero diagnostic output for 3 pushes in a row -- errexit
+            # doesn't apply to a command tested directly by `if`, so this
+            # form actually reaches the echo.
+            if ! out=$(luajit -e "local f, err = loadfile('$f'); if not f then print(err); os.exit(1) end" 2>&1); then
               echo "SYNTAX ERROR in $f: $out"
               status=1
             fi
@@ -31,8 +39,7 @@ jobs:
       - name: Syntax-check top-level Lua tooling scripts (scripts/*.lua)
         run: |
           for f in $(find scripts -name '*.lua' 2>/dev/null); do
-            out=$(luajit -e "local f, err = loadfile('$f'); if not f then print(err); os.exit(1) end" 2>&1)
-            if [ $? -ne 0 ]; then
+            if ! out=$(luajit -e "local f, err = loadfile('$f'); if not f then print(err); os.exit(1) end" 2>&1); then
               echo "SYNTAX ERROR in $f: $out"
               exit 1
             fi
