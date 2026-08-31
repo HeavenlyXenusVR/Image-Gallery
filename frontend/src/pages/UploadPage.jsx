@@ -3,11 +3,18 @@ import { Link, useNavigate } from "react-router-dom";
 import { Upload, WandSparkles } from "lucide-react";
 import { apiFetch, clearApiCache, readToken, resolveApiUrl } from "../api.js";
 import { MAX_UPLOAD_BYTES } from "../config.js";
+import { addPendingUploadJob } from "../uploadJobs.js";
 import { ChipRow, Page, RequireLogin } from "../components/ui.jsx";
 
 const SUBCATEGORY_SLOT_COUNT = 3;
 const EDGE_SAFE_UPLOAD_BYTES = 80 * 1024 * 1024;
 const DEFAULT_CHUNK_BYTES = 20 * 1024 * 1024;
+// Uniform ceiling for every upload-related request (init/chunk/finish/direct
+// <=80MB/analyze) -- finalize_upload does real synchronous work server-side
+// (fast-start remux, full-file sha256, up to a 30s AI vision call, disk
+// save), and xhrJson previously had NO timeout at all, so a truly stalled
+// connection would hang forever with no error surfaced to the user.
+const UPLOAD_TIMEOUT_MS = 120_000;
 
 function blankSubcategorySlots() {
   return Array.from({ length: SUBCATEGORY_SLOT_COUNT }, () => "");
@@ -19,7 +26,7 @@ function normalizeSlots(values) {
   return slots.map((value) => String(value || ""));
 }
 
-function xhrJson(url, { method = "POST", body, contentType, onProgress } = {}) {
+function xhrJson(url, { method = "POST", body, contentType, onProgress, timeoutMs = UPLOAD_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const token = readToken();
@@ -28,6 +35,7 @@ function xhrJson(url, { method = "POST", body, contentType, onProgress } = {}) {
     xhr.setRequestHeader("Accept", "application/json");
     if (contentType) xhr.setRequestHeader("Content-Type", contentType);
     xhr.withCredentials = true;
+    xhr.timeout = timeoutMs;
     if (onProgress) xhr.upload.addEventListener("progress", onProgress);
     xhr.addEventListener("load", () => {
       let payload = null;
@@ -38,6 +46,7 @@ function xhrJson(url, { method = "POST", body, contentType, onProgress } = {}) {
     });
     xhr.addEventListener("error", () => reject(new Error("Network error during upload.")));
     xhr.addEventListener("abort", () => reject(new Error("Upload cancelled.")));
+    xhr.addEventListener("timeout", () => reject(new Error("Request timed out. Please try again.")));
     xhr.send(body);
   });
 }
@@ -139,7 +148,7 @@ export function UploadPage({ ctx }) {
       // AI vision analysis can legitimately take up to ai_timeout_seconds+10 on the
       // backend (default 55s) before falling back to local heuristics, well past the
       // default 12s apiFetch timeout — use a longer timeout so real analyses don't abort.
-      const data = await apiFetch("/api/media/analyze", { method: "POST", body, timeoutMs: 90_000 });
+      const data = await apiFetch("/api/media/analyze", { method: "POST", body, timeoutMs: UPLOAD_TIMEOUT_MS });
       setAnalysis(data.analysis);
       setDuplicates(data.possible_duplicates || []);
       setForm((current) => ({
@@ -209,6 +218,7 @@ export function UploadPage({ ctx }) {
       } else {
         const init = await apiFetch("/api/media/upload/init", {
           method: "POST",
+          timeoutMs: UPLOAD_TIMEOUT_MS,
           body: JSON.stringify({ total_size: form.file.size, filename: form.file.name }),
         });
         const chunkSize = Number(init.chunk_size) > 0 ? Number(init.chunk_size) : DEFAULT_CHUNK_BYTES;
@@ -230,20 +240,35 @@ export function UploadPage({ ctx }) {
         const metadata = Object.fromEntries([...body.entries()].filter(([key]) => key !== "file"));
         data = await apiFetch("/api/media/upload/finish", {
           method: "POST",
-          // finalize_upload runs synchronously on this request: fast-start
-          // remux, a full-file sha256 hash, disk save, and (same as
-          // /api/media/analyze above) up to a 30s AI vision call plus its
-          // own ffmpeg frame-extraction overhead. All of that easily clears
-          // the default 12s apiFetch timeout for a large chunked upload, so
-          // this needs at least as much headroom as analyze's 90s -- more,
-          // since finish does everything analyze does plus the rest.
-          timeoutMs: 180_000,
+          // This request itself only runs the fast dry-run synchronously
+          // (magic-byte sniff of the already-assembled file, form-field
+          // validation) -- the slow part (fast-start remux, full-file
+          // sha256, up to a 30s AI vision call, disk save) now happens in a
+          // background thread server-side, so a real response normally
+          // comes back in well under a second. UPLOAD_TIMEOUT_MS here is
+          // just the shared ceiling for consistency with the other
+          // upload-related requests, not because this one needs it.
+          timeoutMs: UPLOAD_TIMEOUT_MS,
           body: JSON.stringify({
             ...metadata,
             session_id: init.session_id,
             total_size: form.file.size,
           }),
         });
+      }
+
+      if (data.status === "processing") {
+        // Chunk upload finished and the fast dry-run (file type, visibility,
+        // publish date, title/category unless AI auto-fill covers them)
+        // passed -- the slow part (remux/hash/AI/save) is now running in a
+        // background thread server-side. No reason to keep the uploader
+        // sitting on this page for that: hand off to Shell's job poller
+        // (survives navigation/reload since it's localStorage-backed) and
+        // leave immediately.
+        addPendingUploadJob({ jobId: data.job_id, filename: form.file.name });
+        ctx.showToast("Upload queued — processing in the background. We'll let you know when it's ready.", "info");
+        navigate("/profile");
+        return;
       }
 
       clearApiCache();

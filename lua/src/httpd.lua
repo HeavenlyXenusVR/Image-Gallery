@@ -223,7 +223,7 @@ local function send_response(sock, status, status_text, headers, body)
 end
 
 local STATUS_TEXT = {
-  [200] = "OK", [201] = "Created", [204] = "No Content", [206] = "Partial Content",
+  [200] = "OK", [201] = "Created", [202] = "Accepted", [204] = "No Content", [206] = "Partial Content",
   [301] = "Moved Permanently", [303] = "See Other",
   [400] = "Bad Request", [401] = "Unauthorized", [403] = "Forbidden",
   [404] = "Not Found", [405] = "Method Not Allowed", [409] = "Conflict",
@@ -492,6 +492,15 @@ local function handle_connection(sock)
       body_out = cjson.encode(resp_body)
     else
       body_out = tostring(resp_body or "")
+    end
+    -- access_log_line only ever printed method/path/status/timing -- the
+    -- actual `detail` text (e.g. "Could not save media: nil") never made it
+    -- to journalctl anywhere, so a fast client-side toast was the ONLY place
+    -- an error's real message ever appeared, gone the moment the page moved
+    -- on. Print it here too, truncated so a huge payload (e.g. validation
+    -- errors echoing a big form) can't flood the log.
+    if status >= 400 then
+      print(string.format("[error-detail] %s %s -> %d: %s", method, path, status, body_out:sub(1, 500)))
     end
     respond(status, STATUS_TEXT[status] or "OK", resp_headers, body_out)
   end)

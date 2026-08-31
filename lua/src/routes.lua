@@ -3090,6 +3090,63 @@ function upload_chunk_storage.prune()
   handle:close()
 end
 
+-- Background-finish job status, file-based for the exact same reason
+-- upload_chunk_storage is: nyxframe-proxy round-robins requests across TWO
+-- worker processes (nyxframe-lua@8790/@8791), so an in-memory Lua table in
+-- one worker would be invisible to a status poll that happens to land on
+-- the other one. Both workers share the same uploads_dir on disk. Hung off
+-- upload_chunk_storage itself (job_* fields) rather than a second top-level
+-- local -- routes.lua's main chunk was already sitting right at Lua's
+-- 200-local ceiling (LUAI_MAXVARS), confirmed live: adding even one more
+-- top-level local here broke `luajit -e "loadfile(...)"` with "main
+-- function has more than 200 local variables".
+function upload_chunk_storage.job_path(job_id)
+  return M.settings.uploads_dir .. "/_upload_jobs_" .. tostring(job_id) .. ".json"
+end
+
+function upload_chunk_storage.job_write(job_id, job)
+  local path = upload_chunk_storage.job_path(job_id)
+  local tmp = path .. ".tmp." .. tostring(math.random(100000, 999999))
+  local f, err = io.open(tmp, "wb")
+  if not f then return nil, err end
+  f:write(cjson.encode(job))
+  f:close()
+  local ok, rename_err = os.rename(tmp, path)
+  if not ok then
+    os.remove(tmp)
+    return nil, rename_err
+  end
+  return true
+end
+
+function upload_chunk_storage.job_read(job_id)
+  local f = io.open(upload_chunk_storage.job_path(job_id), "rb")
+  if not f then return nil end
+  local text = f:read("*a")
+  f:close()
+  local ok, job = pcall(cjson.decode, text or "")
+  return ok and type(job) == "table" and job or nil
+end
+
+-- Same lazy-prune-on-init pattern as upload_chunk_storage.prune() -- no
+-- timer, just swept the next time anyone starts an upload.
+function upload_chunk_storage.job_prune()
+  local now = os.time()
+  local handle = io.popen(string.format(
+    "find %s -maxdepth 1 -type f -name '_upload_jobs_*.json' -print 2>/dev/null",
+    shell_quote(M.settings.uploads_dir)
+  ))
+  if not handle then return end
+  for path in handle:lines() do
+    local job_id = path:match("_upload_jobs_([%x]+)%.json$")
+    local job = job_id and upload_chunk_storage.job_read(job_id)
+    if not job or now - (tonumber(job.created_at) or 0) > 24 * 3600 then -- 24h TTL
+      pcall(os.remove, path)
+    end
+  end
+  handle:close()
+end
+
 function M.upload_chunk_init(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
@@ -3098,6 +3155,7 @@ function M.upload_chunk_init(req)
   if rl_status then return rl_status, rl_body end
 
   upload_chunk_storage.prune()
+  upload_chunk_storage.job_prune()
 
   local json = req.json or {}
   local total_size = tonumber(json.total_size)
@@ -3213,16 +3271,121 @@ function M.upload_chunk_finish(req)
     end
   end
 
-  -- Deliberately NOT read into memory here -- see finalize_upload's
-  -- `source` doc comment. save_media_file_to_disk renames temp_path away
-  -- on success/dedup; this cleanup only fires if finalize_upload returned
-  -- an error before reaching that step (e.g. failed validation), in which
-  -- case the file is still sitting at temp_path and would otherwise leak.
-  local status_code, resp_body = finalize_upload(
-    req, user, { file_path = temp_path, file_size = total_size }, session.filename, pseudo_form
-  )
-  pcall(os.remove, temp_path)
-  return status_code, resp_body
+  -- Fast dry run before handing the slow part off to a background thread:
+  -- finalize_upload's own real work here (fast-start remux, a full-file
+  -- sha256 hash, an up-to-30s AI vision call, the disk save) is what made
+  -- this request take 60-90s+ end to end, forcing the uploader to sit on
+  -- the page. Everything checked below is cheap -- a 512-byte magic-byte
+  -- sniff of bytes already fully assembled on disk, plus pure form-field
+  -- validation -- so it catches the realistic "user made an obvious
+  -- mistake" cases (wrong file type, bad visibility value, unparseable
+  -- publish date, missing title/category with AI auto-fill off) with the
+  -- client still on the page to see the error, exactly like the old
+  -- synchronous path did. Title/category left blank WITH auto-fill on is
+  -- deliberately NOT validated here -- whether that resolves depends on
+  -- the AI call, which is itself part of the slow work being deferred; if
+  -- it doesn't resolve, that surfaces as a job error on poll instead.
+  local prefix = ""
+  do
+    local f = io.open(temp_path, "rb")
+    if f then
+      prefix = f:read(512) or ""
+      f:close()
+    end
+  end
+  local sniffed_mime = sniff_magic(prefix)
+  if not sniffed_mime then
+    pcall(os.remove, temp_path)
+    return 400, { detail = "Unsupported or invalid file bytes." }
+  end
+  if not safe_extension(session.filename, sniffed_mime) then
+    pcall(os.remove, temp_path)
+    return 400, { detail = "Unsupported file extension." }
+  end
+  local visibility = (nn(pseudo_form.visibility) or "public"):lower()
+  if visibility ~= "public" and visibility ~= "unlisted" and visibility ~= "private" then
+    pcall(os.remove, temp_path)
+    return 400, { detail = "Visibility must be public, unlisted, or private." }
+  end
+  local _, publish_at_err = parse_publish_at(pseudo_form.publish_at)
+  if publish_at_err then
+    pcall(os.remove, temp_path)
+    return 400, { detail = publish_at_err }
+  end
+  local auto_ai = form_bool(pseudo_form.auto_ai, true)
+  if trim(nn(pseudo_form.title) or "") == "" and not auto_ai then
+    pcall(os.remove, temp_path)
+    return 400, { detail = "Title is required." }
+  end
+  local category_id_check = tonumber(pseudo_form.category_id)
+  local has_category_name = nn(pseudo_form.category_name) and trim(pseudo_form.category_name) ~= ""
+  if not (category_id_check and category_id_check > 0) and not has_category_name and not auto_ai then
+    pcall(os.remove, temp_path)
+    return 400, { detail = "Category is required." }
+  end
+
+  local job_id = sodium.sodium_bin2hex(sodium.randombytes_buf(16))
+  upload_chunk_storage.job_write(job_id, { user_id = user.id, status = "processing", created_at = os.time() })
+
+  local copas = require("copas")
+
+  -- copas.addthread doesn't parallelize the actual ffmpeg/hash work (see
+  -- fast_start_remux_if_needed's os.execute -- that's a plain blocking
+  -- syscall with no cooperative yield point, so this worker is just as
+  -- busy during it as before); what changes is that the CLIENT'S request
+  -- returns immediately instead of being held open for however long that
+  -- takes, so the browser tab is free the moment the fast checks above
+  -- pass. `req` is safe to close over here -- it's a plain table (method/
+  -- path/query/headers/etc), not the live socket, so referencing it after
+  -- this handler's own response has already gone out is fine.
+  copas.addthread(function()
+    local ok, status_code, resp_body = pcall(
+      finalize_upload, req, user, { file_path = temp_path, file_size = total_size }, session.filename, pseudo_form
+    )
+    pcall(os.remove, temp_path)
+    if not ok then
+      print("[nyxframe] background upload finish error (job " .. job_id .. "): " .. tostring(status_code))
+      upload_chunk_storage.job_write(job_id, {
+        user_id = user.id, status = "error", created_at = os.time(),
+        detail = "Upload processing failed unexpectedly.",
+      })
+      return
+    end
+    if status_code == 200 then
+      upload_chunk_storage.job_write(job_id, { user_id = user.id, status = "done", created_at = os.time(), response = resp_body })
+    else
+      upload_chunk_storage.job_write(job_id, {
+        user_id = user.id, status = "error", created_at = os.time(),
+        detail = (resp_body and resp_body.detail) or "Upload failed.",
+      })
+    end
+  end)
+
+  return 202, { status = "processing", job_id = job_id }
+end
+
+-- GET /api/media/upload/job/:job_id -- lets the client, having gotten a 202
+-- back from upload_chunk_finish above and moved on to another page, poll
+-- for that background job's outcome (or just abandon it -- the notify/
+-- saved-search side effects inside finalize_upload already fired
+-- regardless of whether anyone's still watching).
+function M.upload_job_status(req)
+  local user, auth, status, body = current_user(req)
+  if not user then return status, body end
+
+  local job_id = nn(req.params and req.params.job_id)
+  local job = job_id and upload_chunk_storage.job_read(job_id)
+  if not job or tostring(job.user_id) ~= tostring(user.id) then
+    return 404, { detail = "Upload job not found or expired." }
+  end
+
+  if job.status == "done" then
+    local r = job.response or {}
+    return 200, { status = "done", media = r.media, possible_duplicates = arr(r.possible_duplicates), possible_site_duplicates = arr(r.possible_site_duplicates) }
+  elseif job.status == "error" then
+    return 200, { status = "error", detail = job.detail or "Upload failed." }
+  end
+  return 200, { status = "processing" }
 end
 
 -- Standalone "preview the AI suggestion before uploading" endpoint. Mirrors

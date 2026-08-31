@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink } from "react-router-dom";
 import { AlertTriangle, Folder, Grid3X3, Heart, Home, Image as ImageIcon, LogIn, LogOut, MessageCircle, Moon, Rocket, Settings, ShieldAlert, Sparkles, Sun, SunMoon, TrendingUp, Upload, UserPlus, Users, X as XIcon } from "lucide-react";
-import { cachedApiFetch } from "../api.js";
+import { apiFetch, cachedApiFetch } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
+import { getPendingUploadJobs, removePendingUploadJob } from "../uploadJobs.js";
 import { Avatar, GlassFilterDefs, glassPointerMove } from "./ui.jsx";
 import { NotificationBell } from "./NotificationBell.jsx";
 
@@ -25,6 +26,39 @@ export function Shell({ ctx, children, className = "", style }) {
       // Non-critical — keep the last known state rather than erroring the shell.
     }
   }, { interval: 60_000, immediate: true });
+
+  // Backgrounded uploads (UploadPage's chunked path hands off to
+  // upload_chunk_finish's background job once its fast dry-run passes, then
+  // navigates away immediately) get polled here instead of on the upload
+  // page itself, since the whole point is the uploader no longer has to
+  // stay there. Lives in Shell rather than UploadPage so a job queued
+  // before navigating away still gets its completion toast wherever the
+  // user ends up. Short interval, but the callback itself no-ops in one
+  // localStorage read when nothing's pending, so this is cheap at idle.
+  useLiveRefresh(async () => {
+    const jobs = getPendingUploadJobs();
+    if (!jobs.length) return;
+    for (const job of jobs) {
+      try {
+        const data = await apiFetch(`/api/media/upload/job/${encodeURIComponent(job.jobId)}`);
+        if (data.status === "processing") continue;
+        removePendingUploadJob(job.jobId);
+        if (data.status === "done") {
+          ctx.showToast(`"${job.filename}" finished uploading.`, "success");
+          ctx.refreshLookups();
+        } else {
+          ctx.showToast(`Upload of "${job.filename}" failed: ${data.detail || "unknown error"}`, "error");
+        }
+      } catch (_error) {
+        // Job lookup itself failed (expired past the 24h job TTL, or a
+        // network blip) -- drop it rather than retrying forever. The
+        // actual upload already ran (or is running) server-side regardless
+        // of whether anyone's still watching for the result; losing just
+        // the toast isn't losing the upload.
+        removePendingUploadJob(job.jobId);
+      }
+    }
+  }, { interval: 6_000, immediate: true, enabled: Boolean(ctx.user) });
 
   useEffect(() => {
     setBannerDismissed(false);

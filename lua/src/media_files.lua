@@ -281,7 +281,10 @@ function M.save_media_file_to_disk(uploads_dir, opts)
 
   if opts.source_path then
     local ok, rerr = os.rename(opts.source_path, full_path)
-    if not ok then return nil, "Could not finalize stored file: " .. tostring(rerr) end
+    -- os.rename can fail with a nil message (e.g. EXDEV when source_path and
+    -- full_path aren't on the same mount) -- fall back to something
+    -- diagnosable instead of a bare "nil" bubbling all the way to the client.
+    if not ok then return nil, "Could not finalize stored file: " .. tostring(rerr or "rename failed (check disk space / same-filesystem mount)") end
     return { storage_path = rel_path, duplicate = false }
   end
 
@@ -289,13 +292,13 @@ function M.save_media_file_to_disk(uploads_dir, opts)
   -- sees a partial file at the final path.
   local tmp_path = full_path .. ".tmp." .. tostring(math.random(100000, 999999))
   local f, ferr = io.open(tmp_path, "wb")
-  if not f then return nil, "Could not open destination file: " .. tostring(ferr) end
+  if not f then return nil, "Could not open destination file: " .. tostring(ferr or "unknown open failure") end
   f:write(opts.content)
   f:close()
   local ok, rerr = os.rename(tmp_path, full_path)
   if not ok then
     os.remove(tmp_path)
-    return nil, "Could not finalize stored file: " .. tostring(rerr)
+    return nil, "Could not finalize stored file: " .. tostring(rerr or "rename failed (check disk space / same-filesystem mount)")
   end
   return { storage_path = rel_path, duplicate = false }
 end

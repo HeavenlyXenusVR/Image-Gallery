@@ -77,7 +77,13 @@ end
 function M.query(sql, ...)
   local p = acquire()
   local rows, err = p:query(sql, ...)
-  if rows == nil then return nil, err end
+  -- pg.lua's own query() can legitimately return `nil, nil` for a
+  -- connection-level failure it has no formatted message for (e.g. a
+  -- socket reset mid-query after this connection sat unused through a long
+  -- upload's remux/AI/hash work) -- without this fallback that surfaced as
+  -- a bare "Could not save media: nil" with no way to tell a real DB error
+  -- from a dropped connection.
+  if rows == nil then return nil, err or "database connection error (no detail available)" end
   if rows == true then return {} end -- DDL/DML with no result set
   return rows
 end
