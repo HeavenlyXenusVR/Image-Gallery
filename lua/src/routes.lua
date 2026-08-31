@@ -7008,10 +7008,42 @@ end
 -- detached; the requested quality becomes available near-instantly, via
 -- the cache-hit path below, for every request after that -- including a
 -- retry/reload of this same video by the same viewer a moment later.
+-- Nested (not top-level) locals: this file's main chunk is already at
+-- LuaJIT's 200-local ceiling.
+--
+-- 2026-08-31: NO CPU FALLBACK, deliberately. This used to fail open onto a
+-- libx264 re-encode when no VAAPI device was found; that's exactly the
+-- CPU-heavy background transcoding that made main.lua disable the media
+-- warmer in the first place (BUGFIX 2026-08-26: sustained 6-7 of 8 cores
+-- for hours, starved an unrelated Discord voice-bot swarm on the same box
+-- into chronic disconnects). Re-enabling the warmer is only safe because
+-- transcoding now runs on a dedicated GPU block instead of the CPU cores
+-- everything else on this box also needs -- a silent CPU fallback would
+-- quietly reopen that exact failure mode the moment the GPU is ever
+-- unavailable, which defeats the entire point. Skipping the encode
+-- instead (a quality just isn't offered yet) is a strictly better failure
+-- than resurrecting the box-wide slowdown incident. See
+-- ensure_hls_variant's identical pair for the confirmed-live hardware
+-- details.
 local function ensure_video_quality_cache(media_id, item, content, quality)
+  local function vaapi_device()
+    return os.getenv("GALLERY_VAAPI_DEVICE") or "/dev/dri/renderD128"
+  end
+  local function vaapi_available()
+    local f = io.open(vaapi_device(), "rb")
+    if f then f:close() return true end
+    return false
+  end
+
   local profile = VIDEO_QUALITY_PROFILES[quality]
   if not profile then return nil end
   if #content > VIDEO_TRANSCODE_SIZE_LIMIT then return nil end
+  -- Every call here is a real re-encode (there's no -c copy option at this
+  -- level -- callers only reach this for quality ~= "original"), so this
+  -- is GPU-or-nothing unconditionally, checked before even looking at the
+  -- pending marker/concurrency slot below: a GPU-less box would never be
+  -- able to use one anyway.
+  if not vaapi_available() then return nil end
 
   local sha_row = db.fetchone("SELECT content_sha256 FROM media_items WHERE id=%s", tostring(media_id))
   local owner = get_user(item.user_id)
@@ -7066,39 +7098,19 @@ local function ensure_video_quality_cache(media_id, item, content, quality)
     local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker) .. " " .. shell_quote(tmp_dst) .. " " .. shell_quote(slot_path)
     if wm_text_file then cleanup = cleanup .. " " .. shell_quote(wm_text_file) end
 
-    -- Nested (not top-level) locals -- see ensure_hls_variant's identical
-    -- comment on why; this function needs its own copy since Lua locals
-    -- aren't shared between separate top-level functions.
-    local function vaapi_device()
-      return os.getenv("GALLERY_VAAPI_DEVICE") or "/dev/dri/renderD128"
-    end
-    local function vaapi_available()
-      local vf = io.open(vaapi_device(), "rb")
-      if vf then vf:close() return true end
-      return false
-    end
-
-    -- See ensure_hls_variant's identical branch for the full reasoning
-    -- (GPU encode block instead of CPU, QVBR as the closest thing to CRF
-    -- this driver supports, crf reused as global_quality). pre_input_args
-    -- default "" for the CPU fallback keeps `%s-i` clean below.
-    local pre_input_args = ""
-    local codec_args
-    if vaapi_available() then
-      local vaapi_profile = profile.profile == "baseline" and "constrained_baseline" or profile.profile
-      pre_input_args = string.format("-vaapi_device %s ", shell_quote(vaapi_device()))
-      codec_args = string.format(
-        "-vf %s,format=nv12,hwupload -c:v h264_vaapi -rc_mode QVBR -global_quality %d -b:v %d -maxrate %d "
-          .. "-profile %s -level 4.1 -c:a aac -b:a %s",
-        shell_quote(scale_filter), profile.crf, profile.vaapi_ceiling_bps, profile.vaapi_ceiling_bps,
-        vaapi_profile, profile.audio_bitrate
-      )
-    else
-      codec_args = string.format(
-        "-vf %s -c:v libx264 -preset %s -crf %d -profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s",
-        shell_quote(scale_filter), profile.preset, profile.crf, profile.profile, profile.audio_bitrate
-      )
-    end
+    -- vaapi_available() already confirmed true at the top of this
+    -- function -- GPU codec_args unconditionally, no CPU fallback (see
+    -- this function's own header comment for why). QVBR is the closest
+    -- thing to CRF this driver supports (see ensure_hls_variant's
+    -- identical branch); crf reused as global_quality.
+    local vaapi_profile = profile.profile == "baseline" and "constrained_baseline" or profile.profile
+    local pre_input_args = string.format("-vaapi_device %s ", shell_quote(vaapi_device()))
+    local codec_args = string.format(
+      "-vf %s,format=nv12,hwupload -c:v h264_vaapi -rc_mode QVBR -global_quality %d -b:v %d -maxrate %d "
+        .. "-profile %s -level 4.1 -c:a aac -b:a %s",
+      shell_quote(scale_filter), profile.crf, profile.vaapi_ceiling_bps, profile.vaapi_ceiling_bps,
+      vaapi_profile, profile.audio_bitrate
+    )
 
     -- nice/ionice: this whole codepath was already "run detached so it
     -- doesn't block the event loop", but a CPU-bound ffmpeg encode at
@@ -7192,6 +7204,43 @@ end
 -- gallery with several people watching different in-progress transcodes
 -- at once, that was real, repeated, avoidable memory/disk pressure.
 local function ensure_hls_variant(media_id, item, content_fn, quality)
+  -- Nested (not top-level) locals: this file's main chunk is already at
+  -- LuaJIT's 200-local ceiling, and these are only ever needed here (both
+  -- the early skip-if-no-GPU check below and the codec_args section
+  -- further down use this same pair, hence defined once up top rather
+  -- than duplicated in both places).
+  local function vaapi_device()
+    return os.getenv("GALLERY_VAAPI_DEVICE") or "/dev/dri/renderD128"
+  end
+
+  -- Confirmed live 2026-08-31 on this box's AMD Radeon 610M (Mendocino
+  -- APU): h264_vaapi works, including through a drawtext filter
+  -- (format=nv12,hwupload after the software drawtext stage, since
+  -- drawtext itself has no hardware-surface variant). A plain readability
+  -- check rather than shelling out to vainfo -- ffmpeg does its own real
+  -- device/driver validation when it actually opens the device, and this
+  -- is just meant to catch "there's no GPU here at all".
+  --
+  -- 2026-08-31: NO CPU FALLBACK, deliberately -- see the needs_reencode
+  -- check below and ensure_video_quality_cache's identical one. This used
+  -- to fail open onto a libx264 re-encode when this returned false;
+  -- that's exactly the CPU-heavy background transcoding that made
+  -- main.lua disable the media warmer in the first place (BUGFIX
+  -- 2026-08-26: sustained 6-7 of 8 cores for hours, starved an unrelated
+  -- Discord voice-bot swarm on the same box into chronic disconnects).
+  -- Re-enabling the warmer is only safe because transcoding now runs on a
+  -- dedicated GPU block instead of the CPU cores everything else on this
+  -- box also needs -- a silent CPU fallback would quietly reopen that
+  -- exact failure mode the moment the GPU is ever unavailable, which
+  -- defeats the entire point. Skipping the encode instead (a quality just
+  -- isn't offered yet) is a strictly better failure than resurrecting the
+  -- box-wide slowdown incident.
+  local function vaapi_available()
+    local f = io.open(vaapi_device(), "rb")
+    if f then f:close() return true end
+    return false
+  end
+
   if quality ~= "original" and not VIDEO_QUALITY_PROFILES[quality] then return nil end
   -- "original" is a `-c copy` remux (no re-encode -- see the codec_args
   -- branch below), not a real transcode, so the size cap that exists to
@@ -7206,6 +7255,15 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   local watermark_text = owner and owner.user_settings and nn(owner.user_settings.watermark_text)
   local digest_seed = media_content_digest_seed(media_id, item, watermark_text)
   local dir = hls_variant_dir(media_id, quality, digest_seed)
+
+  -- Every quality tier other than a non-watermarked "original" needs a
+  -- real re-encode (scaling always does; a watermarked "original" does
+  -- too, since -c copy can't run a filter graph) -- see vaapi_available's
+  -- own header comment for why that's GPU-or-nothing now. Checked before
+  -- even claiming a concurrency slot below: a GPU-less box would never be
+  -- able to use one anyway, so there's no point holding it.
+  local needs_reencode = quality ~= "original" or (watermark_text ~= nil and watermark_text ~= "")
+  if needs_reencode and not vaapi_available() then return nil, "gpu_unavailable" end
 
   -- Same filesystem-based ".pending" dedup as ensure_video_quality_cache.
   local pending_marker = dir .. ".pending"
@@ -7277,8 +7335,8 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
 
   local wm_filter, wm_text_file = media_files.video_watermark_filter(watermark_text)
 
-  -- Nested (not top-level) locals: this file's main chunk is already at
-  -- LuaJIT's 200-local ceiling, and these three are only ever needed here.
+  -- Nested (not top-level) local: this file's main chunk is already at
+  -- LuaJIT's 200-local ceiling, and this is only ever needed here.
   --
   -- Source video bitrate in bits/sec, or nil if unavailable -- used to
   -- target a VAAPI VBR encode below at roughly the same bitrate as the
@@ -7296,108 +7354,62 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
     return tonumber(line)
   end
 
-  local function vaapi_device()
-    return os.getenv("GALLERY_VAAPI_DEVICE") or "/dev/dri/renderD128"
-  end
-
-  -- Confirmed live 2026-08-31 on this box's AMD Radeon 610M (Mendocino
-  -- APU): h264_vaapi works, including through a drawtext filter
-  -- (format=nv12,hwupload after the software drawtext stage, since
-  -- drawtext itself has no hardware-surface variant). A plain readability
-  -- check rather than shelling out to vainfo -- ffmpeg does its own real
-  -- device/driver validation when it actually opens the device, and this
-  -- is just meant to catch "there's no GPU here at all" (a different box,
-  -- a VM, CI) so that case fails open onto the CPU path below instead of
-  -- launching a job guaranteed to fail.
-  local function vaapi_available()
-    local f = io.open(vaapi_device(), "rb")
-    if f then f:close() return true end
-    return false
-  end
-
+  -- vaapi_available() was already checked above (needs_reencode gate) for
+  -- every branch that reaches here with something to actually re-encode --
+  -- both branches below build GPU codec_args unconditionally, no CPU
+  -- fallback (see vaapi_available's own header comment for why).
   local pre_input_args = ""
   local codec_args
   if quality == "original" then
     if wm_filter then
       -- A watermark can't be burned in through `-c copy` (stream remux,
-      -- no filter graph runs at all) -- fall back to a re-encode at the
-      -- source resolution so "original" still gets watermarked like every
-      -- other quality instead of silently skipping it, which was the
-      -- actual bug report ("watermark doesn't show up at all on videos").
-      --
-      -- This is the ONE quality tier whose entire pitch is "available
-      -- almost instantly regardless of source length" (see this
-      -- function's header comment) -- a watermarked account silently
-      -- loses that promise the moment this branch is hit, since a real
-      -- x264 re-encode of a long/high-fps source is genuinely CPU-heavy.
-      -- Confirmed live 2026-08-31: a 12-minute 1080p60 watermarked video's
-      -- first HLS segment took ~30s to appear even at libx264 preset
-      -- ultrafast under real load on this box (well past the client's 8s
-      -- bounded-poll window in M.serve_hls_playlist below -- falls
-      -- through to a 503 there, though VideoPlayer.jsx's hls.js retry
-      -- loop, 40 retries with capped backoff, was already written to ride
-      -- that out) -- the CPU on this box is shared with everything else
-      -- running on it (Postgres, the other worker, desktop use), so a
-      -- software encode competes with all of it for the same cores.
-      --
-      -- Prefer the GPU's dedicated VAAPI encode block when one exists:
-      -- separate silicon from the CPU entirely, so it doesn't compete for
-      -- the same cycles no matter how loaded the box's CPU is. VAAPI has
-      -- no CRF-equivalent "same quality regardless of content" mode, so
-      -- VBR is targeted at the source's own bitrate (falling back to a
-      -- flat 6Mbps guess if ffprobe can't read it) rather than a guessed
-      -- QP, to land in the same ballpark as the source instead of
-      -- guessing at a QP-to-CRF equivalence. Falls open to the CPU path
-      -- when no VAAPI device exists (different box, VM, CI).
-      if vaapi_available() then
-        local vf = wm_filter .. ",format=nv12,hwupload"
-        local source_bitrate = probe_video_bitrate(src) or 6000000
-        local maxrate = math.floor(source_bitrate * 1.3)
-        local bufsize = maxrate * 2
-        pre_input_args = string.format("-vaapi_device %s ", shell_quote(vaapi_device()))
-        codec_args = string.format(
-          "-vf %s -c:v h264_vaapi -rc_mode VBR -b:v %d -maxrate %d -bufsize %d -profile high -level 4.1 -c:a aac -b:a 320k",
-          shell_quote(vf), source_bitrate, maxrate, bufsize
-        )
-      else
-        codec_args = string.format(
-          "-vf %s -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 320k",
-          shell_quote(wm_filter)
-        )
-      end
+      -- no filter graph runs at all) -- re-encode at the source
+      -- resolution so "original" still gets watermarked like every other
+      -- quality instead of silently skipping it, which was the actual bug
+      -- report ("watermark doesn't show up at all on videos"). Runs on
+      -- the GPU's dedicated VAAPI encode block: separate silicon from the
+      -- CPU entirely, so it doesn't compete for the same cycles no matter
+      -- how loaded the box's CPU is. VAAPI has no CRF-equivalent "same
+      -- quality regardless of content" mode, so VBR is targeted at the
+      -- source's own bitrate (falling back to a flat 6Mbps guess if
+      -- ffprobe can't read it) rather than a guessed QP, to land in the
+      -- same ballpark as the source instead of guessing at a QP-to-CRF
+      -- equivalence.
+      local vf = wm_filter .. ",format=nv12,hwupload"
+      local source_bitrate = probe_video_bitrate(src) or 6000000
+      local maxrate = math.floor(source_bitrate * 1.3)
+      local bufsize = maxrate * 2
+      pre_input_args = string.format("-vaapi_device %s ", shell_quote(vaapi_device()))
+      codec_args = string.format(
+        "-vf %s -c:v h264_vaapi -rc_mode VBR -b:v %d -maxrate %d -bufsize %d -profile high -level 4.1 -c:a aac -b:a 320k",
+        shell_quote(vf), source_bitrate, maxrate, bufsize
+      )
     else
       codec_args = "-c copy"
     end
   else
     -- Unlike "original" above, these tiers always re-encode regardless of
-    -- watermark (scaling itself requires it), so VAAPI is tried
-    -- unconditionally here rather than only when watermarked.
+    -- watermark (scaling itself requires it), so needs_reencode above was
+    -- unconditionally true and vaapi_available() already confirmed.
     local profile = VIDEO_QUALITY_PROFILES[quality]
     local scale_filter = video_scale_filter(src, profile.max_width)
     if wm_filter then scale_filter = scale_filter .. "," .. wm_filter end
-    if vaapi_available() then
-      -- No CRF-equivalent constant-quality mode on this driver (ICQ isn't
-      -- supported -- confirmed live 2026-08-31, only CQP/CBR/VBR/QVBR are)
-      -- so QVBR is the closest fit: global_quality reuses this table's own
-      -- crf value (same rough 0-51 QP-like scale as x264's crf) as the
-      -- actual quality driver, with vaapi_ceiling_bps as a generous cap
-      -- against pathologically complex content rather than the primary
-      -- lever. "baseline" has no VAAPI equivalent name -- maps to
-      -- constrained_baseline, the closest match.
-      local vaapi_profile = profile.profile == "baseline" and "constrained_baseline" or profile.profile
-      pre_input_args = string.format("-vaapi_device %s ", shell_quote(vaapi_device()))
-      codec_args = string.format(
-        "-vf %s,format=nv12,hwupload -c:v h264_vaapi -rc_mode QVBR -global_quality %d -b:v %d -maxrate %d "
-          .. "-profile %s -level 4.1 -c:a aac -b:a %s",
-        shell_quote(scale_filter), profile.crf, profile.vaapi_ceiling_bps, profile.vaapi_ceiling_bps,
-        vaapi_profile, profile.audio_bitrate
-      )
-    else
-      codec_args = string.format(
-        "-vf %s -c:v libx264 -preset %s -crf %d -profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s",
-        shell_quote(scale_filter), profile.preset, profile.crf, profile.profile, profile.audio_bitrate
-      )
-    end
+    -- No CRF-equivalent constant-quality mode on this driver (ICQ isn't
+    -- supported -- confirmed live 2026-08-31, only CQP/CBR/VBR/QVBR are)
+    -- so QVBR is the closest fit: global_quality reuses this table's own
+    -- crf value (same rough 0-51 QP-like scale as x264's crf) as the
+    -- actual quality driver, with vaapi_ceiling_bps as a generous cap
+    -- against pathologically complex content rather than the primary
+    -- lever. "baseline" has no VAAPI equivalent name -- maps to
+    -- constrained_baseline, the closest match.
+    local vaapi_profile = profile.profile == "baseline" and "constrained_baseline" or profile.profile
+    pre_input_args = string.format("-vaapi_device %s ", shell_quote(vaapi_device()))
+    codec_args = string.format(
+      "-vf %s,format=nv12,hwupload -c:v h264_vaapi -rc_mode QVBR -global_quality %d -b:v %d -maxrate %d "
+        .. "-profile %s -level 4.1 -c:a aac -b:a %s",
+      shell_quote(scale_filter), profile.crf, profile.vaapi_ceiling_bps, profile.vaapi_ceiling_bps,
+      vaapi_profile, profile.audio_bitrate
+    )
   end
 
   local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker) .. " " .. shell_quote(capacity_slot_path)
@@ -7792,6 +7804,15 @@ function M.serve_hls_playlist(req)
         }
       end
       return 503, { detail = "Server is busy transcoding other videos right now. Try again in a few seconds." }, { ["Retry-After"] = "5" }
+    end
+    -- "gpu_unavailable" (see ensure_hls_variant/vaapi_available): this
+    -- quality needs a real re-encode and there's deliberately no CPU
+    -- fallback anymore, so a missing/broken GPU means exactly this
+    -- instead of silently falling back to the CPU-heavy path that caused
+    -- the 2026-08-26 incident. Distinct message from the generic 404
+    -- below since this is an infra condition, not a fact about the file.
+    if err == "gpu_unavailable" then
+      return 503, { detail = "Video transcoding hardware is temporarily unavailable. Try again later." }
     end
     return 404, { detail = "This quality is not available for this video." }
   end
