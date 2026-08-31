@@ -13,6 +13,7 @@ npm-debug.log*
 *.bak
 .aria_patch_backups/
 backups/*.sql
+backups/*.sql.gz
 .ngrok.yml
 .env.*
 env.zip

@@ -2811,6 +2811,14 @@ local function source_content_for_fingerprint(source)
   return content
 end
 
+-- Forward-declared: the actual function is assigned further down (after
+-- shell_quote/ffmpeg_bin exist) since Lua locals are only visible to code
+-- after their declaration -- this `local` here just reserves the upvalue
+-- so finalize_upload below can close over it; by the time any request
+-- actually runs, the whole module has finished loading and the assignment
+-- further down has already happened.
+local fast_start_remux_if_needed
+
 local function finalize_upload(req, user, source, original_filename, form)
   local debug_t0 = os.time()
   finalize_upload_debug_mark("start", debug_t0)
@@ -2821,6 +2829,12 @@ local function finalize_upload(req, user, source, original_filename, form)
   if not safe_ext then
     return 400, { detail = "Unsupported file extension." }
   end
+  -- Relocates the moov atom to the front of the file BEFORE anything else
+  -- touches `source`, so AI frame sampling, sha256, and the actual on-disk
+  -- save all see the fixed-up bytes. See the function's own header comment
+  -- (below, after ffmpeg_bin) for why this matters.
+  source = fast_start_remux_if_needed(source, sniffed_mime)
+  finalize_upload_debug_mark("fast_start_remux done", debug_t0)
 
   local title_raw = trim(nn(form.title) or ""):sub(1, 160)
   local description_raw = trim(nn(form.description) or "")
@@ -5845,6 +5859,112 @@ local ORPHAN_MIN_AGE_SECONDS = 24 * 3600
 -- reason as shell_quote above.
 local function ffmpeg_bin()
   return os.getenv("GALLERY_FFMPEG_BIN") or "ffmpeg"
+end
+
+-- Runs a `-c copy -movflags +faststart` remux on a freshly-uploaded
+-- MP4-family video so the "serve the original immediately via Range/206
+-- while HLS renditions transcode in the background" path (see
+-- ensure_hls_variant's header comment) actually delivers on "immediately":
+-- a browser's <video> tag can't start decoding progressive MP4 until it
+-- has the moov atom, and plenty of phone cameras/editors write that index
+-- at the END of the file -- without this, the very first play of such an
+-- upload would stall until nearly the whole file has streamed in, which is
+-- the exact "transcoding/everything else takes a long time" symptom this
+-- was added to close.
+--
+-- Pure stream copy (no re-encode), so this is disk-I/O-bound, not
+-- CPU-bound, and fast regardless of file length -- runs synchronously in
+-- the request path (same "blocks copas' event loop for the duration of the
+-- ffmpeg process" tradeoff already accepted for thumbnail/preview
+-- rendering, see media_files.lua's header comment) rather than the
+-- detached-background pattern used for the real multi-quality transcodes,
+-- since the upload response can't be sent until this either finishes or is
+-- skipped.
+--
+-- Scratch files live under uploads_dir (not os.tmpname()'s system /tmp,
+-- which is tmpfs -- RAM-backed -- on this box) both to avoid burning RAM
+-- on multi-hundred-MB videos and so a same-filesystem os.rename() stays
+-- possible; see save_media_file_to_disk's header comment on why
+-- source_path exists at all.
+--
+-- Fails open: any error (corrupt input, an ffmpeg build without the mp4
+-- muxer, an exotic codec the mp4 container can't hold, disk full, ...)
+-- returns `source` completely untouched rather than failing the upload --
+-- a working-but-not-instant upload beats rejecting an otherwise-valid one
+-- over an optimization.
+fast_start_remux_if_needed = function(source, sniffed_mime)
+  -- mp4/mov/m4v are the only sniff_magic containers with a relocatable
+  -- moov atom (ISO-BMFF/QuickTime family) -- webm/mkv (EBML) and ogg/flv
+  -- have no such index to move, so +faststart is meaningless for them.
+  if sniffed_mime ~= "video/mp4" and sniffed_mime ~= "video/quicktime" and sniffed_mime ~= "video/x-m4v" then
+    return source
+  end
+
+  local function faststart_tmp_path(suffix)
+    local dir = M.settings.uploads_dir .. "/_upload_tmp"
+    os.execute("mkdir -p " .. shell_quote(dir))
+    return dir .. "/faststart_" .. tostring(math.random(100000000, 999999999)) .. suffix
+  end
+
+  local input_path, own_input = source.file_path, false
+  if not input_path then
+    input_path = faststart_tmp_path(".src")
+    local f = io.open(input_path, "wb")
+    if not f then return source end
+    f:write(source.content)
+    f:close()
+    own_input = true
+  end
+
+  local output_path = faststart_tmp_path(".out")
+  local container = sniffed_mime == "video/quicktime" and "mov" or "mp4"
+  local cmd = string.format(
+    "nice -n 15 ionice -c2 -n6 %s -y -hide_banner -loglevel error -i %s -map 0:v:0 -map 0:a:0? "
+      .. "-c copy -movflags +faststart -f %s %s >/dev/null 2>&1",
+    ffmpeg_bin(), shell_quote(input_path), container, shell_quote(output_path)
+  )
+  local exit = os.execute(cmd)
+  -- LuaJIT's os.execute returns the raw exit status (0 == success); the
+  -- 5.2+ semantics some rocks emulate return (true, "exit", 0) instead --
+  -- normalize both rather than assume one.
+  local success = exit == 0 or exit == true
+
+  if success then
+    local f = io.open(output_path, "rb")
+    success = f ~= nil
+    if f then
+      local size = f:seek("end")
+      f:close()
+      success = size ~= nil and size > 0
+    end
+  end
+
+  if own_input then os.remove(input_path) end
+
+  if not success then
+    os.remove(output_path)
+    return source
+  end
+
+  -- Preserve whichever memory profile the caller was already using: a
+  -- file_path in means the original bytes were never loaded into process
+  -- memory (the entire point of the chunked-upload path for
+  -- multi-hundred-MB videos), so returning file_path keeps
+  -- save_media_file_to_disk on its cheap os.rename() branch instead of
+  -- reading the remuxed copy back into a Lua string. content in means the
+  -- bytes were already fully resident (M.upload_media's direct path, kept
+  -- under ~100MB by the Cloudflare tunnel's own request-size cap), so
+  -- reading the small remuxed copy back is no new cost.
+  if source.file_path then
+    os.remove(source.file_path)
+    return { file_path = output_path }
+  end
+
+  local f = io.open(output_path, "rb")
+  local content = f:read("*a")
+  f:close()
+  os.remove(output_path)
+  return { content = content }
 end
 
 -- Pull N random tracks out of an arbitrary playlist URL (YouTube,
