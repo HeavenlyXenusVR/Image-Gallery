@@ -7246,8 +7246,24 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
       -- watermarked like every other quality instead of silently
       -- skipping it, which was the actual bug report ("watermark
       -- doesn't show up at all on videos").
+      --
+      -- preset ultrafast, not veryfast: this is the ONE quality tier whose
+      -- entire pitch is "available almost instantly regardless of source
+      -- length" (see this function's header comment) -- a watermarked
+      -- account silently loses that promise the moment this branch is hit,
+      -- since preset is the dominant time-to-first-segment lever for x264.
+      -- Confirmed live 2026-08-31: a 12-minute 1080p60 watermarked video's
+      -- first HLS segment took ~30s to appear at veryfast under real load
+      -- on this box, well past the client's 8s bounded-poll window in
+      -- M.serve_hls_playlist below (falls through to a 503 there, though
+      -- VideoPlayer.jsx's hls.js retry loop -- 40 retries, capped backoff
+      -- -- was already written to ride that out). preset only trades
+      -- compression efficiency (bigger file at the same CRF) for encode
+      -- speed, not visual quality at that CRF, so this doesn't reintroduce
+      -- the original "watermark doesn't show up" bug or change what the
+      -- viewer sees -- just how long they wait to see it.
       codec_args = string.format(
-        "-vf %s -c:v libx264 -preset veryfast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 320k",
+        "-vf %s -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 320k",
         shell_quote(wm_filter)
       )
     else
@@ -7567,7 +7583,12 @@ function M.serve_hls_playlist(req)
     if copas_ok then copas.sleep(0.25) end
     waited = waited + 0.25
   end
-  return 503, { detail = "This video is still starting up -- try again in a moment." }
+  -- Retry-After was already sent on the OTHER 503 branch above (transcode
+  -- queue full) but missing here -- same "still not ready, not a dead end"
+  -- meaning, so any client that respects the header (hls.js's own retry
+  -- loop doesn't; it runs its own capped-backoff timer regardless) should
+  -- get the same signal either way.
+  return 503, { detail = "This video is still starting up -- try again in a moment." }, { ["Retry-After"] = "3" }
 end
 
 function M.serve_hls_segment(req)
