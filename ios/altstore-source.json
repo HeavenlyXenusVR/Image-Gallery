@@ -14,6 +14,14 @@
       "screenshotURLs": [],
       "versions": [
         {
+          "version": "1.27.2",
+          "date": "2026-08-31T17:46:49Z",
+          "downloadURL": "https://github.com/HeavenlyXenusVR/Nyxframe/releases/download/ios%2Fv1.27.2/ImageGallery-1.27.2-unsigned.ipa",
+          "localizedDescription": "See release notes on GitHub.",
+          "size": 1048792,
+          "minOSVersion": "16.0"
+        },
+        {
           "version": "1.27.1",
           "date": "2026-08-29T18:11:26Z",
           "downloadURL": "https://github.com/HeavenlyXenusVR/Nyxframe/releases/download/ios%2Fv1.27.1/ImageGallery-1.27.1-unsigned.ipa",
