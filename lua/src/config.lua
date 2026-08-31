@@ -67,6 +67,18 @@ function M.load()
     cors_allowed_origins = env_csv("GALLERY_CORS_ALLOWED_ORIGINS"),
     cors_allow_origin_regex = env("GALLERY_CORS_ALLOW_ORIGIN_REGEX", ""),
     trusted_hosts = env_csv("GALLERY_TRUSTED_HOSTS"),
+    -- CIDR allow-list (comma-separated, e.g. "127.0.0.0/8,::1/128") for the
+    -- ONLY peers httpd.lua will trust an incoming X-Forwarded-For header
+    -- from -- everyone else's XFF is ignored and the raw TCP peer address is
+    -- used instead. Was defined in .env/.env.example from the start but
+    -- never actually read anywhere in this Lua backend (config.lua had no
+    -- field for it) -- meaning ANY visitor could set X-Forwarded-For to
+    -- whatever they liked and httpd.lua trusted it unconditionally, which
+    -- silently defeated every IP-keyed rate limit (registration, login
+    -- lockout, download-batch) since an attacker could just roll the header
+    -- to reset their own bucket on every request. See httpd.lua's
+    -- ip_in_trusted_cidrs()/client IP resolution.
+    trusted_proxy_cidrs = env_csv("GALLERY_TRUSTED_PROXY_CIDRS"),
     pages_public_url = env("GALLERY_PAGES_PUBLIC_URL", "https://heavenlyxenusvr.github.io/Nyxframe/"),
     -- Backend's own public origin (the cloudflared tunnel target, same value
     -- start_live_tunnel_service.sh already reads from .env) -- used by

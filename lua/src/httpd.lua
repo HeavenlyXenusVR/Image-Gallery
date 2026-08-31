@@ -28,6 +28,7 @@
 local socket = require("socket")
 local copas = require("copas")
 local cjson = require("cjson.safe")
+local bit = require("bit")
 local ws_handshake = require("websocket.handshake")
 local ws_sync = require("websocket.sync")
 
@@ -35,6 +36,13 @@ local M = {}
 M.routes = {} -- { {method=, pattern=, keys={}, handler=} }
 M.ws_routes = {} -- { {pattern=, handler=} }, GET+Upgrade:websocket only, exact-path match
 M.cors = { allowed_origins = {}, origin_suffix_matcher = nil }
+-- CIDR allow-list of peers this server will trust an incoming
+-- X-Forwarded-For header from (set by main.lua from
+-- config.lua's trusted_proxy_cidrs, itself GALLERY_TRUSTED_PROXY_CIDRS).
+-- Populated before M.serve() is ever called; nil/empty means "trust no
+-- one" -- every request then falls back to its raw TCP peer address, same
+-- as if XFF were never sent. See ip_in_trusted_cidrs() below.
+M.trusted_proxy_cidrs = {}
 -- Optional fallback(method, path) -> status, body, headers | nil, called only
 -- when no registered route matches. Returning nil keeps the normal JSON 404
 -- (see static.lua's SPA fallback, the only current user of this hook).
@@ -293,6 +301,59 @@ end
 -- (CORS headers, body encoding) failed.
 -- ---------------------------------------------------------------------------
 
+-- ---------------------------------------------------------------------------
+-- Trusted-proxy CIDR matching, for deciding whether to honor an incoming
+-- X-Forwarded-For header at all (see M.trusted_proxy_cidrs above). No CIDR
+-- utility existed anywhere in this codebase before this fix (confirmed via
+-- grep across lua/src/*.lua) -- this is intentionally small: it only needs
+-- to handle the shapes GALLERY_TRUSTED_PROXY_CIDRS actually holds
+-- ("a.b.c.d/n" for IPv4, "addr/128" for an exact IPv6 match), not full
+-- generality.
+-- ---------------------------------------------------------------------------
+
+local function ipv4_to_int(ip)
+  local a, b, c, d = ip:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+  if not a then return nil end
+  a, b, c, d = tonumber(a), tonumber(b), tonumber(c), tonumber(d)
+  if not (a and b and c and d) then return nil end
+  if a > 255 or b > 255 or c > 255 or d > 255 then return nil end
+  return a * 16777216 + b * 65536 + c * 256 + d
+end
+
+-- ip: plain address string (no port). cidr: "network/bits", or a bare
+-- address (treated as an exact match, bits implied = full width).
+local function ip_in_cidr(ip, cidr)
+  if not ip or ip == "" then return false end
+  local net, bits_str = cidr:match("^([^/]+)/(%d+)$")
+  if not net then
+    return ip == cidr
+  end
+  local bits = tonumber(bits_str)
+  local is_v6 = ip:find(":", 1, true) or net:find(":", 1, true)
+  if is_v6 then
+    -- Only IPv6 CIDR actually configured for this deployment is ::1/128
+    -- (loopback, exact match) -- rather than implement full 128-bit prefix
+    -- math for a case that never comes up, this fails closed (does not
+    -- match) for any IPv6 prefix shorter than /128, and does a plain string
+    -- compare for /128.
+    if bits >= 128 then return ip == net end
+    return false
+  end
+  local ip_int, net_int = ipv4_to_int(ip), ipv4_to_int(net)
+  if not ip_int or not net_int then return false end
+  if bits <= 0 then return true end
+  if bits >= 32 then return ip_int == net_int end
+  local mask = bit.bnot(bit.rshift(0xFFFFFFFF, bits)) -- LuaJIT bit.* args/results are 32-bit
+  return bit.band(ip_int, mask) == bit.band(net_int, mask)
+end
+
+local function ip_in_trusted_cidrs(ip)
+  for _, cidr in ipairs(M.trusted_proxy_cidrs or {}) do
+    if ip_in_cidr(ip, cidr) then return true end
+  end
+  return false
+end
+
 local function access_log_line(method, path, status, duration_ms, client_ip, user_agent)
   local level = (status and status >= 500) and "ERROR"
     or (status and status >= 400) and "WARN"
@@ -335,15 +396,23 @@ local function handle_connection(sock)
 
     -- Client IP + User-Agent computed here (not just on the matched-route
     -- path below) so even a 400/404/OPTIONS response still logs who sent
-    -- it. Prefers X-Forwarded-For (this backend sits behind the
-    -- cloudflared tunnel / nyxframe-proxy), falling back to the raw peer
-    -- address for direct/local connections. Mirrors security.py's
-    -- _client_ip().
-    local xff = (headers["x-forwarded-for"] or ""):match("^[^,]+")
-    local client_ip = (xff and xff:match("^%s*(.-)%s*$") ~= "" and xff:match("^%s*(.-)%s*$")) or nil
-    if not client_ip then
-      local peer_ok, peer_ip = pcall(function() return (sock:getpeername()) end)
-      client_ip = (peer_ok and peer_ip) or "unknown"
+    -- it. Only honors X-Forwarded-For when the actual TCP peer (this
+    -- backend sits behind the cloudflared tunnel / nyxframe-proxy) is
+    -- itself in M.trusted_proxy_cidrs -- otherwise ANY visitor could set
+    -- their own X-Forwarded-For header and have it trusted outright, which
+    -- silently defeated every IP-keyed rate limit in routes.lua
+    -- (registration, login lockout, download-batch: an attacker could just
+    -- roll the header to reset their own bucket on every request). Falls
+    -- back to the raw peer address for direct/untrusted connections either
+    -- way. Mirrors security.py's _client_ip(), now with the trust check
+    -- Python's version already had.
+    local peer_ok, peer_ip = pcall(function() return (sock:getpeername()) end)
+    peer_ip = (peer_ok and peer_ip) or "unknown"
+    local client_ip = peer_ip
+    if ip_in_trusted_cidrs(peer_ip) then
+      local xff = (headers["x-forwarded-for"] or ""):match("^[^,]+")
+      xff = xff and xff:match("^%s*(.-)%s*$")
+      if xff and xff ~= "" then client_ip = xff end
     end
     log_ip = client_ip
     log_ua = headers["user-agent"]

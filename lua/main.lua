@@ -18,6 +18,12 @@ routes.settings = settings
 db.init(settings)
 require("discord_bot").init(settings)
 
+-- Only trust X-Forwarded-For from these peers (see config.lua's
+-- trusted_proxy_cidrs doc comment and httpd.lua's client-IP resolution) --
+-- everything else falls back to the raw TCP peer address, closing the
+-- unauthenticated-XFF rate-limit bypass this previously had wide open.
+httpd.trusted_proxy_cidrs = settings.trusted_proxy_cidrs
+
 -- CORS: mirror app/main.py's allow-listed origins + regex fallback for
 -- ephemeral tunnel hosts (Cloudflare/ngrok/pinggy). httpd.lua's CORS support
 -- (vendored from SwarmPanel) only does exact-match against
@@ -36,16 +42,28 @@ if settings.cors_allow_origin_regex and settings.cors_allow_origin_regex ~= "" t
   -- NOT a full PCRE port of the Python regex (Lua patterns are far more
   -- limited) -- covers the common tunnel-host suffixes actually used by
   -- this deployment (trycloudflare.com, ngrok-free.dev, ngrok.io,
-  -- pinggy-free.link, serveousercontent.com, lhr.life) plus private LAN
-  -- http origins. Revisit if a new tunnel provider is added.
+  -- pinggy-free.link, serveousercontent.com, lhr.life). Revisit if a new
+  -- tunnel provider is added.
+  --
+  -- SECURITY: this used to also unconditionally allow any
+  -- http://localhost:*, http://127.0.0.1:*, http://10.x.x.x, or
+  -- http://192.168.x.x origin, "for local development" -- but that ran in
+  -- production too, with Access-Control-Allow-Credentials: true (see
+  -- httpd.lua's apply_cors), meaning any page loaded from a private-LAN
+  -- address (e.g. another device on the same Wi-Fi, or malicious JS running
+  -- in a LAN-hosted page) could make credentialed cross-origin requests
+  -- against this gallery using the visitor's own session cookie. Removed:
+  -- there's no dev-mode flag in config.lua to gate it behind, and the
+  -- explicit http://127.0.0.1:8788 / http://localhost:8788 entries already
+  -- seeded into httpd.cors.allowed_origins above (when
+  -- GALLERY_CORS_ALLOWED_ORIGINS is unset) cover local dev against this
+  -- backend's own default port without reopening the whole private
+  -- address space.
   local TUNNEL_SUFFIXES = { "trycloudflare%.com", "ngrok%-free%.dev", "ngrok%.io", "pinggy%-free%.link", "serveousercontent%.com", "lhr%.life" }
   httpd.cors.origin_suffix_matcher = function(origin)
     for _, suffix in ipairs(TUNNEL_SUFFIXES) do
       if origin:match("^https://[%w%-]+%." .. suffix .. "$") then return true end
     end
-    if origin:match("^http://localhost:%d+$") or origin:match("^http://127%.0%.0%.1:%d+$") then return true end
-    if origin:match("^http://10%.%d+%.%d+%.%d+:?%d*$") then return true end
-    if origin:match("^http://192%.168%.%d+%.%d+:?%d*$") then return true end
     return false
   end
 end

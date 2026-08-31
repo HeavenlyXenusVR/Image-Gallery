@@ -603,6 +603,8 @@ end
 function M.create_category(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
+  local rl_status, rl_body = ratelimit.check("category_create:" .. user.id, 20, 3600)
+  if rl_status then return rl_status, rl_body end
   local payload = json_body(req)
   local name = trim(nn(payload.name) or ""):sub(1, 80)
   local media_kind = nn(payload.media_kind) or "mixed"
@@ -2093,6 +2095,8 @@ local MENTION_RE = "@([%w_%.%-]+)"
 function M.add_comment(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
+  local rl_status, rl_body = ratelimit.check("comment:" .. user.id, 30, 3600)
+  if rl_status then return rl_status, rl_body end
   local media_id = tonumber(req.params.media_id)
   if not media_id then return 404, { detail = "Media not found." } end
   local payload = json_body(req)
@@ -4243,6 +4247,8 @@ end
 function M.send_direct_message(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
+  local rl_status, rl_body = ratelimit.check("dm:" .. user.id, 60, 3600)
+  if rl_status then return rl_status, rl_body end
   local other_id = tonumber(req.params.user_id)
   if not other_id then return 404, { detail = "User not found." } end
   if is_blocked_either_way(user.id, other_id) then
@@ -4360,6 +4366,8 @@ end
 function M.create_group(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
+  local rl_status, rl_body = ratelimit.check("group_create:" .. user.id, 20, 3600)
+  if rl_status then return rl_status, rl_body end
   local payload = json_body(req)
   local requested_ids = {}
   if type(payload.member_ids) == "table" then
@@ -4448,6 +4456,8 @@ end
 function M.send_group_message(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
+  local rl_status, rl_body = ratelimit.check("group_message:" .. user.id, 60, 3600)
+  if rl_status then return rl_status, rl_body end
   local group_id = tonumber(req.params.group_id)
   if not group_id then return 404, { detail = "Group not found." } end
   if not group_membership_row(group_id, user.id) then return 404, { detail = "Group not found." } end
@@ -5131,6 +5141,8 @@ end
 function M.follow_user(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
+  local rl_status, rl_body = ratelimit.check("follow:" .. user.id, 60, 3600)
+  if rl_status then return rl_status, rl_body end
   local followed_id = tonumber(req.params.user_id)
   if not followed_id then return 404, { detail = "User not found." } end
   local payload = json_body(req)
@@ -5156,6 +5168,8 @@ end
 function M.send_friend_request(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
+  local rl_status, rl_body = ratelimit.check("friend_request:" .. user.id, 30, 3600)
+  if rl_status then return rl_status, rl_body end
   local addressee_id = tonumber(req.params.user_id)
   if not addressee_id then return 404, { detail = "User not found." } end
   if tostring(user.id) == tostring(addressee_id) then
@@ -5365,6 +5379,8 @@ end
 function M.block_user(req)
   local user, auth, status, body = current_user(req)
   if not user then return status, body end
+  local rl_status, rl_body = ratelimit.check("block_user:" .. user.id, 60, 3600)
+  if rl_status then return rl_status, rl_body end
   local target_id = tonumber(req.params.user_id)
   if not target_id then return 404, { detail = "User not found." } end
   local payload = json_body(req)
@@ -6618,6 +6634,10 @@ function M.serve_media_thumb(req)
   local item = fetch_media_by_id(media_id, viewer_id or "0")
   if not item then return 404, { detail = "Media not found." } end
   item.is_adult = db.tobool(item.is_adult)
+  local owner = viewer_id and tostring(item.user_id) == tostring(viewer_id)
+  if item.visibility == "private" and not private_file_allowed(media_id, req.query.access, owner) then
+    return 403, { detail = "This post is private." }
+  end
   if item.is_adult and not adult_file_allowed(req, media_id, req.query.access, viewer_id) then
     return 403, { detail = "Age verification required for this 18+ post." }
   end
@@ -7842,7 +7862,18 @@ end
 -- key: short filesystem-safe prefix for this project's cache files (e.g.
 -- "lumisound"/"nyxframe"). display_name: used only in the filename and
 -- error text shown to the visitor.
-local function download_latest_ipa(repo, key, display_name)
+local function download_latest_ipa(req, repo, key, display_name)
+  -- Unauthenticated by design (this is the public "My Other Projects"
+  -- download tab, streamed via the server's own `gh` credentials against
+  -- private repos) -- but with no rate limit at all, any visitor could hit
+  -- this endlessly and either hammer `gh`/GitHub with this server's own
+  -- credentials or just repeatedly pull the cached .ipa off disk. Same
+  -- ratelimit.check(...) mechanism the upload/analyze/avatar endpoints use,
+  -- keyed per-IP (there's no auth here to key on) and shared across both
+  -- projects so one visitor can't just alternate targets to dodge it.
+  local rl_status, rl_body = ratelimit.check("project_download:" .. client_ip(req), 10, 3600)
+  if rl_status then return rl_status, rl_body end
+
   local tag = project_latest_tag(repo)
   if not tag then return 502, { detail = "Could not reach GitHub to check the latest " .. display_name .. " release. Try again shortly." } end
 
@@ -7909,11 +7940,11 @@ local function download_latest_ipa(repo, key, display_name)
 end
 
 function M.download_lumisound(req)
-  return download_latest_ipa("HeavenlyXenusVR/Lumisound", "lumisound", "Lumisound")
+  return download_latest_ipa(req, "HeavenlyXenusVR/Lumisound", "lumisound", "Lumisound")
 end
 
 function M.download_nyxframe(req)
-  return download_latest_ipa("HeavenlyXenusVR/Nyxframe", "nyxframe", "Nyxframe")
+  return download_latest_ipa(req, "HeavenlyXenusVR/Nyxframe", "nyxframe", "Nyxframe")
 end
 
 return M
