@@ -7562,6 +7562,136 @@ function M.start_media_warmer()
   end)
 end
 
+-- Sweeps _video_cache/_hls_cache/_upload_tmp for stale partial-transcode
+-- artifacts left behind when an ffmpeg job died without cleaning up after
+-- itself -- crash, OOM-kill, or this service getting restarted mid-encode
+-- (systemd's default KillMode=control-group tears the detached child down
+-- along with the worker; see ensure_hls_variant's/ensure_video_quality_
+-- cache's own header comments on this exact failure mode). ensure_hls_
+-- variant self-heals a stale HLS variant, but only the next time someone
+-- actually requests that exact quality again -- a variant nobody ever
+-- re-requests just sits there forever. ensure_video_quality_cache has NO
+-- self-heal at all: every attempt writes a freshly-randomly-suffixed
+-- .src.bin/.tmp.mp4 pair and has no way to notice (let alone clean up) an
+-- older pair left behind by a previous killed attempt.
+--
+-- Confirmed live 2026-08-31: ~1.5GB of exactly this garbage sitting in
+-- _video_cache from several worker restarts earlier the same day, none of
+-- it caught by the existing admin-triggered walk_cache_dir/
+-- admin_purge_storage_orphans pair above -- that sweep only catches cache
+-- files for media that's been DELETED; these are for media that's still
+-- very much alive, just an interrupted encode attempt.
+--
+-- Its own background pass (not piggybacked onto the media warmer's loop)
+-- so it keeps running even with GALLERY_ENABLE_MEDIA_WARMER=false (see
+-- main.lua's BUGFIX 2026-08-26 comment on why that exists) -- an
+-- interrupted encode's leftovers should get swept regardless of whether
+-- proactive warming is turned on. Call once from main.lua, same
+-- primary-worker gate as the warmer (every worker shares the same on-disk
+-- cache, so running this in more than one would just have them race each
+-- other over the same files for no benefit).
+function M.start_stale_transcode_cleanup()
+  local copas = require("copas")
+  local SWEEP_INTERVAL_SECONDS = 30 * 60
+  -- Deliberately much longer than VIDEO_TRANSCODE_PENDING_STALE_SECONDS
+  -- (5 min -- used to decide whether an incoming REQUEST should wait vs.
+  -- relaunch) -- this decides whether to actually DELETE files, so it has
+  -- to stay comfortably clear of the longest any real encode should ever
+  -- take, not just the window a client's poll loop waits on. The longest
+  -- real encode confirmed live so far (a 12-minute 1080p60 watermarked
+  -- original, CPU path, heavy contention) was ~10 minutes; an hour leaves
+  -- wide margin even for a much larger unwatermarked-but-still-re-encoded
+  -- original with no size cap.
+  local MIN_AGE_SECONDS = 60 * 60
+
+  local function remove_stale_by_pattern(dir, name_pattern)
+    local removed, freed = 0, 0
+    local now = os.time()
+    local handle = io.popen(string.format(
+      "find %s -maxdepth 1 -type f -name %s -printf '%%T@ %%s %%p\\n' 2>/dev/null",
+      shell_quote(dir), shell_quote(name_pattern)
+    ))
+    if not handle then return removed, freed end
+    for line in handle:lines() do
+      local mtime_str, size_str, path = line:match("^(%S+) (%d+) (.+)$")
+      local mtime = tonumber(mtime_str)
+      if mtime and (now - mtime) > MIN_AGE_SECONDS then
+        if os.remove(path) then
+          removed = removed + 1
+          freed = freed + (tonumber(size_str) or 0)
+        end
+      end
+    end
+    handle:close()
+    return removed, freed
+  end
+
+  local function sweep_once()
+    local removed, freed = 0, 0
+
+    for _, pattern in ipairs({ "*.pending", "*.src.*.bin", "*.tmp.*.mp4" }) do
+      local r, f = remove_stale_by_pattern(M.settings.uploads_dir .. "/_video_cache", pattern)
+      removed, freed = removed + r, freed + f
+    end
+
+    -- fast_start_remux_if_needed always cleans up its own scratch files on
+    -- every return path -- these can only accumulate if the whole worker
+    -- process died mid-upload, so this is defense-in-depth, not the
+    -- expected common case the way _video_cache's leftovers are.
+    for _, pattern in ipairs({ "*.src", "*.out" }) do
+      local r, f = remove_stale_by_pattern(M.settings.uploads_dir .. "/_upload_tmp", pattern)
+      removed, freed = removed + r, freed + f
+    end
+
+    -- _hls_cache: a stale .pending marker's sibling is a whole DIRECTORY
+    -- (segments + playlist.m3u8), not a single file -- same "not ready,
+    -- previous encoder died" condition ensure_hls_variant itself checks
+    -- for and self-heals on next request, just proactive here instead of
+    -- waiting for one that may never come.
+    local hls_dir = M.settings.uploads_dir .. "/_hls_cache"
+    local now = os.time()
+    local handle = io.popen(string.format(
+      "find %s -maxdepth 1 -type f -name '*.pending' -printf '%%T@ %%p\\n' 2>/dev/null",
+      shell_quote(hls_dir)
+    ))
+    if handle then
+      for line in handle:lines() do
+        local mtime_str, marker_path = line:match("^(%S+) (.+)$")
+        local mtime = tonumber(mtime_str)
+        local variant_dir = marker_path and marker_path:match("^(.*)%.pending$")
+        if mtime and variant_dir and (now - mtime) > MIN_AGE_SECONDS and not hls_variant_ready(variant_dir) then
+          local du = io.popen(string.format("du -sb %s 2>/dev/null", shell_quote(variant_dir)))
+          local dir_bytes = 0
+          if du then
+            local dline = du:read("*l")
+            dir_bytes = dline and tonumber(dline:match("^(%d+)")) or 0
+            du:close()
+          end
+          os.execute("rm -rf " .. shell_quote(variant_dir))
+          os.remove(marker_path)
+          removed = removed + 1
+          freed = freed + dir_bytes
+        end
+      end
+      handle:close()
+    end
+
+    return removed, freed
+  end
+
+  copas.addthread(function()
+    while true do
+      local ok, removed_or_err, freed = pcall(sweep_once)
+      if not ok then
+        print("[nyxframe] stale transcode cleanup error: " .. tostring(removed_or_err))
+      elseif removed_or_err and removed_or_err > 0 then
+        print(string.format("[nyxframe] stale transcode cleanup: removed %d item(s), freed %d bytes", removed_or_err, freed or 0))
+      end
+      copas.sleep(SWEEP_INTERVAL_SECONDS)
+    end
+  end)
+end
+
 -- Builds the query string to propagate onto sub-resource URLs (master
 -- playlist -> per-quality playlist -> segments), so a viewer who only
 -- authenticated via ?access= or ?key= on the FIRST request stays

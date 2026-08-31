@@ -352,6 +352,18 @@ local warmer_enabled = (os.getenv("GALLERY_ENABLE_MEDIA_WARMER") or "true"):lowe
 warmer_enabled = warmer_enabled == "true" or warmer_enabled == "1" or warmer_enabled == "yes"
 if is_primary_worker and warmer_enabled then routes.start_media_warmer() end
 
+-- Background stale-transcode cleanup (see routes.lua's "Sweeps _video_cache/
+-- _hls_cache/_upload_tmp" section) -- periodically removes partial-encode
+-- leftovers from ffmpeg jobs that died mid-run (crash, OOM-kill, a
+-- restart landing mid-transcode) rather than letting them accumulate
+-- forever. Same primary-worker gate and its own off-switch, same
+-- reasoning as the warmer above -- a stray background loop on this box
+-- has bitten this deployment hard enough once already (2026-08-26) to be
+-- worth an escape hatch on every new one by default.
+local transcode_cleanup_enabled = (os.getenv("GALLERY_ENABLE_TRANSCODE_CLEANUP") or "true"):lower()
+transcode_cleanup_enabled = transcode_cleanup_enabled == "true" or transcode_cleanup_enabled == "1" or transcode_cleanup_enabled == "yes"
+if is_primary_worker and transcode_cleanup_enabled then routes.start_stale_transcode_cleanup() end
+
 httpd.listen(settings.host, settings.port)
 print(string.format("[nyxframe] listening on %s:%d", settings.host, settings.port))
 httpd.run()
