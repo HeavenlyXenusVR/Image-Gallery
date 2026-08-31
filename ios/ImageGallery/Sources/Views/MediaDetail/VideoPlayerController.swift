@@ -75,21 +75,45 @@ final class VideoPlayerController: ObservableObject {
         // playlist with a plain URLSession request and retry through a 503
         // BEFORE ever handing the URL to AVPlayer, so by the time AVPlayer
         // sees it, the playlist genuinely exists.
+        //
+        // BUGFIX 2026-08-31: this used to cap at 6 attempts with a fixed
+        // 500ms*attempt backoff -- 10.5s of total budget before giving up
+        // and handing AVPlayer a URL that was STILL 503ing, which then sat
+        // there indefinitely (AVPlayer doesn't reliably flip an HLS asset's
+        // .status to .failed just because its playlist 503s -- it can just
+        // stall with no error and no video, exactly the reported "the
+        // player never succeeds to play" symptom). A cold transcode
+        // routinely takes far longer than 10.5s (confirmed server-side this
+        // same day: 30-85s even on the now-GPU-accelerated path, and
+        // several minutes were observed before that) -- the server was
+        // never actually failing, the client just stopped asking before it
+        // finished. That's also why switching quality "fixed" it: the
+        // server-side encode keeps running regardless of whether the app
+        // is still polling, so by the time a quality switch fires a fresh
+        // preflight, enough real time has usually passed for it to already
+        // be ready. Now honors the server's own Retry-After header
+        // (present on every 503 this route can return -- "still starting
+        // up" says 3s, "busy" 5s, "gpu unavailable" 15s) instead of a fixed
+        // schedule, and retries against a wall-clock deadline instead of an
+        // attempt count -- 3 minutes, comfortably past every real cold-start
+        // time observed, matching the order of magnitude of the web
+        // player's own retry budget (hls.js: 40 retries at up to 3s backoff
+        // each, ~112s) rather than inventing a shorter one for iOS alone.
         preflightTask = Task { [weak self] in
             guard let self else { return }
             var request = URLRequest(url: url)
             for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
 
-            var attempt = 0
+            let deadline = Date().addingTimeInterval(180)
             var resolvedURL: URL?
             while !Task.isCancelled {
                 do {
                     let (_, response) = try await URLSession.shared.data(for: request)
                     let http = response as? HTTPURLResponse
                     let status = http?.statusCode ?? 200
-                    if status == 503 && attempt < 6 {
-                        attempt += 1
-                        try await Task.sleep(nanoseconds: UInt64(500_000_000 * attempt))
+                    if status == 503 && Date() < deadline {
+                        let retryAfter = (http?.value(forHTTPHeaderField: "Retry-After")).flatMap(Double.init) ?? 3
+                        try await Task.sleep(nanoseconds: UInt64(retryAfter * 1_000_000_000))
                         continue
                     }
                     // A busy non-"original" quality gets a 302 to the
