@@ -230,6 +230,14 @@ export function UploadPage({ ctx }) {
         const metadata = Object.fromEntries([...body.entries()].filter(([key]) => key !== "file"));
         data = await apiFetch("/api/media/upload/finish", {
           method: "POST",
+          // finalize_upload runs synchronously on this request: fast-start
+          // remux, a full-file sha256 hash, disk save, and (same as
+          // /api/media/analyze above) up to a 30s AI vision call plus its
+          // own ffmpeg frame-extraction overhead. All of that easily clears
+          // the default 12s apiFetch timeout for a large chunked upload, so
+          // this needs at least as much headroom as analyze's 90s -- more,
+          // since finish does everything analyze does plus the rest.
+          timeoutMs: 180_000,
           body: JSON.stringify({
             ...metadata,
             session_id: init.session_id,
