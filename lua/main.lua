@@ -365,6 +365,15 @@ local transcode_cleanup_enabled = (os.getenv("GALLERY_ENABLE_TRANSCODE_CLEANUP")
 transcode_cleanup_enabled = transcode_cleanup_enabled == "true" or transcode_cleanup_enabled == "1" or transcode_cleanup_enabled == "yes"
 if is_primary_worker and transcode_cleanup_enabled then routes.start_stale_transcode_cleanup() end
 
+-- HLS idle-transcode reaper (see routes.lua's M.start_hls_idle_reaper) --
+-- SIGTERMs an in-progress HLS transcode once the viewer who triggered it
+-- has gone quiet for 25s+, freeing one of only 2 global concurrency slots
+-- instead of leaving it running (up to ~10 minutes) for nobody. Same
+-- primary-worker gate and off-switch convention as the two above.
+local hls_idle_reaper_enabled = (os.getenv("GALLERY_ENABLE_HLS_IDLE_REAPER") or "true"):lower()
+hls_idle_reaper_enabled = hls_idle_reaper_enabled == "true" or hls_idle_reaper_enabled == "1" or hls_idle_reaper_enabled == "yes"
+if is_primary_worker and hls_idle_reaper_enabled then routes.start_hls_idle_reaper() end
+
 httpd.listen(settings.host, settings.port)
 print(string.format("[nyxframe] listening on %s:%d", settings.host, settings.port))
 httpd.run()

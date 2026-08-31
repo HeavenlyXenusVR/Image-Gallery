@@ -7651,7 +7651,8 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
     )
   end
 
-  local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker) .. " " .. shell_quote(capacity_slot_path)
+  local pid_file = dir .. "/.pid"
+  local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker) .. " " .. shell_quote(capacity_slot_path) .. " " .. shell_quote(pid_file)
   if wm_text_file then cleanup = cleanup .. " " .. shell_quote(wm_text_file) end
 
   -- hls_flags temp_file: each playlist rewrite happens via write-then-
@@ -7664,13 +7665,27 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   -- pre_input_args: empty for every branch except the VAAPI one above,
   -- which needs `-vaapi_device ...` before `-i` (a global option, not a
   -- per-input or per-output one).
+  --
+  -- ffmpeg itself is backgrounded WITHIN the outer subshell (rather than
+  -- the old "( ffmpeg; rm cleanup ) &" that only ever backgrounded the
+  -- whole thing as one unit) so `$!` captures ffmpeg's own PID -- nice/
+  -- ionice exec() into place rather than forking again, so this PID is
+  -- ffmpeg's real one, not a short-lived wrapper's. See
+  -- M.start_hls_idle_reaper below for why: without a direct PID, there was
+  -- no way to actually stop an abandoned transcode early (only the
+  -- 30-minute crash-orphan sweep would ever reclaim it), so a viewer who
+  -- clicked off mid-encode left it running for however long the encode
+  -- naturally takes, tying up one of only MAX_CONCURRENT_TRANSCODES=2
+  -- global slots the whole site shares. `wait` blocks the subshell on
+  -- exactly that one background job, so `rm -f cleanup` (slot included)
+  -- still fires the instant ffmpeg exits, killed early or not -- no change
+  -- to the existing self-cleanup-on-exit contract.
   local cmd = string.format(
     "( nice -n 19 ionice -c2 -n7 %s -y -hide_banner -loglevel error %s-i %s -map 0:v:0 -map 0:a:0? %s "
       .. "-f hls -hls_time %d -hls_list_size 0 -hls_playlist_type vod -hls_flags independent_segments+temp_file "
-      .. "-hls_segment_filename %s %s "
-      .. "; rm -f %s ) </dev/null >/dev/null 2>&1 &",
+      .. "-hls_segment_filename %s %s & echo $! > %s; wait; rm -f %s ) </dev/null >/dev/null 2>&1 &",
     ffmpeg_bin(), pre_input_args, shell_quote(src), codec_args, HLS_SEGMENT_SECONDS,
-    shell_quote(dir .. "/seg_%05d.ts"), shell_quote(dir .. "/playlist.m3u8"),
+    shell_quote(dir .. "/seg_%05d.ts"), shell_quote(dir .. "/playlist.m3u8"), shell_quote(pid_file),
     cleanup
   )
   os.execute(cmd)
@@ -7975,6 +7990,91 @@ function M.start_stale_transcode_cleanup()
   end)
 end
 
+-- Reclaims a transcode slot early when the viewer who caused it to launch
+-- has actually left, instead of waiting out the full encode (up to ~10
+-- minutes on the longest real one observed) or the 30-minute crash-orphan
+-- sweep above. Confirmed live as the actual mechanism behind "click off a
+-- video, then anything else that needs a fresh transcode is slow to load":
+-- MAX_CONCURRENT_TRANSCODES is a global cap of 2 for the entire site, so
+-- one or two abandoned-but-still-running encodes can fully starve every
+-- other viewer's (or the same viewer's next video's) cold-cache request
+-- for as long as those jobs keep running with nobody watching.
+--
+-- Deliberately does NOT touch a variant with no .last_watched heartbeat at
+-- all -- that's the media warmer's own pre-warm (see start_media_warmer's
+-- header comment: it explicitly launches the HLS "original" remux ahead of
+-- any real viewer), which must be allowed to run to completion regardless
+-- of whether anyone's watching yet. Only a variant that WAS being watched
+-- (heartbeat exists -- touch_hls_heartbeat only ever gets called from a
+-- real playlist/segment request) and has since gone idle counts as
+-- abandoned.
+--
+-- Short sweep interval (contrast the 30-minute one above, which only ever
+-- needs to catch genuinely-crashed jobs): the whole point is reclaiming a
+-- slot within tens of seconds of real abandonment, not eventually.
+function M.start_hls_idle_reaper()
+  local copas = require("copas")
+  local SWEEP_INTERVAL_SECONDS = 10
+  -- Generous enough that normal hls.js/native live-playlist re-poll gaps
+  -- (typically well under HLS_SEGMENT_SECONDS=6s while a player is actually
+  -- attached) never look like abandonment, even accounting for a slow
+  -- connection or a backgrounded-but-still-open tab throttling timers.
+  local IDLE_SECONDS = 25
+
+  local function reap_once()
+    local reaped = 0
+    local now = os.time()
+    local hls_dir = M.settings.uploads_dir .. "/_hls_cache"
+    local handle = io.popen(string.format("find %s -mindepth 1 -maxdepth 1 -type d 2>/dev/null", shell_quote(hls_dir)))
+    if not handle then return reaped end
+    for dir in handle:lines() do
+      -- hls_variant_ready (has #EXT-X-ENDLIST) means the encode already
+      -- finished on its own -- nothing to reap regardless of heartbeat age.
+      if not hls_variant_ready(dir) then
+        local pf = io.open(dir .. "/.pid", "rb")
+        local pid = pf and tonumber(pf:read("*a")) or nil
+        if pf then pf:close() end
+        local hb = io.open(dir .. "/.last_watched", "rb")
+        local last_watched = hb and tonumber(hb:read("*a")) or nil
+        if hb then hb:close() end
+        if pid and last_watched and (now - last_watched) > IDLE_SECONDS then
+          -- Guard against PID reuse (the OS handing this exact number to
+          -- an unrelated process between ffmpeg exiting and this sweep
+          -- running): only proceed if /proc still shows this PID as an
+          -- actual ffmpeg process. Linux-only, same assumption this whole
+          -- section already makes (VAAPI device paths, nice/ionice, etc).
+          local cf = io.open("/proc/" .. tostring(pid) .. "/cmdline", "rb")
+          local cmdline = cf and cf:read("*a") or ""
+          if cf then cf:close() end
+          if cmdline:find("ffmpeg", 1, true) then
+            -- kill's own exit status doubles as "was it actually still
+            -- alive" -- nonzero (process already gone) just isn't counted,
+            -- no separate kill -0 pre-check needed. SIGTERM, not -9: lets
+            -- ffmpeg tear down cleanly (close the VAAPI device/file
+            -- handles) rather than risking a leaked GPU context.
+            local exit = os.execute("kill -TERM " .. tostring(pid) .. " 2>/dev/null")
+            if exit == 0 or exit == true then reaped = reaped + 1 end
+          end
+        end
+      end
+    end
+    handle:close()
+    return reaped
+  end
+
+  copas.addthread(function()
+    while true do
+      local ok, reaped_or_err = pcall(reap_once)
+      if not ok then
+        print("[nyxframe] hls idle reaper error: " .. tostring(reaped_or_err))
+      elseif reaped_or_err and reaped_or_err > 0 then
+        print(string.format("[nyxframe] hls idle reaper: stopped %d abandoned transcode(s)", reaped_or_err))
+      end
+      copas.sleep(SWEEP_INTERVAL_SECONDS)
+    end
+  end)
+end
+
 -- Builds the query string to propagate onto sub-resource URLs (master
 -- playlist -> per-quality playlist -> segments), so a viewer who only
 -- authenticated via ?access= or ?key= on the FIRST request stays
@@ -8052,6 +8152,23 @@ function M.serve_hls_master(req)
     { ["Content-Type"] = "application/vnd.apple.mpegurl", ["Cache-Control"] = "no-cache" }
 end
 
+-- Touched on every real playlist/segment request for a variant -- both
+-- hls.js and Safari's native engine keep re-polling a still-growing (no
+-- #EXT-X-ENDLIST) playlist and fetching new segments on their own timers
+-- for as long as a player instance is actually attached, so this file's
+-- mtime staying fresh IS the "someone is still watching" signal.
+-- M.start_hls_idle_reaper below is the only reader -- a still-encoding
+-- variant with no heartbeat file at all (the media warmer's own pre-warm,
+-- launched with nobody watching yet) is left alone; one whose heartbeat has
+-- gone stale (a real viewer clicked away) is what gets reaped early.
+function M._touch_hls_heartbeat(dir)
+  local f = io.open(dir .. "/.last_watched", "wb")
+  if f then
+    f:write(tostring(os.time()))
+    f:close()
+  end
+end
+
 function M.serve_hls_playlist(req)
   local media_id = tonumber(req.params.media_id)
   local quality = normalize_video_quality(req.params.quality)
@@ -8060,6 +8177,7 @@ function M.serve_hls_playlist(req)
   if not item then return status, body end
 
   local dir, err = ensure_hls_variant(media_id, item, function() return resolve_media_bytes(item) end, quality)
+  if dir then M._touch_hls_heartbeat(dir) end
   if not dir then
     if err == "missing" then return 404, { detail = "File is missing." } end
     -- "busy" (see acquire_transcode_slot) means the transcode queue is
@@ -8160,6 +8278,7 @@ function M.serve_hls_segment(req)
   if not f then return 404, { detail = "Segment not found." } end
   local bytes = f:read("*a")
   f:close()
+  M._touch_hls_heartbeat(dir)
   return 200, bytes, { ["Content-Type"] = "video/mp2t", ["Cache-Control"] = "public, max-age=86400" }
 end
 
