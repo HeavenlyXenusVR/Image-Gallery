@@ -6879,7 +6879,27 @@ local function video_quality_cache_path(media_id, quality, digest_seed)
   return M.settings.uploads_dir .. "/_video_cache/" .. tostring(media_id) .. "_" .. quality .. "_" .. key .. ".mp4"
 end
 
-local VIDEO_TRANSCODE_PENDING_STALE_SECONDS = 5 * 60
+-- Used everywhere a "is this job actually dead, or just still running" call
+-- has to be made: the global concurrency slot count, and each function's
+-- own per-(media,quality) pending marker. All four uses are the same
+-- underlying question, so one constant, not per-callsite guesses.
+--
+-- 2026-08-31: raised from 5 minutes -- confirmed live, right after
+-- re-enabling the media warmer, that 5 minutes is too short: a slot file's
+-- mtime is never refreshed while its job runs, so ANY job that legitimately
+-- takes longer than 5 minutes gets its OWN slot reclaimed and handed to a
+-- new job while the original is still running. Caught a 1080p QVBR encode
+-- still running at 5m25s having its slot reused, producing 3 concurrent
+-- real ffmpeg processes against a cap of 2 -- and since 2-3 concurrent
+-- VAAPI sessions already measurably slow each other down on this box's
+-- hardware (confirmed earlier: ~64% overhead for just 2 concurrent jobs),
+-- every extra job piling on this way makes the others run longer too,
+-- which reclaims more slots, which piles on more jobs -- an
+-- unbounded-growth spiral, not a one-off blip. 30 minutes is comfortably
+-- clear of the longest real encode observed so far (~10 minutes, CPU path,
+-- heavy contention) while still reclaiming a slot from something actually
+-- crashed in a reasonable time.
+local VIDEO_TRANSCODE_PENDING_STALE_SECONDS = 30 * 60
 
 -- Global cap on concurrently-running detached ffmpeg transcodes, shared by
 -- both ensure_video_quality_cache below and ensure_hls_variant further
@@ -7029,9 +7049,22 @@ local function ensure_video_quality_cache(media_id, item, content, quality)
   local function vaapi_device()
     return os.getenv("GALLERY_VAAPI_DEVICE") or "/dev/dri/renderD128"
   end
+  -- Retries before concluding "unavailable": a missing/unreadable device
+  -- node is usually a real, sustained condition (driver crash, unplugged
+  -- hardware), but a brief driver-reset window can transiently fail this
+  -- exact check too -- worth 2 quick retries rather than skipping an
+  -- encode (and, for an on-demand request, 503ing a viewer) over a blip
+  -- that would have cleared a couple seconds later. copas.sleep (not
+  -- os.execute("sleep ...")) so this yields to the scheduler instead of
+  -- blocking the whole event loop for other requests during the wait --
+  -- same guarded pattern as M.serve_hls_playlist's bounded poll.
   local function vaapi_available()
-    local f = io.open(vaapi_device(), "rb")
-    if f then f:close() return true end
+    local copas_ok, copas = pcall(require, "copas")
+    for attempt = 1, 3 do
+      local f = io.open(vaapi_device(), "rb")
+      if f then f:close() return true end
+      if attempt < 3 and copas_ok then copas.sleep(1) end
+    end
     return false
   end
 
@@ -7235,9 +7268,19 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   -- defeats the entire point. Skipping the encode instead (a quality just
   -- isn't offered yet) is a strictly better failure than resurrecting the
   -- box-wide slowdown incident.
+  --
+  -- Retries before concluding "unavailable" -- see
+  -- ensure_video_quality_cache's identical comment for why (a brief
+  -- driver-reset window can transiently fail this exact check, and it's
+  -- worth 2 quick retries rather than 503ing a viewer over a blip).
+  -- copas.sleep so this yields instead of blocking the whole event loop.
   local function vaapi_available()
-    local f = io.open(vaapi_device(), "rb")
-    if f then f:close() return true end
+    local copas_ok, copas = pcall(require, "copas")
+    for attempt = 1, 3 do
+      local f = io.open(vaapi_device(), "rb")
+      if f then f:close() return true end
+      if attempt < 3 and copas_ok then copas.sleep(1) end
+    end
     return false
   end
 
@@ -7605,15 +7648,16 @@ end
 function M.start_stale_transcode_cleanup()
   local copas = require("copas")
   local SWEEP_INTERVAL_SECONDS = 30 * 60
-  -- Deliberately much longer than VIDEO_TRANSCODE_PENDING_STALE_SECONDS
-  -- (5 min -- used to decide whether an incoming REQUEST should wait vs.
-  -- relaunch) -- this decides whether to actually DELETE files, so it has
-  -- to stay comfortably clear of the longest any real encode should ever
-  -- take, not just the window a client's poll loop waits on. The longest
-  -- real encode confirmed live so far (a 12-minute 1080p60 watermarked
-  -- original, CPU path, heavy contention) was ~10 minutes; an hour leaves
-  -- wide margin even for a much larger unwatermarked-but-still-re-encoded
-  -- original with no size cap.
+  -- Deliberately still longer than VIDEO_TRANSCODE_PENDING_STALE_SECONDS
+  -- (30 min as of 2026-08-31 -- used to decide whether an incoming
+  -- REQUEST should wait vs. relaunch, or whether the global concurrency
+  -- count still trusts a slot) -- this decides whether to actually DELETE
+  -- files, so it has to stay comfortably clear of the longest any real
+  -- encode should ever take, not just the window a client's poll loop
+  -- waits on. The longest real encode confirmed live so far (a 12-minute
+  -- 1080p60 watermarked original, CPU path, heavy contention) was ~10
+  -- minutes; an hour leaves wide margin even for a much larger
+  -- unwatermarked-but-still-re-encoded original with no size cap.
   local MIN_AGE_SECONDS = 60 * 60
 
   local function remove_stale_by_pattern(dir, name_pattern)
@@ -7811,8 +7855,13 @@ function M.serve_hls_playlist(req)
     -- instead of silently falling back to the CPU-heavy path that caused
     -- the 2026-08-26 incident. Distinct message from the generic 404
     -- below since this is an infra condition, not a fact about the file.
+    -- Retry-After longer than the "busy" case's 5s: vaapi_available()
+    -- already spent ~2s retrying internally before returning this, so
+    -- getting here at all means the condition survived that -- more
+    -- likely a sustained outage than a one-off blip, worth a longer gap
+    -- before a client (or hls.js's own retry loop) tries again.
     if err == "gpu_unavailable" then
-      return 503, { detail = "Video transcoding hardware is temporarily unavailable. Try again later." }
+      return 503, { detail = "Video transcoding hardware is temporarily unavailable. Try again later." }, { ["Retry-After"] = "15" }
     end
     return 404, { detail = "This quality is not available for this video." }
   end
