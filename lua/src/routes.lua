@@ -6816,11 +6816,17 @@ end
 -- deployment's traffic level).
 -- ---------------------------------------------------------------------------
 
+-- vaapi_ceiling_bps: only used on the h264_vaapi path (see ensure_hls_variant
+-- below) as QVBR's required -b:v/-maxrate ceiling -- global_quality (reusing
+-- this same table's crf value, which happens to sit on the same rough 0-51
+-- QP-like scale as x264's crf) is what actually drives quality/size there,
+-- this is just a generous cap against pathologically complex content, not
+-- the primary quality lever the way it would be for a CPU CBR/VBR encode.
 local VIDEO_QUALITY_PROFILES = {
-  ["1080p"] = { max_width = 1920, crf = 22, audio_bitrate = "320k", preset = "fast", profile = "high" },
-  ["720p"]  = { max_width = 1280, crf = 25, audio_bitrate = "256k", preset = "fast", profile = "high" },
-  ["480p"]  = { max_width = 854,  crf = 28, audio_bitrate = "192k", preset = "fast", profile = "high" },
-  ["144p"]  = { max_width = 256,  crf = 36, audio_bitrate = "64k",  preset = "ultrafast", profile = "baseline" },
+  ["1080p"] = { max_width = 1920, crf = 22, audio_bitrate = "320k", preset = "fast", profile = "high", vaapi_ceiling_bps = 8000000 },
+  ["720p"]  = { max_width = 1280, crf = 25, audio_bitrate = "256k", preset = "fast", profile = "high", vaapi_ceiling_bps = 5000000 },
+  ["480p"]  = { max_width = 854,  crf = 28, audio_bitrate = "192k", preset = "fast", profile = "high", vaapi_ceiling_bps = 2500000 },
+  ["144p"]  = { max_width = 256,  crf = 36, audio_bitrate = "64k",  preset = "ultrafast", profile = "baseline", vaapi_ceiling_bps = 400000 },
 }
 local VIDEO_TRANSCODE_SIZE_LIMIT = 500 * 1024 * 1024
 
@@ -7059,6 +7065,41 @@ local function ensure_video_quality_cache(media_id, item, content, quality)
     if wm_filter then scale_filter = scale_filter .. "," .. wm_filter end
     local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker) .. " " .. shell_quote(tmp_dst) .. " " .. shell_quote(slot_path)
     if wm_text_file then cleanup = cleanup .. " " .. shell_quote(wm_text_file) end
+
+    -- Nested (not top-level) locals -- see ensure_hls_variant's identical
+    -- comment on why; this function needs its own copy since Lua locals
+    -- aren't shared between separate top-level functions.
+    local function vaapi_device()
+      return os.getenv("GALLERY_VAAPI_DEVICE") or "/dev/dri/renderD128"
+    end
+    local function vaapi_available()
+      local vf = io.open(vaapi_device(), "rb")
+      if vf then vf:close() return true end
+      return false
+    end
+
+    -- See ensure_hls_variant's identical branch for the full reasoning
+    -- (GPU encode block instead of CPU, QVBR as the closest thing to CRF
+    -- this driver supports, crf reused as global_quality). pre_input_args
+    -- default "" for the CPU fallback keeps `%s-i` clean below.
+    local pre_input_args = ""
+    local codec_args
+    if vaapi_available() then
+      local vaapi_profile = profile.profile == "baseline" and "constrained_baseline" or profile.profile
+      pre_input_args = string.format("-vaapi_device %s ", shell_quote(vaapi_device()))
+      codec_args = string.format(
+        "-vf %s,format=nv12,hwupload -c:v h264_vaapi -rc_mode QVBR -global_quality %d -b:v %d -maxrate %d "
+          .. "-profile %s -level 4.1 -c:a aac -b:a %s",
+        shell_quote(scale_filter), profile.crf, profile.vaapi_ceiling_bps, profile.vaapi_ceiling_bps,
+        vaapi_profile, profile.audio_bitrate
+      )
+    else
+      codec_args = string.format(
+        "-vf %s -c:v libx264 -preset %s -crf %d -profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s",
+        shell_quote(scale_filter), profile.preset, profile.crf, profile.profile, profile.audio_bitrate
+      )
+    end
+
     -- nice/ionice: this whole codepath was already "run detached so it
     -- doesn't block the event loop", but a CPU-bound ffmpeg encode at
     -- default (0) priority still competes for the CPU with the luajit
@@ -7070,11 +7111,10 @@ local function ensure_video_quality_cache(media_id, item, content, quality)
     -- ("nice -n 19") and I/O ("ionice -c2 -n7", best-effort lowest) scheduling
     -- priority so the kernel always favors the request-serving process.
     local cmd = string.format(
-      "( nice -n 19 ionice -c2 -n7 %s -y -hide_banner -loglevel error -i %s -map 0:v:0 -map 0:a:0? -vf %s -c:v libx264 -preset %s -crf %d "
-        .. "-profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s -movflags +faststart -f mp4 %s "
+      "( nice -n 19 ionice -c2 -n7 %s -y -hide_banner -loglevel error %s-i %s -map 0:v:0 -map 0:a:0? %s "
+        .. "-movflags +faststart -f mp4 %s "
         .. "&& mv -f %s %s; rm -f %s ) </dev/null >/dev/null 2>&1 &",
-      ffmpeg_bin(), shell_quote(src), shell_quote(scale_filter),
-      profile.preset, profile.crf, profile.profile, profile.audio_bitrate, shell_quote(tmp_dst),
+      ffmpeg_bin(), pre_input_args, shell_quote(src), codec_args, shell_quote(tmp_dst),
       shell_quote(tmp_dst), shell_quote(cache_file),
       cleanup
     )
@@ -7237,46 +7277,127 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
 
   local wm_filter, wm_text_file = media_files.video_watermark_filter(watermark_text)
 
+  -- Nested (not top-level) locals: this file's main chunk is already at
+  -- LuaJIT's 200-local ceiling, and these three are only ever needed here.
+  --
+  -- Source video bitrate in bits/sec, or nil if unavailable -- used to
+  -- target a VAAPI VBR encode below at roughly the same bitrate as the
+  -- source instead of guessing a fixed number, since VAAPI's rate control
+  -- is QP/bitrate-based with no CRF-style "same visual quality regardless
+  -- of content" mode.
+  local function probe_video_bitrate(path)
+    local probe = io.popen(string.format(
+      "%s -v error -select_streams v:0 -show_entries stream=bit_rate -of csv=p=0 %s 2>/dev/null",
+      ffprobe_bin(), shell_quote(path)
+    ))
+    if not probe then return nil end
+    local line = probe:read("*l")
+    probe:close()
+    return tonumber(line)
+  end
+
+  local function vaapi_device()
+    return os.getenv("GALLERY_VAAPI_DEVICE") or "/dev/dri/renderD128"
+  end
+
+  -- Confirmed live 2026-08-31 on this box's AMD Radeon 610M (Mendocino
+  -- APU): h264_vaapi works, including through a drawtext filter
+  -- (format=nv12,hwupload after the software drawtext stage, since
+  -- drawtext itself has no hardware-surface variant). A plain readability
+  -- check rather than shelling out to vainfo -- ffmpeg does its own real
+  -- device/driver validation when it actually opens the device, and this
+  -- is just meant to catch "there's no GPU here at all" (a different box,
+  -- a VM, CI) so that case fails open onto the CPU path below instead of
+  -- launching a job guaranteed to fail.
+  local function vaapi_available()
+    local f = io.open(vaapi_device(), "rb")
+    if f then f:close() return true end
+    return false
+  end
+
+  local pre_input_args = ""
   local codec_args
   if quality == "original" then
     if wm_filter then
       -- A watermark can't be burned in through `-c copy` (stream remux,
-      -- no filter graph runs at all) -- fall back to a visually-lossless
-      -- re-encode at the source resolution so "original" still gets
-      -- watermarked like every other quality instead of silently
-      -- skipping it, which was the actual bug report ("watermark
-      -- doesn't show up at all on videos").
+      -- no filter graph runs at all) -- fall back to a re-encode at the
+      -- source resolution so "original" still gets watermarked like every
+      -- other quality instead of silently skipping it, which was the
+      -- actual bug report ("watermark doesn't show up at all on videos").
       --
-      -- preset ultrafast, not veryfast: this is the ONE quality tier whose
-      -- entire pitch is "available almost instantly regardless of source
-      -- length" (see this function's header comment) -- a watermarked
-      -- account silently loses that promise the moment this branch is hit,
-      -- since preset is the dominant time-to-first-segment lever for x264.
+      -- This is the ONE quality tier whose entire pitch is "available
+      -- almost instantly regardless of source length" (see this
+      -- function's header comment) -- a watermarked account silently
+      -- loses that promise the moment this branch is hit, since a real
+      -- x264 re-encode of a long/high-fps source is genuinely CPU-heavy.
       -- Confirmed live 2026-08-31: a 12-minute 1080p60 watermarked video's
-      -- first HLS segment took ~30s to appear at veryfast under real load
-      -- on this box, well past the client's 8s bounded-poll window in
-      -- M.serve_hls_playlist below (falls through to a 503 there, though
-      -- VideoPlayer.jsx's hls.js retry loop -- 40 retries, capped backoff
-      -- -- was already written to ride that out). preset only trades
-      -- compression efficiency (bigger file at the same CRF) for encode
-      -- speed, not visual quality at that CRF, so this doesn't reintroduce
-      -- the original "watermark doesn't show up" bug or change what the
-      -- viewer sees -- just how long they wait to see it.
-      codec_args = string.format(
-        "-vf %s -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 320k",
-        shell_quote(wm_filter)
-      )
+      -- first HLS segment took ~30s to appear even at libx264 preset
+      -- ultrafast under real load on this box (well past the client's 8s
+      -- bounded-poll window in M.serve_hls_playlist below -- falls
+      -- through to a 503 there, though VideoPlayer.jsx's hls.js retry
+      -- loop, 40 retries with capped backoff, was already written to ride
+      -- that out) -- the CPU on this box is shared with everything else
+      -- running on it (Postgres, the other worker, desktop use), so a
+      -- software encode competes with all of it for the same cores.
+      --
+      -- Prefer the GPU's dedicated VAAPI encode block when one exists:
+      -- separate silicon from the CPU entirely, so it doesn't compete for
+      -- the same cycles no matter how loaded the box's CPU is. VAAPI has
+      -- no CRF-equivalent "same quality regardless of content" mode, so
+      -- VBR is targeted at the source's own bitrate (falling back to a
+      -- flat 6Mbps guess if ffprobe can't read it) rather than a guessed
+      -- QP, to land in the same ballpark as the source instead of
+      -- guessing at a QP-to-CRF equivalence. Falls open to the CPU path
+      -- when no VAAPI device exists (different box, VM, CI).
+      if vaapi_available() then
+        local vf = wm_filter .. ",format=nv12,hwupload"
+        local source_bitrate = probe_video_bitrate(src) or 6000000
+        local maxrate = math.floor(source_bitrate * 1.3)
+        local bufsize = maxrate * 2
+        pre_input_args = string.format("-vaapi_device %s ", shell_quote(vaapi_device()))
+        codec_args = string.format(
+          "-vf %s -c:v h264_vaapi -rc_mode VBR -b:v %d -maxrate %d -bufsize %d -profile high -level 4.1 -c:a aac -b:a 320k",
+          shell_quote(vf), source_bitrate, maxrate, bufsize
+        )
+      else
+        codec_args = string.format(
+          "-vf %s -c:v libx264 -preset ultrafast -crf 18 -pix_fmt yuv420p -c:a aac -b:a 320k",
+          shell_quote(wm_filter)
+        )
+      end
     else
       codec_args = "-c copy"
     end
   else
+    -- Unlike "original" above, these tiers always re-encode regardless of
+    -- watermark (scaling itself requires it), so VAAPI is tried
+    -- unconditionally here rather than only when watermarked.
     local profile = VIDEO_QUALITY_PROFILES[quality]
     local scale_filter = video_scale_filter(src, profile.max_width)
     if wm_filter then scale_filter = scale_filter .. "," .. wm_filter end
-    codec_args = string.format(
-      "-vf %s -c:v libx264 -preset %s -crf %d -profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s",
-      shell_quote(scale_filter), profile.preset, profile.crf, profile.profile, profile.audio_bitrate
-    )
+    if vaapi_available() then
+      -- No CRF-equivalent constant-quality mode on this driver (ICQ isn't
+      -- supported -- confirmed live 2026-08-31, only CQP/CBR/VBR/QVBR are)
+      -- so QVBR is the closest fit: global_quality reuses this table's own
+      -- crf value (same rough 0-51 QP-like scale as x264's crf) as the
+      -- actual quality driver, with vaapi_ceiling_bps as a generous cap
+      -- against pathologically complex content rather than the primary
+      -- lever. "baseline" has no VAAPI equivalent name -- maps to
+      -- constrained_baseline, the closest match.
+      local vaapi_profile = profile.profile == "baseline" and "constrained_baseline" or profile.profile
+      pre_input_args = string.format("-vaapi_device %s ", shell_quote(vaapi_device()))
+      codec_args = string.format(
+        "-vf %s,format=nv12,hwupload -c:v h264_vaapi -rc_mode QVBR -global_quality %d -b:v %d -maxrate %d "
+          .. "-profile %s -level 4.1 -c:a aac -b:a %s",
+        shell_quote(scale_filter), profile.crf, profile.vaapi_ceiling_bps, profile.vaapi_ceiling_bps,
+        vaapi_profile, profile.audio_bitrate
+      )
+    else
+      codec_args = string.format(
+        "-vf %s -c:v libx264 -preset %s -crf %d -profile:v %s -level 4.1 -pix_fmt yuv420p -c:a aac -b:a %s",
+        shell_quote(scale_filter), profile.preset, profile.crf, profile.profile, profile.audio_bitrate
+      )
+    end
   end
 
   local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker) .. " " .. shell_quote(capacity_slot_path)
@@ -7289,12 +7410,15 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   -- keeps a CPU-heavy detached encode from starving the request-serving
   -- process of CPU, confirmed live to otherwise make the whole site
   -- unresponsive for the duration of the encode.
+  -- pre_input_args: empty for every branch except the VAAPI one above,
+  -- which needs `-vaapi_device ...` before `-i` (a global option, not a
+  -- per-input or per-output one).
   local cmd = string.format(
-    "( nice -n 19 ionice -c2 -n7 %s -y -hide_banner -loglevel error -i %s -map 0:v:0 -map 0:a:0? %s "
+    "( nice -n 19 ionice -c2 -n7 %s -y -hide_banner -loglevel error %s-i %s -map 0:v:0 -map 0:a:0? %s "
       .. "-f hls -hls_time %d -hls_list_size 0 -hls_playlist_type vod -hls_flags independent_segments+temp_file "
       .. "-hls_segment_filename %s %s "
       .. "; rm -f %s ) </dev/null >/dev/null 2>&1 &",
-    ffmpeg_bin(), shell_quote(src), codec_args, HLS_SEGMENT_SECONDS,
+    ffmpeg_bin(), pre_input_args, shell_quote(src), codec_args, HLS_SEGMENT_SECONDS,
     shell_quote(dir .. "/seg_%05d.ts"), shell_quote(dir .. "/playlist.m3u8"),
     cleanup
   )
