@@ -7531,7 +7531,38 @@ local WARM_SCAN_PAUSE_SECONDS = 0.2   -- between cheap existence-checks (no laun
 -- draining the whole batch in one pass, is what keeps this a gentle
 -- trickle instead of a burst -- the driver loop below paces calls with its
 -- own sleep between them.
+--
+-- BUGFIX 2026-08-31: confirmed live that this kept launching new GPU
+-- transcode jobs even while the whole MACHINE (not just this Lua process)
+-- was already severely oversubscribed -- caught mid-incident: load average
+-- over 20 on this 8-core box, one ffmpeg job stuck 26+ minutes in
+-- uninterruptible disk-wait, a worker process actually crashed with
+-- systemd's own "timeout" result (killed mid-shutdown because a stuck
+-- ffmpeg wouldn't exit), and completely unrelated endpoints like
+-- /api/tags taking 13-14 SECONDS to respond. Moving transcoding to the
+-- GPU (see vaapi_available's header comment) fixed the CPU-encode-
+-- saturation failure mode this exact warmer hit before, but ffmpeg's
+-- decode/filter/mux stages still run on the CPU, and concurrent jobs still
+-- compete for disk I/O and memory with everything else sharing this box
+-- (Postgres, Lavalink, a full desktop session) -- GPU offload was never
+-- going to make THAT contention disappear. This is the one piece of the
+-- whole transcoding pipeline that's pure nice-to-have (on-demand
+-- transcoding for a real viewer already works fine standing alone) -- it
+-- has no business adding load when the box is already struggling, so it
+-- backs off entirely (reusing "busy"'s existing pacing) rather than
+-- launching anything once 1-minute load average passes the core count.
+-- Deliberately NOT touching acquire_transcode_slot/MAX_CONCURRENT_
+-- TRANSCODES -- that cap is shared with on-demand requests too, and a
+-- real viewer waiting on their own video should never be throttled by the
+-- warmer's own restraint.
 local function warm_one_pass(cursor_id)
+  do
+    local f = io.open("/proc/loadavg", "rb")
+    local load = f and tonumber((f:read("*l") or ""):match("^(%S+)"))
+    if f then f:close() end
+    if load and load > 8 then return "busy", cursor_id end
+  end
+
   local rows = db.fetchall([[
     SELECT id, user_id, storage_path, mime_type, original_filename, file_size,
            media_kind, updated_at, created_at, content_sha256
