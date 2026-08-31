@@ -2948,6 +2948,27 @@ local function finalize_upload(req, user, source, original_filename, form)
   finalize_upload_debug_mark("save_media_file done", debug_t0)
   if not media_file then return 500, { detail = "Could not store uploaded file: " .. tostring(save_err) } end
 
+  -- Live-diagnosing a "Could not save media: ... invalid input syntax for
+  -- type bigint: \"nil\"" report: every bigint column below is nullable
+  -- except these three, and they're the only ones fed through a bare
+  -- tostring() with no nil-guard (every nullable bigint param uses the
+  -- `X and tostring(X) or nil` pattern instead, which can't produce the
+  -- literal string "nil"). Checked explicitly here so a genuinely-nil value
+  -- fails with a clear message instead of a cryptic Postgres type error --
+  -- and logged unconditionally (not gated behind GALLERY_UPLOAD_DEBUG_TIMING)
+  -- since this is exactly the kind of value that needs to be visible on the
+  -- NEXT occurrence without needing another round of forensics.
+  local file_size_value = source_size(source)
+  print(string.format(
+    "[nyxframe] finalize_upload insert: user_id=%s category_id=%s file_size=%s media_kind=%s",
+    tostring(user.id), tostring(category_id), tostring(file_size_value), tostring(media_kind)
+  ))
+  if not user.id then return 500, { detail = "Could not save media: user id missing." } end
+  if not category_id then return 500, { detail = "Could not save media: category id missing." } end
+  if not file_size_value or file_size_value <= 0 then
+    return 500, { detail = "Could not save media: file size missing or invalid." }
+  end
+
   local row, insert_err = db.fetchone(
     [[
       INSERT INTO media_items
@@ -2960,7 +2981,7 @@ local function finalize_upload(req, user, source, original_filename, form)
     ]],
     tostring(user.id), tostring(category_id), subcategory_id and tostring(subcategory_id) or nil,
     title, description, cjson.encode(arr(tags)), media_kind, sniffed_mime, original_filename,
-    media_file.storage_path, tostring(source_size(source)), nil, sha256,
+    media_file.storage_path, tostring(file_size_value), nil, sha256,
     visibility, comments_enabled, downloads_enabled,
     moderation.is_adult, moderation.adult_marked_by_user, moderation.adult_marked_by_ai,
     moderation.moderation_status, tostring(moderation.moderation_score), moderation.moderation_reason,
