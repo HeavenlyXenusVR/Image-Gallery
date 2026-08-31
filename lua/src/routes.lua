@@ -6112,14 +6112,15 @@ fast_start_remux_if_needed = function(source, sniffed_mime)
   -- 5.2+ semantics some rocks emulate return (true, "exit", 0) instead --
   -- normalize both rather than assume one.
   local success = exit == 0 or exit == true
+  local remuxed_size
 
   if success then
     local f = io.open(output_path, "rb")
     success = f ~= nil
     if f then
-      local size = f:seek("end")
+      remuxed_size = f:seek("end")
       f:close()
-      success = size ~= nil and size > 0
+      success = remuxed_size ~= nil and remuxed_size > 0
     end
   end
 
@@ -6139,9 +6140,20 @@ fast_start_remux_if_needed = function(source, sniffed_mime)
   -- bytes were already fully resident (M.upload_media's direct path, kept
   -- under ~100MB by the Cloudflare tunnel's own request-size cap), so
   -- reading the small remuxed copy back is no new cost.
+  --
+  -- file_size MUST be carried over here -- confirmed live: this used to
+  -- return a bare { file_path = output_path } with no file_size, so
+  -- source_size()'s fallback to source.file_size (used for both the
+  -- media_items.file_size column and, upstream, nothing else) silently
+  -- got nil for every mp4/mov/m4v upload where the remux actually
+  -- succeeded, surfacing many calls later as a cryptic Postgres
+  -- "invalid input syntax for type bigint: \"nil\"" on the INSERT. Use the
+  -- remuxed output's own size (already measured above), not the original
+  -- source.file_size -- +faststart changes the container's byte size
+  -- slightly even under `-c copy`.
   if source.file_path then
     os.remove(source.file_path)
-    return { file_path = output_path }
+    return { file_path = output_path, file_size = remuxed_size }
   end
 
   local f = io.open(output_path, "rb")
