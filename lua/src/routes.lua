@@ -7119,6 +7119,28 @@ local VIDEO_TRANSCODE_PENDING_STALE_SECONDS = 30 * 60
 -- machinery, consistent with this file's existing tolerance for "rare,
 -- self-correcting" over building a real queue for this deployment's
 -- traffic level.
+--
+-- RECONSIDERED 2026-08-31 after ensure_hls_variant moved decode onto the
+-- GPU too (see that function's own comment) -- asked directly "since it's
+-- GPU now, can this go up?" and checked with real concurrent-job
+-- benchmarks rather than guessing: on this box's VAAPI/VCN hardware,
+-- aggregate transcode throughput measured HIGHEST at 2 concurrent jobs
+-- (3.8 source-seconds of video processed per wall-clock second) and
+-- WORSE at 3 (2.78/s -- barely above what a single job alone achieves).
+-- The video engine itself is a single shared hardware block; pushing more
+-- concurrent sessions through it doesn't add capacity; it just makes every
+-- session wait on the others, so 3+ jobs spend more time contending than
+-- they gain from parallelism. This isn't the same CPU-starvation concern
+-- the 2026-08-23 finding above was about (this box's CPU cores now sit
+-- mostly idle during a transcode, confirmed via `top` while running
+-- concurrent jobs) -- it's the GPU's own ceiling. 2 is not an arbitrary
+-- safety margin left over from the CPU era; it's this hardware's actual
+-- capacity, re-confirmed under the new pipeline, not the old one. Raise
+-- this only after re-benchmarking on whatever GPU is actually running it
+-- (`ffmpeg -hwaccel vaapi ... &` two/three copies at once, watch
+-- /sys/class/drm/card*/device/vcn_busy_percent and total wall-clock vs.
+-- source duration, same method used here) -- don't just bump the number
+-- because decode moved to the GPU.
 local MAX_CONCURRENT_TRANSCODES = 2
 
 local function transcode_slots_dir()
@@ -7629,6 +7651,38 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   -- every branch that reaches here with something to actually re-encode --
   -- both branches below build GPU codec_args unconditionally, no CPU
   -- fallback (see vaapi_available's own header comment for why).
+  --
+  -- `-hwaccel vaapi -hwaccel_output_format vaapi` (both branches) decodes
+  -- the source on the GPU's VCN block too, instead of the previous
+  -- software decode -- confirmed live 2026-08-31 via direct ffmpeg
+  -- benchmarks on a real 1080p source (30s clip): software decode alone
+  -- ran a single 480p+watermark job at ~27s of user CPU time; hwaccel
+  -- decode dropped that to ~16s (-40%) with a comparable or slightly
+  -- faster wall-clock, decode being the dominant CPU cost in this
+  -- pipeline, not the software scale/drawtext stages after it (which stay
+  -- exactly as they were -- `hwdownload` right after decode hands them a
+  -- normal system-memory nv12 frame, so video_scale_filter's upscale/
+  -- unsharp branch and the watermark drawtext filter need no changes at
+  -- all). A more aggressive all-hardware pipeline (scale_vaapi, keeping
+  -- frames on-GPU end to end) was also benchmarked and cut CPU further
+  -- (~93% for the no-watermark case) but made watermarked jobs' wall-clock
+  -- WORSE (~19s vs ~8.5s for the same 30s clip) due to the hwdownload/
+  -- hwupload round-trip drawtext still requires (no VAAPI-native drawtext
+  -- exists) -- not worth that trade for this deployment.
+  --
+  -- Do NOT read any of this as license to raise MAX_CONCURRENT_TRANSCODES,
+  -- though -- also confirmed live via direct concurrent-job benchmarking:
+  -- aggregate throughput on this box's VCN block PEAKS at 2 concurrent
+  -- jobs (3.8 source-seconds processed per wall-clock second) and drops at
+  -- 3 (2.78/s, worse than 2 concurrent AND barely above 1 job's 1.57/s) --
+  -- the video engine itself, not CPU, is the binding constraint once
+  -- decode is also on the GPU, and it's already near its ceiling at 2. This
+  -- matches the existing "~64% overhead for just 2 concurrent jobs" finding
+  -- recorded above for the OLD software-decode pipeline (see
+  -- VIDEO_TRANSCODE_PENDING_STALE_SECONDS's comment) -- two independent
+  -- measurements, two different pipelines, same conclusion: this GPU's
+  -- video block, not an arbitrary CPU-safety number, is what actually caps
+  -- concurrency at 2 on this hardware.
   local pre_input_args = ""
   local codec_args
   if quality == "original" then
@@ -7646,11 +7700,13 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
       -- ffprobe can't read it) rather than a guessed QP, to land in the
       -- same ballpark as the source instead of guessing at a QP-to-CRF
       -- equivalence.
-      local vf = wm_filter .. ",format=nv12,hwupload"
+      local vf = "hwdownload,format=nv12," .. wm_filter .. ",format=nv12,hwupload"
       local source_bitrate = probe_video_bitrate(src) or 6000000
       local maxrate = math.floor(source_bitrate * 1.3)
       local bufsize = maxrate * 2
-      pre_input_args = string.format("-vaapi_device %s ", shell_quote(vaapi_device()))
+      pre_input_args = string.format(
+        "-hwaccel vaapi -hwaccel_output_format vaapi -vaapi_device %s ", shell_quote(vaapi_device())
+      )
       codec_args = string.format(
         "-vf %s -c:v h264_vaapi -rc_mode VBR -b:v %d -maxrate %d -bufsize %d -profile high -level 4.1 -c:a aac -b:a 320k",
         shell_quote(vf), source_bitrate, maxrate, bufsize
@@ -7663,7 +7719,7 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
     -- watermark (scaling itself requires it), so needs_reencode above was
     -- unconditionally true and vaapi_available() already confirmed.
     local profile = VIDEO_QUALITY_PROFILES[quality]
-    local scale_filter = video_scale_filter(src, profile.max_width)
+    local scale_filter = "hwdownload,format=nv12," .. video_scale_filter(src, profile.max_width)
     if wm_filter then scale_filter = scale_filter .. "," .. wm_filter end
     -- No CRF-equivalent constant-quality mode on this driver (ICQ isn't
     -- supported -- confirmed live 2026-08-31, only CQP/CBR/VBR/QVBR are)
@@ -7674,7 +7730,9 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
     -- lever. "baseline" has no VAAPI equivalent name -- maps to
     -- constrained_baseline, the closest match.
     local vaapi_profile = profile.profile == "baseline" and "constrained_baseline" or profile.profile
-    pre_input_args = string.format("-vaapi_device %s ", shell_quote(vaapi_device()))
+    pre_input_args = string.format(
+      "-hwaccel vaapi -hwaccel_output_format vaapi -vaapi_device %s ", shell_quote(vaapi_device())
+    )
     codec_args = string.format(
       "-vf %s,format=nv12,hwupload -c:v h264_vaapi -rc_mode QVBR -global_quality %d -b:v %d -maxrate %d "
         .. "-profile %s -level 4.1 -c:a aac -b:a %s",
