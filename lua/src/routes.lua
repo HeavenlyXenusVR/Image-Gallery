@@ -7510,6 +7510,38 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   local pending_age = pf and tonumber(pf:read("*a")) or nil
   if pf then pf:close() end
   local still_encoding = pending_age and (os.time() - pending_age) < VIDEO_TRANSCODE_PENDING_STALE_SECONDS
+  if still_encoding then
+    -- A still-fresh marker only proves the job was CLAIMED recently, not
+    -- that the encoder is still actually alive -- if ffmpeg crashed (or
+    -- errored out immediately on this specific file -- an odd resolution,
+    -- a corrupt frame, whatever) moments after starting, this marker would
+    -- otherwise read as "still running" for up to the full 30-minute
+    -- staleness window, during which every viewer gets handed a playlist
+    -- that will never grow past whatever partial/truncated segment ffmpeg
+    -- wrote before dying. Suspected live cause of a "this format isn't
+    -- supported by your browser" report on a video whose actual source
+    -- codec was plain h264 (confirmed via ffprobe, so not a real
+    -- incompatibility) -- a truncated tail segment fails to demux/decode
+    -- exactly the same way a genuine one would, and reloading the same
+    -- broken segment "confirms" it as permanent instead of a one-off.
+    -- Now checkable at all because ensure_hls_variant's own launch writes
+    -- a .pid file (see its header comment) -- reuses the same
+    -- /proc/<pid>/cmdline liveness check as M.start_hls_idle_reaper.
+    local pid_f = io.open(dir .. "/.pid", "rb")
+    local pid = pid_f and tonumber(pid_f:read("*a")) or nil
+    if pid_f then pid_f:close() end
+    if pid then
+      local cf = io.open("/proc/" .. tostring(pid) .. "/cmdline", "rb")
+      local cmdline = cf and cf:read("*a") or ""
+      if cf then cf:close() end
+      still_encoding = cmdline:find("ffmpeg", 1, true) ~= nil
+    end
+    -- pid == nil: .pid hasn't been written yet -- the narrow window right
+    -- after this function's own os.execute(cmd) returns but before the
+    -- backgrounded subshell's `echo $!` has run. Not a dead job, just not
+    -- provably alive yet either -- trust the marker rather than misfire on
+    -- a race this function itself just created a moment ago.
+  end
 
   -- Trust the existing directory only if it's genuinely complete, or a
   -- transcode for it is still actively running (don't stomp on/duplicate
@@ -7693,35 +7725,40 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
 end
 
 -- ---------------------------------------------------------------------------
--- Background media warmer: proactively pre-transcodes every video's mp4
--- quality-variant renditions (144p/480p/720p/1080p, via
--- ensure_video_quality_cache above) plus the HLS "original" remux (the one
--- rendition every HLS playback needs first regardless of which adaptive
--- quality a player eventually settles on -- see M.serve_hls_master's own
--- ordering), so a viewer's FIRST request for a given quality is already a
--- cache hit instead of falling back to the full original while a
--- just-launched background job catches up. That fallback is still correct
--- and still happens for anything the warmer hasn't reached yet or that a
--- capacity-full moment skipped -- this only shrinks how often it's needed.
+-- Background media warmer: proactively pre-transcodes every video's HLS
+-- quality-variant renditions (144p/480p/720p/1080p plus "original", via
+-- ensure_hls_variant), so a viewer's FIRST request for a given quality is
+-- already a cache hit instead of a live cold-start transcode. That
+-- fallback path is still correct and still happens for anything the warmer
+-- hasn't reached yet or that a capacity-full moment skipped -- this only
+-- shrinks how often it's needed.
 --
--- Deliberately does NOT also warm the other HLS-specific quality
--- directories (144p/480p/720p/1080p under _hls_cache/): that would re-run
--- the exact same encode a second time in a different container purely for
--- adaptive-HLS playback, doubling total transcode CPU-time for a rendition
--- the mp4 quality-cache path above already covers for the traffic pattern
--- actually observed in production (plain `/file?quality=` requests, not
--- per-rendition HLS playlist fetches). Revisit if HLS adaptive playback
--- becomes the dominant client path.
+-- FIXED 2026-08-31 (was warming the wrong cache entirely): this used to
+-- warm ensure_video_quality_cache's mp4 renditions (_video_cache/) on the
+-- stated assumption that "the traffic pattern actually observed in
+-- production" was plain `/file?quality=` requests, not per-rendition HLS
+-- fetches. That assumption no longer held -- confirmed live, videoQualityUrl
+-- in utils/media.js unconditionally builds /hls/<quality>/playlist.m3u8 for
+-- every quality including what used to be a raw mp4 link, and the iOS
+-- client never requests a quality-specific mp4 either. The warmer was
+-- therefore diligently keeping an entirely unread cache warm every pass
+-- while the actual _hls_cache/ per-quality directories the player requests
+-- stayed permanently cold except for "original" (the one rendition warmed
+-- below regardless, since it has no size cap) -- reported live as "the
+-- warmer should have finished by now, so why does every quality switch
+-- still transcode." ensure_video_quality_cache/_video_cache itself is left
+-- in place (M.serve_media_file still honors ?quality= if anything ever
+-- calls it) -- only the warmer's target changed.
 --
 -- Runs as a slow, perpetual copas background coroutine, gated to the
 -- primary worker only (see main.lua's is_primary_worker) -- every worker
 -- shares the same on-disk cache, so a second worker warming in parallel
 -- would just race the first one for the same slot files and cache paths
 -- with zero benefit. Never claims a transcode slot itself: it only ever
--- asks ensure_video_quality_cache/ensure_hls_variant to do so, exactly like
--- a live request would, and backs off when none are free -- so foreground
--- traffic and the warmer draw from the exact same MAX_CONCURRENT_TRANSCODES
--- budget, never a separate one.
+-- asks ensure_hls_variant to do so, exactly like a live request would, and
+-- backs off when none are free -- so foreground traffic and the warmer
+-- draw from the exact same MAX_CONCURRENT_TRANSCODES budget, never a
+-- separate one.
 -- ---------------------------------------------------------------------------
 
 local WARM_QUALITIES = { "480p", "720p", "1080p", "144p" }
@@ -7791,27 +7828,43 @@ local function warm_one_pass(cursor_id)
     item.id = last_id
     item.file_size = db.toint(item.file_size, 0)
 
-    -- Same size cap ensure_video_quality_cache itself enforces -- skip
-    -- entirely rather than repeatedly rediscovering "too large" every pass.
-    if item.file_size > 0 and item.file_size <= VIDEO_TRANSCODE_SIZE_LIMIT then
-      local owner = get_user(item.user_id)
-      local watermark_text = owner and owner.user_settings and nn(owner.user_settings.watermark_text)
-      local digest_seed = (nn(item.content_sha256) or item.updated_at or item.created_at or tostring(item.id))
-        .. "|wm=" .. tostring(watermark_text or "")
+    -- Needed by both the HLS quality loop below and the "original" check
+    -- after it -- previously computed INSIDE the size-cap `if` below, which
+    -- meant it was simply undefined (a stray global, effectively nil) for
+    -- any item that skipped that block, silently corrupting the "original"
+    -- HLS variant's cache path for every such item. Never actually
+    -- triggered in production so far (every video happens to currently be
+    -- both >0 bytes and under the 500MB cap), but would misfire the moment
+    -- either condition wasn't true -- fixed by computing this once,
+    -- unconditionally, for every item.
+    local owner = get_user(item.user_id)
+    local watermark_text = owner and owner.user_settings and nn(owner.user_settings.watermark_text)
+    local digest_seed = (nn(item.content_sha256) or item.updated_at or item.created_at or tostring(item.id))
+      .. "|wm=" .. tostring(watermark_text or "")
 
+    -- Warms the HLS per-quality cache (_hls_cache/), which is what the live
+    -- player actually requests -- videoQualityUrl() in utils/media.js always
+    -- builds /hls/<quality>/playlist.m3u8, never /file?quality=, and the iOS
+    -- app doesn't request a quality-specific mp4 either. This used to call
+    -- ensure_video_quality_cache (the OLDER /file?quality= mp4 rendition
+    -- path, still served on request but confirmed unreachable from any
+    -- current client) instead, which meant this loop dutifully filled in
+    -- _video_cache/ on every pass while HLS's own per-quality directories
+    -- stayed permanently cold -- exactly the "warmer says it's done, but
+    -- every quality switch still transcodes live" symptom reported live.
+    -- ensure_hls_variant enforces the same size cap internally for anything
+    -- other than "original", so the outer file_size check here is just
+    -- avoiding the wasted cache-path computation/lookup for a request that
+    -- would decline anyway, not a correctness requirement.
+    if item.file_size > 0 and item.file_size <= VIDEO_TRANSCODE_SIZE_LIMIT then
       for _, quality in ipairs(WARM_QUALITIES) do
-        local cache_file = video_quality_cache_path(item.id, quality, digest_seed)
-        local cf = io.open(cache_file, "rb")
-        if cf then
-          cf:close()
-        else
+        local hls_dir = hls_variant_dir(item.id, quality, digest_seed)
+        if not hls_variant_ready(hls_dir) then
           if not transcode_slot_available() then return "busy", last_id end
-          local content = resolve_media_bytes(item)
-          if content then ensure_video_quality_cache(item.id, item, content, quality) end
+          ensure_hls_variant(item.id, item, function() return resolve_media_bytes(item) end, quality)
           return "launched", last_id
         end
       end
-
     end
 
     -- Original HLS is a remux and deliberately has no size cap. Warm it for
