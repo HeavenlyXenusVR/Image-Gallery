@@ -23,7 +23,11 @@ struct TrendingRailView: View {
                     .padding(.horizontal)
 
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 12) {
+                        // LazyHStack -- see SimilarMediaRail's identical
+                        // fix/comment (capped at 10 items here, but still
+                        // avoids rendering off-screen cards' thumbnails
+                        // eagerly on every appearance).
+                        LazyHStack(spacing: 12) {
                             if isLoading {
                                 ForEach(0..<4, id: \.self) { _ in
                                     RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -96,7 +100,7 @@ private struct TrendingCard: View {
         if item.locked == true {
             Rectangle().fill(.secondary.opacity(0.3)).overlay(Image(systemName: "eye.slash").foregroundStyle(.secondary))
         } else if let urlString = item.thumbUrl, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
+            CachedAsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image): image.resizable().scaledToFill()
                 case .failure: Rectangle().fill(.secondary.opacity(0.2)).overlay(Image(systemName: "photo").foregroundStyle(.secondary))

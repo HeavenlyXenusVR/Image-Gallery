@@ -71,7 +71,7 @@ struct StudioItemCard: View {
     @ViewBuilder
     private var thumbnail: some View {
         if let urlString = item.thumbUrl, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
+            CachedAsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image):
                     image.resizable().scaledToFill()

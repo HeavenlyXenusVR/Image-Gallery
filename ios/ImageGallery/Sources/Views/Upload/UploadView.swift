@@ -179,7 +179,7 @@ struct UploadView: View {
     private func duplicateThumbnail(_ match: DuplicateMatch) -> some View {
         VStack(spacing: 2) {
             if let urlString = match.thumbUrl, let url = URL(string: urlString) {
-                AsyncImage(url: url) { phase in
+                CachedAsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
                         image.resizable().scaledToFill()

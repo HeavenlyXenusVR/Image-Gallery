@@ -164,7 +164,7 @@ struct ProfileView: View {
                 NavigationLink(destination: CollectionDetailView(collectionId: collection.id)) {
                     HStack(spacing: 10) {
                         if let coverUrl = collection.coverUrl, let url = URL(string: coverUrl) {
-                            AsyncImage(url: url) { phase in
+                            CachedAsyncImage(url: url) { phase in
                                 if case .success(let image) = phase { image.resizable().scaledToFill() } else { Color.secondary.opacity(0.15) }
                             }
                             .frame(width: 40, height: 40)
@@ -312,7 +312,7 @@ private struct ProfileHeader: View {
             // to 0.2-0.55 (user_settings.lua); matched here rather than
             // trusting whatever the stored value is.
             if let backdropUrl = user.userSettings?.profileBackdropImageUrl, !backdropUrl.isEmpty, let url = URL(string: backdropUrl) {
-                AsyncImage(url: url) { phase in
+                CachedAsyncImage(url: url) { phase in
                     if case .success(let image) = phase {
                         image.resizable().scaledToFill()
                             .opacity(min(0.55, max(0.2, user.userSettings?.profileBackdropStrength ?? 0.18)))

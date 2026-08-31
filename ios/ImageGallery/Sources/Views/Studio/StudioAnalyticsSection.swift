@@ -65,7 +65,7 @@ struct StudioAnalyticsSection: View {
     @ViewBuilder
     private func thumbnail(_ urlString: String?) -> some View {
         if let urlString, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
+            CachedAsyncImage(url: url) { phase in
                 if case .success(let image) = phase {
                     image.resizable().scaledToFill()
                 } else {

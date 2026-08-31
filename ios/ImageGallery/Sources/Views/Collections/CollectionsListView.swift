@@ -22,7 +22,7 @@ struct CollectionsListView: View {
                         } label: {
                             HStack {
                                 if let urlString = suggestion.thumbUrl, let url = URL(string: urlString) {
-                                    AsyncImage(url: url) { phase in
+                                    CachedAsyncImage(url: url) { phase in
                                         if case .success(let image) = phase {
                                             image.resizable().scaledToFill()
                                         } else {

@@ -28,15 +28,25 @@ struct CommentsSection: View {
                 }
             }
 
-            ForEach(viewModel.topLevelComments) { comment in
-                VStack(alignment: .leading, spacing: 6) {
-                    commentRow(comment)
-                    ForEach(viewModel.replies(to: comment)) { reply in
-                        HStack(alignment: .top, spacing: 8) {
-                            Rectangle().fill(Color.accentColor.opacity(0.3)).frame(width: 2)
-                            commentRow(reply)
+            // LazyVStack, not a bare ForEach directly in the outer VStack:
+            // a long thread can be dozens of comments deep, each with an
+            // AvatarView -- eagerly building every row (and eagerly firing
+            // every avatar's image load) regardless of scroll position is
+            // exactly the kind of thing that made detail-view scrolling
+            // feel laggy, reported live 2026-08-31. LazyVStack still defers
+            // correctly when nested inside the outer ScrollView/VStack this
+            // section lives in.
+            LazyVStack(alignment: .leading, spacing: 12) {
+                ForEach(viewModel.topLevelComments) { comment in
+                    VStack(alignment: .leading, spacing: 6) {
+                        commentRow(comment)
+                        ForEach(viewModel.replies(to: comment)) { reply in
+                            HStack(alignment: .top, spacing: 8) {
+                                Rectangle().fill(Color.accentColor.opacity(0.3)).frame(width: 2)
+                                commentRow(reply)
+                            }
+                            .padding(.leading, 20)
                         }
-                        .padding(.leading, 20)
                     }
                 }
             }

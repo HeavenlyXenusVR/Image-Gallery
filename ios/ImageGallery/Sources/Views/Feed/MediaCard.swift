@@ -169,7 +169,7 @@ struct MediaCard: View {
                 .fill(.secondary.opacity(0.3))
                 .overlay(Image(systemName: "eye.slash").foregroundStyle(.secondary))
         } else if let urlString = item.thumbUrl, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
+            CachedAsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image):
                     image.resizable().scaledToFill()

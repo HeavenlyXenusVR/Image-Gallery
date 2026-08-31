@@ -20,7 +20,8 @@ struct MemoriesRailView: View {
                         .padding(.horizontal)
 
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 12) {
+                        // LazyHStack -- see SimilarMediaRail's identical fix/comment.
+                        LazyHStack(spacing: 12) {
                             ForEach(items) { item in
                                 NavigationLink(destination: MediaDetailView(mediaId: item.id)) {
                                     MemoryCard(item: item)
@@ -81,7 +82,7 @@ private struct MemoryCard: View {
         if item.locked == true {
             Rectangle().fill(.secondary.opacity(0.3)).overlay(Image(systemName: "eye.slash").foregroundStyle(.secondary))
         } else if let urlString = item.thumbUrl, let url = URL(string: urlString) {
-            AsyncImage(url: url) { phase in
+            CachedAsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image): image.resizable().scaledToFill()
                 case .failure: Rectangle().fill(.secondary.opacity(0.2)).overlay(Image(systemName: "photo").foregroundStyle(.secondary))

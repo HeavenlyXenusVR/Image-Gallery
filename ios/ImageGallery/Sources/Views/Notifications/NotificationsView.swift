@@ -100,7 +100,7 @@ private struct NotificationRow: View {
             Spacer(minLength: 4)
 
             if let thumbUrlString = item.mediaThumbUrl, let url = URL(string: thumbUrlString) {
-                AsyncImage(url: url) { phase in
+                CachedAsyncImage(url: url) { phase in
                     if case .success(let image) = phase {
                         image.resizable().scaledToFill()
                     } else {
