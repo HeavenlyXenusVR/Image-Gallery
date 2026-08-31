@@ -209,7 +209,7 @@ export function UploadPage({ ctx }) {
       } else {
         const init = await apiFetch("/api/media/upload/init", {
           method: "POST",
-          body: { total_size: form.file.size, filename: form.file.name },
+          body: JSON.stringify({ total_size: form.file.size, filename: form.file.name }),
         });
         const chunkSize = Number(init.chunk_size) > 0 ? Number(init.chunk_size) : DEFAULT_CHUNK_BYTES;
         const initUrl = await resolveApiUrl("/api/media/upload/chunk");
@@ -230,11 +230,11 @@ export function UploadPage({ ctx }) {
         const metadata = Object.fromEntries([...body.entries()].filter(([key]) => key !== "file"));
         data = await apiFetch("/api/media/upload/finish", {
           method: "POST",
-          body: {
+          body: JSON.stringify({
             ...metadata,
             session_id: init.session_id,
             total_size: form.file.size,
-          },
+          }),
         });
       }
 
