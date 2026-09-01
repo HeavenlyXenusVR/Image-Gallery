@@ -7549,12 +7549,67 @@ end
 -- plus a truncated last segment since a restart on 2026-08-10, and would
 -- have 503'd "still starting up" forever, since nothing ever re-triggers
 -- an encode for a file that already "exists".
+-- BUGFIX 2026-09-01: #EXT-X-ENDLIST alone is NOT proof a variant is
+-- complete, which is what this used to assume. Confirmed by direct
+-- experiment: ffmpeg handles SIGTERM as a clean shutdown and writes the HLS
+-- trailer -- ENDLIST included -- for whatever it had encoded so far. A
+-- killed encode therefore leaves a playlist that is truncated but looks
+-- finished, and because "looks finished" is exactly what this function
+-- tested, that truncated variant was then cached and served FOREVER: no
+-- retry, no relaunch, no way back. Two things routinely send that SIGTERM:
+-- M.start_hls_idle_reaper (kills a transcode whose viewer clicked away) and
+-- any `systemctl restart` of this service (KillMode=control-group tears
+-- down the detached ffmpeg along with the worker).
+--
+-- Found in production as exactly the reported symptom -- "a 5 minute video
+-- is cut down on original and 1080p": media 663 served 21s (original) and 9s
+-- (1080p) of a 300s video, 668 served 62s of 450s, 664 served 39s of 195s.
+-- The pattern is not a coincidence: original and 1080p are the slowest
+-- renditions to encode, so they are the ones a kill is most likely to land
+-- in the middle of.
+--
+-- So a variant is complete only if it has ENDLIST AND its own summed EXTINF
+-- duration is within a small tolerance of the source's real duration
+-- (recorded as `.expected_duration` when the job launched -- see
+-- ensure_hls_variant). Anything shorter is a killed encode: report it as not
+-- ready, and the existing relaunch path rebuilds it from scratch.
+--
+-- The `.verified` marker is a pure optimisation on top: this function is
+-- called on EVERY playlist and segment request, and it used to read the
+-- whole playlist.m3u8 (thousands of lines on a long video) every time just
+-- to look for one tag. A variant that has passed the duration check can
+-- never later fail it, so the verdict is written once and every subsequent
+-- call is a single small open -- strictly less I/O per request than the
+-- version that only checked for ENDLIST.
+--
+-- Variants encoded before this change have no `.expected_duration` and
+-- cannot be checked retroactively; they keep the old ENDLIST-only behaviour.
+-- The three truncated ones above were found and deleted by hand at deploy
+-- time, so the remaining legacy variants are known-good.
 local function hls_variant_ready(dir)
+  local vf = io.open(dir .. "/.verified", "rb")
+  if vf then vf:close() return true end
+
   local f = io.open(dir .. "/playlist.m3u8", "rb")
   if not f then return false end
   local text = f:read("*a")
   f:close()
-  return text ~= nil and text:find("#EXT-X-ENDLIST", 1, true) ~= nil
+  if not text or not text:find("#EXT-X-ENDLIST", 1, true) then return false end
+
+  local ef = io.open(dir .. "/.expected_duration", "rb")
+  local expected = ef and tonumber((ef:read("*a") or ""):match("[%d%.]+")) or nil
+  if ef then ef:close() end
+  if expected and expected > 0 then
+    local actual = 0
+    for d in text:gmatch("#EXTINF:([%d%.]+)") do actual = actual + (tonumber(d) or 0) end
+    -- 3% slack absorbs the last partial segment and rounding; a killed
+    -- encode is short by far more than that (9s of 300s, 62s of 450s).
+    if actual < expected * 0.97 then return false end
+  end
+
+  local mark = io.open(dir .. "/.verified", "wb")
+  if mark then mark:write("1") mark:close() end
+  return true
 end
 
 -- `item` alone (no pre-read file bytes) is enough to check whether a
@@ -7803,6 +7858,30 @@ local function ensure_hls_variant(media_id, item, content_fn, quality, opts)
     content = nil
   end
 
+  -- Recorded before ffmpeg starts so hls_variant_ready can later tell a
+  -- finished encode from a killed one (see its header comment). Written into
+  -- the variant directory, so the `rm -rf dir` that precedes any relaunch
+  -- clears it along with everything else. One ffprobe on the launch path
+  -- only -- never on a cache hit.
+  local source_bitrate_bps
+  do
+    local probe = io.popen(string.format(
+      "%s -v error -show_entries format=duration,bit_rate -of csv=p=0 %s 2>/dev/null",
+      ffprobe_bin(), shell_quote(src)))
+    local out = probe and probe:read("*a") or ""
+    if probe then probe:close() end
+    -- `-of csv=p=0` on format=duration,bit_rate emits one "duration,bitrate"
+    -- line; either field can be "N/A" on an odd container, hence the
+    -- tolerant per-field match rather than positional parsing.
+    local d_s, b_s = out:match("([^,\n]*),([^,\n]*)")
+    local source_duration = tonumber(d_s and d_s:match("[%d%.]+"))
+    source_bitrate_bps = tonumber(b_s and b_s:match("%d+"))
+    if source_duration and source_duration > 0 then
+      local df = io.open(dir .. "/.expected_duration", "wb")
+      if df then df:write(string.format("%.3f", source_duration)) df:close() end
+    end
+  end
+
   local wm_filter, wm_text_file = media_files.video_watermark_filter(watermark_text)
 
   -- Nested (not top-level) local: this file's main chunk is already at
@@ -7878,7 +7957,7 @@ local function ensure_hls_variant(media_id, item, content_fn, quality, opts)
       -- same ballpark as the source instead of guessing at a QP-to-CRF
       -- equivalence.
       local vf = "hwdownload,format=nv12," .. wm_filter .. ",format=nv12,hwupload"
-      local source_bitrate = probe_video_bitrate(src) or 6000000
+      local source_bitrate = source_bitrate_bps or probe_video_bitrate(src) or 6000000
       local maxrate = math.floor(source_bitrate * 1.3)
       local bufsize = maxrate * 2
       pre_input_args = string.format(
@@ -7906,6 +7985,28 @@ local function ensure_hls_variant(media_id, item, content_fn, quality, opts)
     -- against pathologically complex content rather than the primary
     -- lever. "baseline" has no VAAPI equivalent name -- maps to
     -- constrained_baseline, the closest match.
+    -- Never spend more bits than the source actually has.
+    --
+    -- 2026-09-01, measured on media 621: the 1080p rendition came out at
+    -- 508MB against a 468MB `original` -- 4.3MB per segment versus 3.9MB.
+    -- The rendition meant to be a step DOWN was the most expensive thing on
+    -- the site, costing more disk, more GPU time and more bytes per viewer
+    -- than the source it was derived from, for no visual gain: QVBR was
+    -- handed a flat 8Mbps ceiling regardless of whether the source was
+    -- anywhere near it, and a 1080p tier applied to an already-1080p source
+    -- does no downscaling to claw that back. This matters more than it
+    -- looks: the uploads volume is a USB-attached disk that reads cold data
+    -- at ~23MB/s (measured), so bytes per segment IS the binding constraint
+    -- on how many people can watch at once.
+    --
+    -- min() only ever binds in that pathological case -- for a genuine
+    -- downscale (480p off a 1080p source) the tier ceiling is already far
+    -- below the source bitrate and nothing changes. Falls back to the flat
+    -- ceiling when ffprobe cannot read a bitrate.
+    local ceiling_bps = profile.vaapi_ceiling_bps
+    if source_bitrate_bps and source_bitrate_bps > 0 then
+      ceiling_bps = math.min(ceiling_bps, source_bitrate_bps)
+    end
     local vaapi_profile = profile.profile == "baseline" and "constrained_baseline" or profile.profile
     pre_input_args = string.format(
       "-hwaccel vaapi -hwaccel_output_format vaapi -vaapi_device %s ", shell_quote(vaapi_device())
@@ -7913,7 +8014,7 @@ local function ensure_hls_variant(media_id, item, content_fn, quality, opts)
     codec_args = string.format(
       "-vf %s,format=nv12,hwupload -c:v h264_vaapi -rc_mode QVBR -global_quality %d -b:v %d -maxrate %d "
         .. "-profile %s -level 4.1 -c:a aac -b:a %s",
-      shell_quote(scale_filter), profile.crf, profile.vaapi_ceiling_bps, profile.vaapi_ceiling_bps,
+      shell_quote(scale_filter), profile.crf, ceiling_bps, ceiling_bps,
       vaapi_profile, profile.audio_bitrate
     )
   end
@@ -8587,7 +8688,51 @@ function M.serve_hls_playlist(req)
   local item, status, body = hls_check_access(req, media_id)
   if not item then return status, body end
 
-  local dir, err = ensure_hls_variant(media_id, item, function() return resolve_media_bytes(item) end, quality)
+  -- source_path (2026-09-01): the same hardlink fast path the media warmer
+  -- uses, now on the viewer path too -- this is the cold-start case, and it
+  -- was reading the entire video (up to 500MB) into a Lua string and writing
+  -- every byte back out to source.bin, blocking the event loop that serves
+  -- every other request for the whole of it. It is a metadata operation now.
+  -- Falls back to content_fn exactly as before when the original is not
+  -- already cached on disk.
+  -- Best rendition that is ALREADY complete and playable right now, or nil.
+  --
+  -- 2026-09-01: every "can't serve this quality yet" branch below used to
+  -- end in either a 503 or a 302 to `original`, and for this library both are
+  -- close to the worst possible answer. The big posts are 200-450MB, and
+  -- because the owner sets a watermark even `original` is a full re-encode
+  -- rather than a remux -- so a cold `original` is minutes of GPU work, and
+  -- redirecting a stuck viewer TO it (the old "busy" behaviour) sent them to
+  -- the single most expensive rendition on the site. Meanwhile the ladder
+  -- below it is usually sitting on disk fully warmed: when media 663's
+  -- original and 1080p were rebuilding, its 144p/480p/720p were all complete.
+  -- So: hand the viewer the best thing that actually exists and let the
+  -- requested quality finish warming in the background. Playing immediately
+  -- one tier down beats a spinner and a retry loop.
+  --
+  -- Prefers the closest quality BELOW the requested one (a viewer who asked
+  -- for 1080p would rather have 720p than 144p), then falls back upward.
+  -- Costs at most four `.verified` opens -- see hls_variant_ready's fast
+  -- path -- and only ever runs on a branch that was about to fail anyway.
+  local function best_ready_quality()
+    local ladder = { "144p", "480p", "720p", "1080p", "original" }
+    local owner_row = get_user(item.user_id)
+    local wm = owner_row and owner_row.user_settings and nn(owner_row.user_settings.watermark_text)
+    local seed = media_content_digest_seed(media_id, item, wm)
+    local at = nil
+    for i, q in ipairs(ladder) do if q == quality then at = i break end end
+    local order = {}
+    for i = (at or #ladder) - 1, 1, -1 do order[#order + 1] = ladder[i] end
+    for i = (at or 0) + 1, #ladder do order[#order + 1] = ladder[i] end
+    for _, q in ipairs(order) do
+      if hls_variant_ready(hls_variant_dir(media_id, q, seed)) then return q end
+    end
+    return nil
+  end
+
+  local dir, err = ensure_hls_variant(media_id, item, function() return resolve_media_bytes(item) end, quality, {
+    source_path = original_bytes_cache_path(media_id, item),
+  })
   if dir then M._touch_hls_heartbeat(dir) end
   if not dir then
     if err == "missing" then return 404, { detail = "File is missing." } end
@@ -8596,10 +8741,16 @@ function M.serve_hls_playlist(req)
     -- player/client can distinguish "try again shortly" from "give up and
     -- fall back to another quality permanently".
     if err == "busy" then
-      if quality ~= "original" then
+      -- Was: an unconditional 302 to `original` for any non-original
+      -- quality. On this library that redirected a viewer from a rendition
+      -- that merely needed a slot onto the most expensive encode on the
+      -- site, which is very often not warm either -- so the redirect just
+      -- moved the stall. Send them to something genuinely ready instead.
+      local ready_q = best_ready_quality()
+      if ready_q and ready_q ~= quality then
         local fallback_qs = hls_propagated_qs(req) or ""
         return 302, "", {
-          ["Location"] = string.format("/api/media/%d/hls/original/playlist.m3u8%s", media_id, fallback_qs),
+          ["Location"] = string.format("/api/media/%d/hls/%s/playlist.m3u8%s", media_id, ready_q, fallback_qs),
           ["Cache-Control"] = "no-store",
         }
       end
@@ -8617,6 +8768,16 @@ function M.serve_hls_playlist(req)
     -- likely a sustained outage than a one-off blip, worth a longer gap
     -- before a client (or hls.js's own retry loop) tries again.
     if err == "gpu_unavailable" then
+      -- An already-encoded rendition needs no GPU to serve, so a GPU outage
+      -- should not stop playback of a video that is partly warmed.
+      local ready_q = best_ready_quality()
+      if ready_q and ready_q ~= quality then
+        local fallback_qs = hls_propagated_qs(req) or ""
+        return 302, "", {
+          ["Location"] = string.format("/api/media/%d/hls/%s/playlist.m3u8%s", media_id, ready_q, fallback_qs),
+          ["Cache-Control"] = "no-store",
+        }
+      end
       return 503, { detail = "Video transcoding hardware is temporarily unavailable. Try again later." }, { ["Retry-After"] = "15" }
     end
     return 404, { detail = "This quality is not available for this video." }
@@ -8641,9 +8802,19 @@ function M.serve_hls_playlist(req)
   -- to sub-resource requests at all regardless.
   local access_qs = hls_propagated_qs(req)
 
+  -- Two different waits, picked by whether the viewer has anything else to
+  -- watch. A rendition that is merely a second or two from its first segment
+  -- is worth waiting for -- downgrading them would be worse. A cold 300MB
+  -- watermarked original is minutes away, and holding the request for the
+  -- full 8s before redirecting (measured: 8.3s to a redirect that then
+  -- played instantly) is 8 seconds of staring at a spinner for nothing.
+  -- So: once a playable alternative is known to exist, give the requested
+  -- quality a short grace period and then hand over.
+  local ready_alt = best_ready_quality()
+  local wait_budget = ready_alt and 1.5 or 8
   local playlist_path = dir .. "/playlist.m3u8"
   local waited = 0
-  while waited < 8 do
+  while waited < wait_budget do
     local f = io.open(playlist_path, "rb")
     if f then
       local text = f:read("*a")
@@ -8668,6 +8839,19 @@ function M.serve_hls_playlist(req)
   -- meaning, so any client that respects the header (hls.js's own retry
   -- loop doesn't; it runs its own capped-backoff timer regardless) should
   -- get the same signal either way.
+  -- Still no first segment after the bounded wait. The encode IS running and
+  -- will finish in the background (a cold 300MB watermarked original is
+  -- minutes of work, far past any wait a request can hold), so rather than
+  -- leave the viewer on a retry loop, send them to a rendition that is
+  -- already complete if there is one. Measured live: this is the difference
+  -- between "503, nothing plays" and instant playback one tier down.
+  if ready_alt and ready_alt ~= quality then
+    local fallback_qs = hls_propagated_qs(req) or ""
+    return 302, "", {
+      ["Location"] = string.format("/api/media/%d/hls/%s/playlist.m3u8%s", media_id, ready_alt, fallback_qs),
+      ["Cache-Control"] = "no-store",
+    }
+  end
   return 503, { detail = "This video is still starting up -- try again in a moment." }, { ["Retry-After"] = "3" }
 end
 
@@ -8687,8 +8871,37 @@ function M.serve_hls_segment(req)
   local dir = hls_variant_dir(media_id, quality, digest_seed)
   local f = io.open(dir .. "/" .. segment, "rb")
   if not f then return 404, { detail = "Segment not found." } end
-  local bytes = f:read("*a")
+
+  -- Read in chunks, yielding between them, rather than one f:read("*a").
+  --
+  -- Measured 2026-09-01 while load-testing concurrent viewers: a single
+  -- uncontended segment request costs 8ms end to end, but that is a
+  -- page-cache hit. A COLD segment is a real 3.5MB disk read at ~21MB/s --
+  -- ~165ms -- and `f:read("*a")` is one uninterruptible blocking call, so
+  -- the entire worker (copas is single-threaded, and it is the same thread
+  -- serving every other request) stalls for all of it. With 8 simulated
+  -- viewers pulling segments of the big adult-gated videos that head-of-line
+  -- blocking took segment p50 to 430ms and dragged an unrelated /api/health
+  -- probe from ~1ms to a 247ms worst case. Playback is a stream of cold
+  -- sequential reads by nature, so this is the normal case, not an edge one.
+  --
+  -- Same total disk time, but broken into ~12ms pieces with a yield after
+  -- each, so other requests interleave instead of queueing behind a whole
+  -- segment. copas.sleep(0) is the documented "yield to the scheduler now"
+  -- idiom already used elsewhere in this file. Still buffers the finished
+  -- body (httpd's send_response takes one string and sets Content-Length
+  -- from it), so this reduces latency under concurrency, not peak memory.
+  local copas_ok, copas = pcall(require, "copas")
+  local parts, n = {}, 0
+  while true do
+    local chunk = f:read(256 * 1024)
+    if not chunk or chunk == "" then break end
+    n = n + 1
+    parts[n] = chunk
+    if copas_ok then copas.sleep(0) end
+  end
   f:close()
+  local bytes = table.concat(parts)
   M._touch_hls_heartbeat(dir)
   return 200, bytes, { ["Content-Type"] = "video/mp2t", ["Cache-Control"] = "public, max-age=86400" }
 end
