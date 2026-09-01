@@ -8537,6 +8537,41 @@ function M.start_hls_idle_reaper()
     local reaped = 0
     local now = os.time()
     local hls_dir = M.settings.uploads_dir .. "/_hls_cache"
+    -- 2026-09-01: a warm job already in flight when viewers turn up used to
+    -- keep running to completion, and for a big rendition that is minutes of
+    -- GPU and disk contention against live playback. Confirmed by load test:
+    -- the warmer's brakes stop it LAUNCHING while anyone is watching, but
+    -- warm_1 stayed held for a whole 8-viewer run that started just after a
+    -- job did, and segment p95 suffered for it. Checked once per sweep, and
+    -- only when something might actually need stopping.
+    local viewers_present = nil
+
+    -- Don't throw away an encode that is nearly finished.
+    --
+    -- 2026-09-01: caught live -- a viewer triggered a cold 1080p, made one
+    -- request, and left; 25s later the reaper killed the job at 52s of a 62s
+    -- video. 84% of the work discarded, and since a truncated variant is
+    -- (correctly) no longer cached, the whole thing has to be redone from
+    -- scratch the next time anyone asks. Reclaiming a slot from a job that
+    -- is seconds from releasing it on its own gains nothing and costs the
+    -- entire encode. The abandonment case this reaper exists for -- a viewer
+    -- clicking off a long encode that has barely started -- is unaffected.
+    --
+    -- Only consulted for a variant already known to be still encoding, so
+    -- this reads a playlist that the sweep would be reading anyway.
+    local function nearly_done(dir)
+      local ef = io.open(dir .. "/.expected_duration", "rb")
+      local expected = ef and tonumber((ef:read("*a") or ""):match("[%d%.]+")) or nil
+      if ef then ef:close() end
+      if not expected or expected <= 0 then return false end
+      local pf2 = io.open(dir .. "/playlist.m3u8", "rb")
+      if not pf2 then return false end
+      local text = pf2:read("*a") or ""
+      pf2:close()
+      local done = 0
+      for d in text:gmatch("#EXTINF:([%d%.]+)") do done = done + (tonumber(d) or 0) end
+      return done >= expected * 0.8
+    end
     local handle = io.popen(string.format("find %s -mindepth 1 -maxdepth 1 -type d 2>/dev/null", shell_quote(hls_dir)))
     if not handle then return reaped end
     for dir in handle:lines() do
@@ -8549,7 +8584,34 @@ function M.start_hls_idle_reaper()
         local hb = io.open(dir .. "/.last_watched", "rb")
         local last_watched = hb and tonumber(hb:read("*a")) or nil
         if hb then hb:close() end
-        if pid and last_watched and (now - last_watched) > IDLE_SECONDS then
+        -- A still-encoding variant with a .pid but NO heartbeat file at all
+        -- is the media warmer's own pre-warm (nobody has ever requested it).
+        -- It used to be left strictly alone. It still is while the site is
+        -- idle -- that is the whole point of pre-warming -- but not while
+        -- somebody is actually watching something: a viewer's playback beats
+        -- speculative work for a video nobody has asked for. Stopping it is
+        -- safe in a way it was NOT before today: hls_variant_ready now
+        -- rejects a truncated encode on duration rather than caching it, so
+        -- the partial output is discarded and the warmer simply redoes it in
+        -- the next idle window (its launch gate already requires two minutes
+        -- with nobody watching, so this cannot thrash tightly). The cost is
+        -- repeating that work; the alternative is degrading live playback,
+        -- which is the thing the warmer is explicitly not allowed to do.
+        if pid and not last_watched then
+          if viewers_present == nil then
+            viewers_present = transcode.warmer.someone_is_watching()
+          end
+          if viewers_present then
+            local cf = io.open("/proc/" .. tostring(pid) .. "/cmdline", "rb")
+            local cmdline = cf and cf:read("*a") or ""
+            if cf then cf:close() end
+            if cmdline:find("ffmpeg", 1, true) then
+              local exit = os.execute("kill -TERM " .. tostring(pid) .. " 2>/dev/null")
+              if exit == 0 or exit == true then reaped = reaped + 1 end
+            end
+          end
+        elseif pid and last_watched and (now - last_watched) > IDLE_SECONDS
+               and not nearly_done(dir) then
           -- Guard against PID reuse (the OS handing this exact number to
           -- an unrelated process between ffmpeg exiting and this sweep
           -- running): only proceed if /proc still shows this PID as an
