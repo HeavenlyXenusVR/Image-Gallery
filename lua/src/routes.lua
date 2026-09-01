@@ -7141,30 +7141,137 @@ local VIDEO_TRANSCODE_PENDING_STALE_SECONDS = 30 * 60
 -- /sys/class/drm/card*/device/vcn_busy_percent and total wall-clock vs.
 -- source duration, same method used here) -- don't just bump the number
 -- because decode moved to the GPU.
-local MAX_CONCURRENT_TRANSCODES = 2
+--
+-- (2026-09-01: this cap is now the `transcode.max_concurrent` field of the
+-- table declared immediately below rather than its own top-level local --
+-- see that table's own comment for why. Nothing about the value or the
+-- reasoning above changed.)
+-- ---------------------------------------------------------------------------
+-- Transcode-pipeline state that isn't a plain constant: the media warmer's
+-- restraint policy, plus two bits of shared slot bookkeeping.
+--
+-- ONE table rather than the several top-level locals this would otherwise
+-- be, because this file's main chunk is at LuaJIT's hard 200-local ceiling
+-- -- adding them as plain locals does not merely risk it, it fails to
+-- compile at all (confirmed: "main function has more than 200 local
+-- variables"). Same workaround, same reason, as range_io further up; every
+-- field below reads like a plain local at its call sites. Declared here,
+-- ahead of transcode_slots_dir, so all of it is in scope for the slot
+-- helpers below as well as for ensure_hls_variant and the warmer itself;
+-- the function-valued fields are attached at the points further down where
+-- what they call is in scope.
+--
+-- 2026-09-01: the warmer was still measurably slowing the rest of the site
+-- even after the 2026-08-31 round of fixes, so everything that governs how
+-- hard it pushes got tightened at once. Four independent brakes, in the
+-- order a warming pass hits them:
+--
+--   1. jobs_max = 1 -- the warmer runs AT MOST ONE ffmpeg at a time, on its
+--      own warm_N slot pool, claimed IN ADDITION TO (never instead of) the
+--      shared transcode.max_concurrent budget. This is a warmer-only
+--      ceiling: a real viewer's on-demand transcode still draws on the full
+--      shared cap of 2 and is never throttled by the warmer's own restraint,
+--      which is the same principle the 2026-08-31 load-guard comment below
+--      already set out.
+--   2. Warm only when the transcode pipeline is COMPLETELY idle -- zero
+--      shared slots held, not merely one free. Together with (1) the warmer
+--      can therefore hold at most 1 of the 2 shared slots, so a viewer
+--      arriving mid-warm always finds a free slot instead of a 503 "busy";
+--      previously the warmer could legitimately occupy both at once and
+--      every cold-start viewer request in that window got turned away.
+--   3. Warm only when NOBODY is watching -- any variant whose .last_watched
+--      heartbeat (see M._touch_hls_heartbeat) is fresher than
+--      watch_idle_seconds means a player is actively streaming right now, and
+--      the warmer sits the pass out entirely rather than competing with it
+--      for the GPU's single shared video block, for disk I/O, or for the
+--      event loop. This is the brake that keeps live playback unaffected:
+--      while someone is watching, the warmer does not merely run at lower
+--      priority, it does not run.
+--   4. Load guard at max_load, was a flat 8 -- i.e. exactly this box's core
+--      count, so the warmer only backed off once the machine was ALREADY
+--      saturated, far too late to avoid the lag it was itself causing. Half
+--      the core count leaves actual headroom.
+--
+-- Every threshold is env-overridable so this can be retuned (or the warmer
+-- effectively parked) on the live box without a code change and redeploy.
+-- ---------------------------------------------------------------------------
+local transcode = {
+  -- The global concurrency cap. A field rather than the top-level local it
+  -- used to be purely to free that local slot for this table -- see the
+  -- 200-local note above; the long comment block preceding this table
+  -- explains the value itself, and none of that reasoning changed.
+  max_concurrent = 2,
+  -- Set once per process by transcode_slots_dir below.
+  slots_dir_made = false,
+  warmer = {
+    jobs_max = tonumber(os.getenv("GALLERY_WARMER_MAX_JOBS") or "") or 1,
+    max_load = tonumber(os.getenv("GALLERY_WARMER_MAX_LOAD") or "") or 4,
+    watch_idle_seconds = tonumber(os.getenv("GALLERY_WARMER_WATCH_IDLE_SECONDS") or "") or 120,
+    -- How long a memoized "this variant is complete" answer is trusted
+    -- before the warmer re-checks the filesystem for real -- see
+    -- transcode.warmer.variant_ready below.
+    revalidate_seconds = tonumber(os.getenv("GALLERY_WARMER_REVALIDATE_SECONDS") or "") or 1800,
+    -- Memo of variant directories already confirmed complete, plus when it
+    -- was last emptied.
+    ready = {},
+    ready_count = 0,
+    ready_since = 0,
+  },
+}
 
+-- 2026-09-01: the `mkdir -p` used to run on EVERY call -- and every call
+-- fork/execs a whole shell out of this worker process, which (like all
+-- os.execute/io.popen here) blocks copas' single-threaded loop that is also
+-- serving live HTTP requests. Between the warmer's per-candidate capacity
+-- peek and each viewer request's own claim, that was a steady drip of
+-- pointless forks to create a directory that has existed since the first
+-- one. Created once per process instead; if something deletes it out from
+-- under us the next claim just fails and backs off, exactly like a full cap.
 local function transcode_slots_dir()
   local dir = M.settings.uploads_dir .. "/_transcode_slots"
-  os.execute("mkdir -p " .. shell_quote(dir))
+  if not transcode.slots_dir_made then
+    os.execute("mkdir -p " .. shell_quote(dir))
+    transcode.slots_dir_made = true
+  end
   return dir
+end
+
+-- Claim time of one slot file, or nil if it isn't held at all.
+--
+-- 2026-09-01: slot files now CONTAIN their claim timestamp (written by the
+-- same atomic noclobber redirect that creates them, see
+-- acquire_transcode_slot) instead of carrying it only as an mtime that
+-- nothing but `find -printf` could read. A plain io.open can answer "how old
+-- is this claim" now, which is what lets both readers below run entirely
+-- fork-free -- previously every capacity check spawned a shell AND a `find`,
+-- blocking the request-serving event loop each time, and the warmer did that
+-- on every candidate variant it considered. Slot names are fixed
+-- (slot_1..slot_N / warm_1..warm_N) so there is nothing to enumerate.
+--
+-- An existing-but-empty file is the microsecond window between the shell
+-- creating it and the write landing; report it as freshly claimed rather
+-- than as stale, so a concurrent reader can never reclaim a slot out from
+-- under the job that just won it.
+transcode.slot_claimed_at = function(path)
+  local f = io.open(path, "rb")
+  if not f then return nil end
+  local body = f:read("*a")
+  f:close()
+  return tonumber(body and body:match("^%s*(%d+)")) or os.time()
 end
 
 -- Shared by acquire_transcode_slot (below) and the background warmer's own
 -- pre-flight check: counts slot files younger than the staleness bound,
 -- i.e. jobs genuinely still running right now.
-local function count_active_transcode_slots()
+local function count_active_transcode_slots(prefix, count)
   local dir = transcode_slots_dir()
   local now = os.time()
   local active = 0
-  local handle = io.popen(string.format("find %s -maxdepth 1 -type f -printf '%%T@ %%p\\n' 2>/dev/null", shell_quote(dir)))
-  if handle then
-    for line in handle:lines() do
-      local mtime = tonumber(line:match("^(%S+)"))
-      if mtime and (now - mtime) < VIDEO_TRANSCODE_PENDING_STALE_SECONDS then
-        active = active + 1
-      end
+  for i = 1, (count or transcode.max_concurrent) do
+    local claimed_at = transcode.slot_claimed_at(dir .. "/" .. (prefix or "slot_") .. i)
+    if claimed_at and (now - claimed_at) < VIDEO_TRANSCODE_PENDING_STALE_SECONDS then
+      active = active + 1
     end
-    handle:close()
   end
   return active
 end
@@ -7176,7 +7283,7 @@ end
 -- self-correcting" tolerance as everything else in this section, not worth
 -- real locking for this deployment's traffic level.
 local function transcode_slot_available()
-  return count_active_transcode_slots() < MAX_CONCURRENT_TRANSCODES
+  return count_active_transcode_slots() < transcode.max_concurrent
 end
 
 -- Returns a slot path for the caller to `rm -f` as part of its own job
@@ -7199,22 +7306,30 @@ end
 -- job. Observed live: 5-6 real concurrent ffmpeg encodes against a cap of
 -- 2, saturating most of the host's CPU.
 --
--- Fixed by claiming one of exactly MAX_CONCURRENT_TRANSCODES fixed slot
+-- Fixed by claiming one of exactly transcode.max_concurrent fixed slot
 -- names (slot_1..slot_N) via the shell's `noclobber` option instead of a
 -- random per-job filename: `set -C; > path` is an atomic OS-level
 -- O_CREAT|O_EXCL, so exactly one caller can ever win a given slot name --
 -- no window between checking and claiming. A stale slot (owner died
 -- without cleaning up) is removed before the claim attempt so it doesn't
 -- permanently wedge that slot index.
-local function acquire_transcode_slot()
+--
+-- 2026-09-01: takes an optional pool (name prefix + size) so the media
+-- warmer can hold a SECOND, warmer-only slot of its own on top of the shared
+-- one -- see the `transcode.warmer` table's header comment below for why. Defaults are
+-- the original shared pool, so every existing call site is unchanged. Also
+-- now reads each slot's age straight out of the file (see
+-- transcode_slot_claimed_at) instead of forking a `find` per slot index, and
+-- writes the claim timestamp as the file's contents -- `printf` is a shell
+-- builtin, so the claim still costs exactly the one shell it always did.
+local function acquire_transcode_slot(prefix, count)
   local dir = transcode_slots_dir()
   local now = os.time()
-  for i = 1, MAX_CONCURRENT_TRANSCODES do
-    local slot_path = dir .. "/slot_" .. i
-    local handle = io.popen(string.format("find %s -maxdepth 0 -type f -printf '%%T@' 2>/dev/null", shell_quote(slot_path)))
-    local mtime = handle and tonumber(handle:read("*a"))
-    if handle then handle:close() end
-    if mtime and (now - mtime) >= VIDEO_TRANSCODE_PENDING_STALE_SECONDS then
+  prefix = prefix or "slot_"
+  for i = 1, (count or transcode.max_concurrent) do
+    local slot_path = dir .. "/" .. prefix .. i
+    local claimed_at = transcode.slot_claimed_at(slot_path)
+    if claimed_at and (now - claimed_at) >= VIDEO_TRANSCODE_PENDING_STALE_SECONDS then
       os.execute("rm -f " .. shell_quote(slot_path))
     end
     -- The noclobber redirect failure (expected whenever the slot is already
@@ -7223,7 +7338,8 @@ local function acquire_transcode_slot()
     -- left to right, so that message reached the journal on every contended
     -- claim instead of being suppressed. Wrapping in a `{ ; }` group applies
     -- 2>/dev/null to the whole group before the inner redirect executes.
-    local claimed = os.execute(string.format("set -C; { : > %s ; } 2>/dev/null", shell_quote(slot_path)))
+    local claimed = os.execute(string.format(
+      "set -C; { printf %%s %s > %s ; } 2>/dev/null", tostring(now), shell_quote(slot_path)))
     if claimed == 0 or claimed == true then
       return slot_path
     end
@@ -7454,7 +7570,14 @@ end
 -- regardless of whether anything actually needed launching. On a public
 -- gallery with several people watching different in-progress transcodes
 -- at once, that was real, repeated, avoidable memory/disk pressure.
-local function ensure_hls_variant(media_id, item, content_fn, quality)
+--
+-- `opts` (2026-09-01, media warmer only -- every viewer-facing call site
+-- passes nothing and behaves exactly as before) carries `warmer = true`,
+-- which makes this claim the warmer's own single-job slot on top of the
+-- shared one, and `source_path`, an already-on-disk copy of the original to
+-- hardlink instead of buffering through memory. See the `transcode.warmer` table's
+-- header comment above and the two call sites' own comments below.
+local function ensure_hls_variant(media_id, item, content_fn, quality, opts)
   -- Nested (not top-level) locals: this file's main chunk is already at
   -- LuaJIT's 200-local ceiling, and these are only ever needed here (both
   -- the early skip-if-no-GPU check below and the codec_args section
@@ -7583,6 +7706,24 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   local capacity_slot_path = acquire_transcode_slot()
   if not capacity_slot_path then return nil, "busy" end
 
+  -- Warmer-only second cap, claimed on top of (not instead of) the shared
+  -- slot above, so the warmer can never have more than transcode.warmer.jobs_max = 1
+  -- ffmpeg running while a viewer's own on-demand transcode still draws on
+  -- the full shared budget of 2. Same atomic-noclobber claim, same
+  -- self-cleanup-on-exit contract (it is appended to the job's `cleanup`
+  -- list below), same staleness reclaim -- just a separate pool of slot
+  -- names. Releasing the shared slot again on failure matters: holding a
+  -- slot we have decided not to use would turn away a real viewer for
+  -- nothing.
+  local warm_slot_path = nil
+  if opts and opts.warmer then
+    warm_slot_path = acquire_transcode_slot("warm_", transcode.warmer.jobs_max)
+    if not warm_slot_path then
+      os.remove(capacity_slot_path)
+      return nil, "busy"
+    end
+  end
+
   -- Claim this slot BEFORE calling content_fn(), not after: content_fn()
   -- reads through resolve_media_bytes, which can hit the DB (potentially a
   -- large blob fetch) and therefore genuinely yields to copas's scheduler
@@ -7612,19 +7753,55 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   marker:write(tostring(os.time()))
   marker:close()
 
-  local content = content_fn()
-  if not content then
-    os.remove(pending_marker)
-    os.remove(capacity_slot_path)
-    return nil, "missing"
-  end
-
   os.execute("mkdir -p " .. shell_quote(dir))
   local src = dir .. "/source.bin"
-  local f = assert(io.open(src, "wb"))
-  f:write(content)
-  f:close()
-  content = nil
+
+  -- 2026-09-01: hardlink the original into place when the caller already
+  -- knows where it lives on disk (the media warmer does -- see its call
+  -- sites). content_fn is resolve_media_bytes, which reads the ENTIRE video
+  -- into a Lua string -- up to the 500MB transcode cap -- and then writes
+  -- every byte of it back out to source.bin. Both halves are blocking,
+  -- non-yielding I/O executed inside the single-threaded copas loop that is
+  -- simultaneously serving every HTTP request on this worker, so each warm
+  -- launch stalled the whole site for as long as a full read+write of the
+  -- source took, on top of the memory spike. `ln` is a metadata operation:
+  -- constant time, zero bytes copied, no spike. `cp` covers the source
+  -- happening to sit on a different filesystem, and falling through to
+  -- content_fn covers the original not being on disk at all yet (a DB-stored
+  -- blob whose _original_cache copy has not been written) -- that path also
+  -- populates the cache, so the next quality for the same video takes the
+  -- fast path.
+  --
+  -- Safe against the job's own cleanup: `rm -f source.bin` drops only THIS
+  -- link, never the shared cache file, which keeps its own.
+  local linked = false
+  if opts and opts.source_path then
+    local probe = io.open(opts.source_path, "rb")
+    if probe then
+      probe:close()
+      local q_src, q_dst = shell_quote(opts.source_path), shell_quote(src)
+      local rc = os.execute(string.format(
+        "ln -f %s %s 2>/dev/null || cp -f %s %s 2>/dev/null", q_src, q_dst, q_src, q_dst))
+      linked = (rc == 0 or rc == true)
+    end
+  end
+
+  if not linked then
+    local content = content_fn()
+    if not content then
+      os.remove(pending_marker)
+      os.remove(capacity_slot_path)
+      if warm_slot_path then os.remove(warm_slot_path) end
+      -- mkdir -p above now runs before the source is resolved, so clean up
+      -- the empty directory it would otherwise leave behind.
+      os.execute("rm -rf " .. shell_quote(dir))
+      return nil, "missing"
+    end
+    local f = assert(io.open(src, "wb"))
+    f:write(content)
+    f:close()
+    content = nil
+  end
 
   local wm_filter, wm_text_file = media_files.video_watermark_filter(watermark_text)
 
@@ -7670,7 +7847,7 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   -- hwupload round-trip drawtext still requires (no VAAPI-native drawtext
   -- exists) -- not worth that trade for this deployment.
   --
-  -- Do NOT read any of this as license to raise MAX_CONCURRENT_TRANSCODES,
+  -- Do NOT read any of this as license to raise transcode.max_concurrent,
   -- though -- also confirmed live via direct concurrent-job benchmarking:
   -- aggregate throughput on this box's VCN block PEAKS at 2 concurrent
   -- jobs (3.8 source-seconds processed per wall-clock second) and drops at
@@ -7743,6 +7920,7 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
 
   local pid_file = dir .. "/.pid"
   local cleanup = shell_quote(src) .. " " .. shell_quote(pending_marker) .. " " .. shell_quote(capacity_slot_path) .. " " .. shell_quote(pid_file)
+  if warm_slot_path then cleanup = cleanup .. " " .. shell_quote(warm_slot_path) end
   if wm_text_file then cleanup = cleanup .. " " .. shell_quote(wm_text_file) end
 
   -- hls_flags temp_file: each playlist rewrite happens via write-then-
@@ -7765,7 +7943,7 @@ local function ensure_hls_variant(media_id, item, content_fn, quality)
   -- no way to actually stop an abandoned transcode early (only the
   -- 30-minute crash-orphan sweep would ever reclaim it), so a viewer who
   -- clicked off mid-encode left it running for however long the encode
-  -- naturally takes, tying up one of only MAX_CONCURRENT_TRANSCODES=2
+  -- naturally takes, tying up one of only transcode.max_concurrent=2
   -- global slots the whole site shares. `wait` blocks the subshell on
   -- exactly that one background job, so `rm -f cleanup` (slot included)
   -- still fires the instant ffmpeg exits, killed early or not -- no change
@@ -7812,19 +7990,132 @@ end
 -- primary worker only (see main.lua's is_primary_worker) -- every worker
 -- shares the same on-disk cache, so a second worker warming in parallel
 -- would just race the first one for the same slot files and cache paths
--- with zero benefit. Never claims a transcode slot itself: it only ever
--- asks ensure_hls_variant to do so, exactly like a live request would, and
--- backs off when none are free -- so foreground traffic and the warmer
--- draw from the exact same MAX_CONCURRENT_TRANSCODES budget, never a
+-- with zero benefit. Never claims the shared transcode slot itself: it only
+-- ever asks ensure_hls_variant to do so, exactly like a live request would,
+-- and backs off when none are free -- so foreground traffic and the warmer
+-- draw from the exact same transcode.max_concurrent budget, never a
 -- separate one.
+--
+-- 2026-09-01: the warmer additionally holds a slot from its OWN
+-- (transcode.warmer.jobs_max = 1) pool for the duration of each job, so it
+-- can never run more than one ffmpeg at a time. That is a ceiling ON TOP of
+-- the shared budget, not a replacement for it and not a reservation out of
+-- it: a viewer's on-demand transcode never touches the warm_N pool and is
+-- never throttled by it. See the transcode.warmer table's header comment for
+-- this and the three other brakes added at the same time.
 -- ---------------------------------------------------------------------------
 
+-- 2026-09-01: every pause lengthened substantially. The old values were
+-- tuned for "catch a cold library up quickly," which is the wrong goal now
+-- that the library is essentially fully warm and the only remaining work is
+-- new uploads -- a trickle that a slow sweep absorbs perfectly well. Cost of
+-- a pass is no longer the pass itself either (see transcode.warmer.variant_ready's
+-- memo), so sweeping less often costs nothing and gives the box longer
+-- uninterrupted stretches with no warmer activity at all.
 local WARM_QUALITIES = { "480p", "720p", "1080p", "144p" }
 local WARM_BATCH_SIZE = 25
-local WARM_IDLE_PAUSE_SECONDS = 20    -- whole library scanned, nothing needs warming right now
-local WARM_LAUNCH_PAUSE_SECONDS = 3   -- after actually launching one transcode
-local WARM_BUSY_PAUSE_SECONDS = 15    -- found a cache miss but every slot is taken
-local WARM_SCAN_PAUSE_SECONDS = 0.2   -- between cheap existence-checks (no launch happened)
+local WARM_IDLE_PAUSE_SECONDS = 120   -- whole library scanned, nothing needs warming right now
+local WARM_LAUNCH_PAUSE_SECONDS = 15  -- after actually launching one transcode
+local WARM_BUSY_PAUSE_SECONDS = 60    -- backed off: busy pipeline, live viewer, or loaded box
+local WARM_SCAN_PAUSE_SECONDS = 1.0   -- between cheap existence-checks (no launch happened)
+
+-- True while any HLS variant is being actively streamed right now.
+--
+-- .last_watched is touched on every real playlist/segment request (see
+-- M._touch_hls_heartbeat) and both hls.js and Safari's native engine keep
+-- re-polling for as long as a player is attached, so a heartbeat fresher
+-- than watch_idle_seconds IS "somebody is watching something." The warmer
+-- stands down entirely in that case rather than competing for the GPU's one
+-- shared video block -- brake (3) in the `transcode.warmer` table's header comment.
+--
+-- The one io.popen here (`find`, which does block the event loop for the
+-- length of a directory scan like every shell-out in this file) is called
+-- only immediately before an actual launch, never on the steady-state
+-- "everything is already warm" passes -- those must stay fork-free, since
+-- they are what runs essentially all of the time. -mmin rather than a
+-- -newermt seconds expression: supported identically by every find
+-- implementation, and minute granularity is plenty for "is anyone watching."
+transcode.warmer.someone_is_watching = function()
+  local minutes = math.max(1, math.ceil(transcode.warmer.watch_idle_seconds / 60))
+  local handle = io.popen(string.format(
+    "find %s -maxdepth 2 -name .last_watched -mmin -%d -print -quit 2>/dev/null",
+    shell_quote(M.settings.uploads_dir .. "/_hls_cache"), minutes))
+  if not handle then return false end
+  local line = handle:read("*l")
+  handle:close()
+  return line ~= nil and line ~= ""
+end
+
+-- hls_variant_ready, memoized.
+--
+-- A finished variant is finished forever: its directory name is content-
+-- addressed (hls_variant_dir hashes the source digest plus watermark text),
+-- so any change to the underlying media yields a different directory rather
+-- than invalidating this one, and the only thing that ever deletes a variant
+-- directory is the stale-artifact sweep, which acts exclusively on variants
+-- with a stale .pending marker -- i.e. never on a complete one. Nothing can
+-- make a true answer here go false.
+--
+-- Worth memoizing because the uncached check opens and reads a whole
+-- playlist.m3u8 (thousands of lines for a long video) and the warmer does
+-- that for up to 5 variants on each of 25 items per pass -- ~125 blocking
+-- reads, repeated forever, over a library that is already fully warm. That
+-- constant background churn through the event loop serving live requests is
+-- a large part of what "the warmer lags the site" actually was. Steady-state
+-- passes now touch the disk for genuinely new work only.
+--
+-- Bounded so a very large library can't grow this without limit: past the
+-- cap it simply starts over, trading one expensive sweep for a flat memory
+-- ceiling. Deliberately warmer-local rather than shared with the request
+-- path -- a viewer's own request should keep asking the filesystem.
+--
+-- The one thing that CAN falsify a memoized answer is somebody deleting a
+-- variant directory out of band -- clearing cache by hand on the box, which
+-- is a normal enough thing to do here (confirmed the hard way while testing
+-- this change: a hand-deleted variant stayed un-rewarmed because the warmer
+-- had memoized it as complete seconds earlier, and only a restart would have
+-- noticed). So the memo also expires wholesale every revalidate_seconds,
+-- which costs one honest full re-scan every 30 minutes instead of one on
+-- every pass forever -- still ~99.9% of the savings, and the warmer
+-- self-heals from an out-of-band deletion within half an hour rather than
+-- never.
+transcode.warmer.expire_ready_memo = function()
+  local now = os.time()
+  if now - transcode.warmer.ready_since >= transcode.warmer.revalidate_seconds then
+    transcode.warmer.ready, transcode.warmer.ready_count = {}, 0
+    transcode.warmer.ready_since = now
+  end
+end
+
+transcode.warmer.variant_ready = function(dir)
+  if transcode.warmer.ready[dir] then return true end
+  if not hls_variant_ready(dir) then return false end
+  if transcode.warmer.ready_count >= 5000 then
+    transcode.warmer.ready, transcode.warmer.ready_count = {}, 0
+    transcode.warmer.ready_since = os.time()
+  end
+  transcode.warmer.ready[dir] = true
+  transcode.warmer.ready_count = transcode.warmer.ready_count + 1
+  return true
+end
+
+-- Launches one warm transcode, or reports "busy" without launching.
+--
+-- The final two brakes are checked here, as late as possible -- immediately
+-- before committing to a job -- so that the overwhelmingly common case (a
+-- pass that finds nothing to warm) never pays for them.
+transcode.warmer.try_launch = function(item, quality)
+  if not transcode_slot_available() then return "busy" end
+  if transcode.warmer.someone_is_watching() then return "busy" end
+  ensure_hls_variant(item.id, item, function() return resolve_media_bytes(item) end, quality, {
+    warmer = true,
+    -- Lets ensure_hls_variant hardlink the original instead of reading the
+    -- whole video through memory; see its own comment there. nil-safe: an
+    -- item whose original is not on disk yet just takes the old path.
+    source_path = original_bytes_cache_path(item.id, item),
+  })
+  return "launched"
+end
 
 -- One warming attempt over a small batch of media_items, ordered by id so
 -- repeated calls sweep the whole library deterministically. Returns
@@ -7857,17 +8148,30 @@ local WARM_SCAN_PAUSE_SECONDS = 0.2   -- between cheap existence-checks (no laun
 -- has no business adding load when the box is already struggling, so it
 -- backs off entirely (reusing "busy"'s existing pacing) rather than
 -- launching anything once 1-minute load average passes the core count.
--- Deliberately NOT touching acquire_transcode_slot/MAX_CONCURRENT_
--- TRANSCODES -- that cap is shared with on-demand requests too, and a
--- real viewer waiting on their own video should never be throttled by the
--- warmer's own restraint.
+-- Deliberately NOT touching acquire_transcode_slot/transcode.max_concurrent
+-- -- that cap is shared with on-demand requests too, and a real viewer
+-- waiting on their own video should never be throttled by the warmer's own
+-- restraint. (Still true 2026-09-01: the warmer-only cap added then is a
+-- SECOND, separate slot pool layered on top, so the shared cap of 2 that
+-- viewers draw on is untouched.)
+--
+-- 2026-09-01: the load ceiling moved from a hard-coded 8 to transcode.warmer.max_load
+-- (default 4), and a second, stricter gate joined it -- the shared transcode
+-- pool has to be COMPLETELY idle, not merely non-full, before the warmer
+-- adds anything to it. Both are brakes (4) and (2) in the `transcode.warmer` table's
+-- header comment; the remaining two are applied at the launch itself, in
+-- transcode.warmer.try_launch. Both checks here are deliberately fork-free (one
+-- /proc/loadavg read, N io.opens on fixed slot paths) because they run on
+-- every single pass forever, including the ones with nothing to do.
 local function warm_one_pass(cursor_id)
   do
     local f = io.open("/proc/loadavg", "rb")
     local load = f and tonumber((f:read("*l") or ""):match("^(%S+)"))
     if f then f:close() end
-    if load and load > 8 then return "busy", cursor_id end
+    if load and load > transcode.warmer.max_load then return "busy", cursor_id end
   end
+  if count_active_transcode_slots() > 0 then return "busy", cursor_id end
+  transcode.warmer.expire_ready_memo()
 
   local rows = db.fetchall([[
     SELECT id, user_id, storage_path, mime_type, original_filename, file_size,
@@ -7917,10 +8221,8 @@ local function warm_one_pass(cursor_id)
     if item.file_size > 0 and item.file_size <= VIDEO_TRANSCODE_SIZE_LIMIT then
       for _, quality in ipairs(WARM_QUALITIES) do
         local hls_dir = hls_variant_dir(item.id, quality, digest_seed)
-        if not hls_variant_ready(hls_dir) then
-          if not transcode_slot_available() then return "busy", last_id end
-          ensure_hls_variant(item.id, item, function() return resolve_media_bytes(item) end, quality)
-          return "launched", last_id
+        if not transcode.warmer.variant_ready(hls_dir) then
+          return transcode.warmer.try_launch(item, quality), last_id
         end
       end
     end
@@ -7929,17 +8231,15 @@ local function warm_one_pass(cursor_id)
     -- large uploads too, otherwise those videos always begin with a cold
     -- playlist even though this rendition does not require re-encoding.
     local hls_dir = hls_variant_dir(item.id, "original", digest_seed)
-    if not hls_variant_ready(hls_dir) then
-      if not transcode_slot_available() then return "busy", last_id end
-      ensure_hls_variant(item.id, item, function() return resolve_media_bytes(item) end, "original")
-      return "launched", last_id
+    if not transcode.warmer.variant_ready(hls_dir) then
+      return transcode.warmer.try_launch(item, "original"), last_id
     end
   end
 
   return "batch_done", last_id
 end
 
--- Starts the warmer. Call once from main.lua, already gated to the primary
+-- Starts the transcode.warmer. Call once from main.lua, already gated to the primary
 -- worker there. A pcall around each pass means one bad row or a transient
 -- filesystem error logs and backs off instead of ever killing the
 -- coroutine (and, since this runs inside the same process as request
@@ -8106,7 +8406,7 @@ end
 -- minutes on the longest real one observed) or the 30-minute crash-orphan
 -- sweep above. Confirmed live as the actual mechanism behind "click off a
 -- video, then anything else that needs a fresh transcode is slow to load":
--- MAX_CONCURRENT_TRANSCODES is a global cap of 2 for the entire site, so
+-- transcode.max_concurrent is a global cap of 2 for the entire site, so
 -- one or two abandoned-but-still-running encodes can fully starve every
 -- other viewer's (or the same viewer's next video's) cold-cache request
 -- for as long as those jobs keep running with nobody watching.
