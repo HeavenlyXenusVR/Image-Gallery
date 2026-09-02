@@ -7347,6 +7347,78 @@ local function acquire_transcode_slot(prefix, count)
   return nil
 end
 
+-- Source pixel dimensions in one probe, or nil if unreadable.
+transcode.probe_video_dims = function(path)
+  local probe = io.popen(string.format(
+    "%s -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 %s 2>/dev/null",
+    ffprobe_bin(), shell_quote(path)))
+  if not probe then return nil end
+  local line = probe:read("*l") or ""
+  probe:close()
+  local w, h = line:match("^(%d+),(%d+)")
+  return tonumber(w), tonumber(h)
+end
+
+-- Path to a cached full-frame RGBA watermark overlay for this text at this
+-- exact output size, or nil if one can't be produced.
+--
+-- 2026-09-01, and this is the single biggest speedup in the whole pipeline.
+-- The watermark used to be burned in with drawtext, which has no hardware
+-- variant, so every frame had to leave the GPU and come back:
+-- hwdownload -> software lanczos scale -> drawtext -> hwupload. Benchmarked
+-- on media 621 (a 1080p60 source) with the box otherwise idle, the 480p
+-- rendition ran at 1.0x realtime -- i.e. it could not encode as fast as a
+-- viewer watches, which is precisely how a viewer ends up staring at a
+-- half-encoded video that keeps stalling.
+--
+-- Rendering the text ONCE into a transparent PNG the size of the output
+-- frame, then compositing it with overlay_vaapi, keeps every frame on the
+-- GPU for the whole pipeline. Measured, same box, same source, same
+-- watermark:
+--
+--     480p    1.0x -> 6.3x realtime
+--     720p    1.9x -> 3.6x
+--     1080p   1.3x -> 1.9x
+--
+-- A full-FRAME overlay rather than a tightly-cropped one is deliberate: the
+-- PNG is rendered through the very same drawtext filter string the CPU path
+-- uses, against a transparent canvas of the output size, so the watermark
+-- lands at pixel-identical coordinates with no separate positioning maths to
+-- get wrong. The cost is nil -- these are 6-20KB PNGs, uploaded to the GPU
+-- once per job, and the per-frame blend is the same work either way.
+--
+-- Cached by (text, width, height) since it depends on nothing else; a text
+-- change produces a new key, and the digest seed already includes the
+-- watermark text so the variants themselves re-encode anyway.
+transcode.watermark_overlay = function(watermark_text, w, h)
+  if not watermark_text or watermark_text == "" or not w or not h then return nil end
+  local key = sodium.sodium_bin2hex(sodium.crypto_hash_sha256(tostring(watermark_text))):sub(1, 16)
+  local dir = M.settings.uploads_dir .. "/_wm_overlay_cache"
+  local path = string.format("%s/%s_%dx%d.png", dir, key, w, h)
+  local cached = io.open(path, "rb")
+  if cached then cached:close() return path end
+
+  local filter, text_file = media_files.video_watermark_filter(watermark_text)
+  if not filter then return nil end
+  os.execute("mkdir -p " .. shell_quote(dir))
+  -- Rendered to a temp name and renamed into place so a concurrent job can
+  -- never observe a half-written PNG as a cache hit.
+  local tmp = string.format("%s.tmp.%d.png", path, math.random(100000, 999999))
+  local ok = os.execute(string.format(
+    "%s -y -hide_banner -loglevel error -f lavfi -i %s -vf %s -frames:v 1 %s 2>/dev/null",
+    ffmpeg_bin(),
+    shell_quote(string.format("color=black@0.0:s=%dx%d,format=rgba", w, h)),
+    shell_quote(filter), shell_quote(tmp)))
+  if text_file then os.remove(text_file) end
+  if ok == 0 or ok == true then
+    os.execute(string.format("mv -f %s %s 2>/dev/null", shell_quote(tmp), shell_quote(path)))
+    local check = io.open(path, "rb")
+    if check then check:close() return path end
+  end
+  os.remove(tmp)
+  return nil
+end
+
 -- Returns (transcoded_bytes, "video/mp4") on success, or (nil) to signal
 -- "serve the original instead" (quality is "original", no ffmpeg profile
 -- for that quality name, the file is too large to transcode, or a
@@ -7809,6 +7881,15 @@ local function ensure_hls_variant(media_id, item, content_fn, quality, opts)
   marker:close()
 
   os.execute("mkdir -p " .. shell_quote(dir))
+  -- Marks this variant as speculative pre-warm rather than something a
+  -- viewer asked for. The reaper needs the distinction: BOTH kinds of
+  -- background job legitimately have no heartbeat (a viewer who was handed a
+  -- complete rendition instead is no longer polling the one they asked for),
+  -- but only the warmer's own work should be stopped when viewers appear.
+  if opts and opts.warmer then
+    local wm = io.open(dir .. "/.warm", "wb")
+    if wm then wm:write("1") wm:close() end
+  end
   local src = dir .. "/source.bin"
 
   -- 2026-09-01: hardlink the original into place when the caller already
@@ -7941,6 +8022,10 @@ local function ensure_hls_variant(media_id, item, content_fn, quality, opts)
   -- concurrency at 2 on this hardware.
   local pre_input_args = ""
   local codec_args
+  -- Set together by the all-GPU branches below: a second input (the
+  -- watermark PNG), the filter graph, and its overlay-upload prelude. When
+  -- they stay empty the command keeps its original single-input `-vf` shape.
+  local extra_input_args, filter_complex, overlay_prep = "", nil, ""
   if quality == "original" then
     if wm_filter then
       -- A watermark can't be burned in through `-c copy` (stream remux,
@@ -7956,7 +8041,18 @@ local function ensure_hls_variant(media_id, item, content_fn, quality, opts)
       -- ffprobe can't read it) rather than a guessed QP, to land in the
       -- same ballpark as the source instead of guessing at a QP-to-CRF
       -- equivalence.
+      -- Prefer the all-GPU composite (see transcode.watermark_overlay): at
+      -- full source resolution this is the most expensive rendition on the
+      -- site, and it is the one the player asks for by default.
+      local sw, sh = transcode.probe_video_dims(src)
+      local overlay_png = sw and sh and transcode.watermark_overlay(watermark_text, sw, sh)
       local vf = "hwdownload,format=nv12," .. wm_filter .. ",format=nv12,hwupload"
+      if overlay_png then
+        extra_input_args = string.format("-i %s ", shell_quote(overlay_png))
+        filter_complex = "[0:v][wm]overlay_vaapi=x=0:y=0[v]"
+        overlay_prep = "[1:v]format=rgba,hwupload[wm];"
+        vf = nil
+      end
       local source_bitrate = source_bitrate_bps or probe_video_bitrate(src) or 6000000
       local maxrate = math.floor(source_bitrate * 1.3)
       local bufsize = maxrate * 2
@@ -7964,8 +8060,8 @@ local function ensure_hls_variant(media_id, item, content_fn, quality, opts)
         "-hwaccel vaapi -hwaccel_output_format vaapi -vaapi_device %s ", shell_quote(vaapi_device())
       )
       codec_args = string.format(
-        "-vf %s -c:v h264_vaapi -rc_mode VBR -b:v %d -maxrate %d -bufsize %d -profile high -level 4.1 -c:a aac -b:a 320k",
-        shell_quote(vf), source_bitrate, maxrate, bufsize
+        "%s -c:v h264_vaapi -rc_mode VBR -b:v %d -maxrate %d -bufsize %d -profile high -level 4.1 -c:a aac -b:a 320k",
+        vf and ("-vf " .. shell_quote(vf)) or "", source_bitrate, maxrate, bufsize
       )
     else
       codec_args = "-c copy"
@@ -7977,6 +8073,32 @@ local function ensure_hls_variant(media_id, item, content_fn, quality, opts)
     local profile = VIDEO_QUALITY_PROFILES[quality]
     local scale_filter = "hwdownload,format=nv12," .. video_scale_filter(src, profile.max_width)
     if wm_filter then scale_filter = scale_filter .. "," .. wm_filter end
+
+    -- All-GPU scale (+ watermark composite) where it is safe to use, which
+    -- is the overwhelmingly common case: a genuine DOWNSCALE of a source at
+    -- least as wide as the tier. The upscale case keeps the old chain --
+    -- video_scale_filter adds an unsharp pass when upscaling and there is no
+    -- VAAPI equivalent, so that path stays exactly as it was rather than
+    -- silently dropping the sharpening. Likewise any failure to produce the
+    -- overlay PNG falls back rather than dropping the watermark: a missing
+    -- watermark is a correctness bug, a slower encode is not.
+    local src_w, src_h = transcode.probe_video_dims(src)
+    if src_w and src_h and src_w >= profile.max_width then
+      local out_w = profile.max_width
+      -- Even height, matching the ":-2" the software scaler was computing.
+      local out_h = math.floor(src_h * out_w / src_w / 2 + 0.5) * 2
+      local overlay_png = wm_filter and transcode.watermark_overlay(watermark_text, out_w, out_h) or nil
+      if wm_filter and overlay_png then
+        extra_input_args = string.format("-i %s ", shell_quote(overlay_png))
+        overlay_prep = "[1:v]format=rgba,hwupload[wm];"
+        filter_complex = string.format(
+          "[0:v]scale_vaapi=w=%d:h=%d[bg];[bg][wm]overlay_vaapi=x=0:y=0[v]", out_w, out_h)
+        scale_filter = nil
+      elseif not wm_filter then
+        filter_complex = string.format("[0:v]scale_vaapi=w=%d:h=%d[v]", out_w, out_h)
+        scale_filter = nil
+      end
+    end
     -- No CRF-equivalent constant-quality mode on this driver (ICQ isn't
     -- supported -- confirmed live 2026-08-31, only CQP/CBR/VBR/QVBR are)
     -- so QVBR is the closest fit: global_quality reuses this table's own
@@ -8012,9 +8134,10 @@ local function ensure_hls_variant(media_id, item, content_fn, quality, opts)
       "-hwaccel vaapi -hwaccel_output_format vaapi -vaapi_device %s ", shell_quote(vaapi_device())
     )
     codec_args = string.format(
-      "-vf %s,format=nv12,hwupload -c:v h264_vaapi -rc_mode QVBR -global_quality %d -b:v %d -maxrate %d "
+      "%s -c:v h264_vaapi -rc_mode QVBR -global_quality %d -b:v %d -maxrate %d "
         .. "-profile %s -level 4.1 -c:a aac -b:a %s",
-      shell_quote(scale_filter), profile.crf, ceiling_bps, ceiling_bps,
+      scale_filter and ("-vf " .. shell_quote(scale_filter .. ",format=nv12,hwupload")) or "",
+      profile.crf, ceiling_bps, ceiling_bps,
       vaapi_profile, profile.audio_bitrate
     )
   end
@@ -8049,11 +8172,44 @@ local function ensure_hls_variant(media_id, item, content_fn, quality, opts)
   -- exactly that one background job, so `rm -f cleanup` (slot included)
   -- still fires the instant ffmpeg exits, killed early or not -- no change
   -- to the existing self-cleanup-on-exit contract.
+  -- filter_complex needs its output mapped by label, and pulls in the
+  -- watermark PNG as a second input; without it the original single-input
+  -- `-vf` form is used unchanged.
+  local graph_args, map_args = "", "-map 0:v:0 -map 0:a:0?"
+  if filter_complex then
+    graph_args = string.format("-filter_complex %s ", shell_quote(overlay_prep .. filter_complex))
+    map_args = "-map \"[v]\" -map 0:a:0?"
+  end
+
   local cmd = string.format(
-    "( nice -n 19 ionice -c2 -n7 %s -y -hide_banner -loglevel error %s-i %s -map 0:v:0 -map 0:a:0? %s "
-      .. "-f hls -hls_time %d -hls_list_size 0 -hls_playlist_type vod -hls_flags independent_segments+temp_file "
+    "( nice -n 19 ionice -c2 -n7 %s -y -hide_banner -loglevel error %s-i %s %s%s%s %s "
+      -- playlist_type EVENT, not VOD -- and this is what actually decides
+      -- whether a cold video is watchable while it encodes.
+      --
+      -- 2026-09-01: ffmpeg's HLS muxer only rewrites the playlist after each
+      -- segment when the playlist type is NOT vod; for vod it writes the
+      -- playlist exactly once, from av_write_trailer, when the encode
+      -- finishes. Verified directly: 16s into a vod encode there was one
+      -- segment on disk and NO playlist.m3u8 at all, while the identical
+      -- encode as `event` had a playlist with its first entry already in it.
+      --
+      -- So every partial playlist previously observed mid-encode only existed
+      -- because that job had been KILLED (the trailer runs on SIGTERM too --
+      -- the same behaviour behind the truncated-variant bug). For a genuinely
+      -- cold video this meant serve_hls_playlist's bounded wait for a first
+      -- #EXTINF could never succeed no matter how long it waited: the file it
+      -- was polling for does not exist until the whole encode is done. A cold
+      -- 11-minute video therefore 503'd for the entire ~6-10 minutes it took
+      -- to encode, which is exactly the "it won't load" symptom.
+      --
+      -- EVENT is the right type for a growing-but-will-end recording: every
+      -- segment stays listed (so seeking back works, unlike a live window),
+      -- and av_write_trailer still appends #EXT-X-ENDLIST on completion, so
+      -- the duration check in hls_variant_ready is unaffected.
+      .. "-f hls -hls_time %d -hls_list_size 0 -hls_playlist_type event -hls_flags independent_segments+temp_file "
       .. "-hls_segment_filename %s %s & echo $! > %s; wait; rm -f %s ) </dev/null >/dev/null 2>&1 &",
-    ffmpeg_bin(), pre_input_args, shell_quote(src), codec_args, HLS_SEGMENT_SECONDS,
+    ffmpeg_bin(), pre_input_args, shell_quote(src), extra_input_args, graph_args, map_args,
+    codec_args, HLS_SEGMENT_SECONDS,
     shell_quote(dir .. "/seg_%05d.ts"), shell_quote(dir .. "/playlist.m3u8"), shell_quote(pid_file),
     cleanup
   )
@@ -8546,6 +8702,31 @@ function M.start_hls_idle_reaper()
     -- only when something might actually need stopping.
     local viewers_present = nil
 
+    -- Don't reap an encode that has barely started.
+    --
+    -- 2026-09-01, caught live on a fully cold media 621 (an 11 minute
+    -- 1080p60 source): the request launches the encode, waits for a first
+    -- segment, gives up, and returns "still starting up". The viewer's single
+    -- request is then 25 seconds old, so the reaper kills the job -- and the
+    -- next request starts the whole thing over from zero. A cold video with
+    -- no warm rendition to fall back on could therefore NEVER become
+    -- playable, no matter how many times it was requested; every attempt was
+    -- killed in its first half minute. Observed exactly that loop three times
+    -- in a row in the journal.
+    --
+    -- A grace period comfortably longer than the request's own wait budget
+    -- means the first viewer's attempt always survives long enough to produce
+    -- something, even when they gave up. Abandonment of a LONG-running
+    -- encode -- the case this reaper exists for -- is unaffected, since those
+    -- are minutes old by the time anyone clicks away.
+    local STARTUP_GRACE_SECONDS = 90
+    local function just_launched(dir)
+      local pf = io.open(dir .. ".pending", "rb")
+      local launched = pf and tonumber((pf:read("*a") or ""):match("%d+")) or nil
+      if pf then pf:close() end
+      return launched ~= nil and (now - launched) < STARTUP_GRACE_SECONDS
+    end
+
     -- Don't throw away an encode that is nearly finished.
     --
     -- 2026-09-01: caught live -- a viewer triggered a cold 1080p, made one
@@ -8597,7 +8778,10 @@ function M.start_hls_idle_reaper()
         -- with nobody watching, so this cannot thrash tightly). The cost is
         -- repeating that work; the alternative is degrading live playback,
         -- which is the thing the warmer is explicitly not allowed to do.
-        if pid and not last_watched then
+        local warm_marker = io.open(dir .. "/.warm", "rb")
+        local is_prewarm = warm_marker ~= nil
+        if warm_marker then warm_marker:close() end
+        if pid and not last_watched and is_prewarm then
           if viewers_present == nil then
             viewers_present = transcode.warmer.someone_is_watching()
           end
@@ -8611,7 +8795,7 @@ function M.start_hls_idle_reaper()
             end
           end
         elseif pid and last_watched and (now - last_watched) > IDLE_SECONDS
-               and not nearly_done(dir) then
+               and not just_launched(dir) and not nearly_done(dir) then
           -- Guard against PID reuse (the OS handing this exact number to
           -- an unrelated process between ffmpeg exiting and this sweep
           -- running): only proceed if /proc still shows this PID as an
@@ -8795,7 +8979,6 @@ function M.serve_hls_playlist(req)
   local dir, err = ensure_hls_variant(media_id, item, function() return resolve_media_bytes(item) end, quality, {
     source_path = original_bytes_cache_path(media_id, item),
   })
-  if dir then M._touch_hls_heartbeat(dir) end
   if not dir then
     if err == "missing" then return 404, { detail = "File is missing." } end
     -- "busy" (see acquire_transcode_slot) means the transcode queue is
@@ -8864,16 +9047,54 @@ function M.serve_hls_playlist(req)
   -- to sub-resource requests at all regardless.
   local access_qs = hls_propagated_qs(req)
 
-  -- Two different waits, picked by whether the viewer has anything else to
-  -- watch. A rendition that is merely a second or two from its first segment
-  -- is worth waiting for -- downgrading them would be worse. A cold 300MB
-  -- watermarked original is minutes away, and holding the request for the
-  -- full 8s before redirecting (measured: 8.3s to a redirect that then
-  -- played instantly) is 8 seconds of staring at a spinner for nothing.
-  -- So: once a playable alternative is known to exist, give the requested
-  -- quality a short grace period and then hand over.
-  local ready_alt = best_ready_quality()
-  local wait_budget = ready_alt and 1.5 or 8
+  -- Never hand back a half-encoded rendition when a finished one exists.
+  --
+  -- This used to serve the requested variant's playlist the moment it had a
+  -- single #EXTINF in it, even though the encode was still running and even
+  -- when a complete rendition of the same video was sitting on disk. The
+  -- player then gets a playlist that stops partway and has to keep re-polling
+  -- for more, and if the encoder is not comfortably ahead of playback it
+  -- stalls -- which it very often was not: measured on a quiet box, the 480p
+  -- rendition of media 621 encoded at 1.0x realtime before the GPU pipeline
+  -- work, i.e. exactly the speed it was being watched at. A complete
+  -- rendition one tier down is strictly better than a stuttering one at the
+  -- requested tier.
+  --
+  -- The redirect deliberately does NOT touch this variant's heartbeat. That
+  -- matters: the encode was just launched for it, and a heartbeat that then
+  -- goes stale is what tells the reaper the viewer abandoned it. Since we are
+  -- the ones sending the viewer elsewhere, marking it "being watched" here
+  -- guaranteed it would be killed 25 seconds later -- caught live, a cold
+  -- 480p on 621 was killed at 63s of 714s having been redirected away from,
+  -- so every request restarted it from nothing and it could never finish.
+  -- With no heartbeat and no .warm marker the reaper leaves it alone, it
+  -- completes in the background, and the next viewer gets it warm.
+  if not hls_variant_ready(dir) then
+    local complete_alt = best_ready_quality()
+    if complete_alt and complete_alt ~= quality then
+      return 302, "", {
+        ["Location"] = string.format("/api/media/%d/hls/%s/playlist.m3u8%s",
+          media_id, complete_alt, access_qs or ""),
+        ["Cache-Control"] = "no-store",
+      }
+    end
+  end
+
+  -- Actually serving this variant now, so it counts as being watched.
+  M._touch_hls_heartbeat(dir)
+
+  -- Nothing complete to fall back on, so wait for this encode's first
+  -- segment and stream it as it grows -- still far better than a spinner.
+  --
+  -- 20s rather than the old 8s. This branch is now only reached when there
+  -- is genuinely nothing else to serve, and in that situation a viewer is far
+  -- better off waiting than being handed a 503 they have to retry out of.
+  -- Measured on a cold media 621: `original` is a full 1080p60 re-encode
+  -- running around 1-2x realtime, so its first 6s segment lands a little past
+  -- the old 8s cutoff -- close enough that the budget, not the encoder, was
+  -- what turned a working cold start into an error.
+  local ready_alt = nil
+  local wait_budget = 20
   local playlist_path = dir .. "/playlist.m3u8"
   local waited = 0
   while waited < wait_budget do
