@@ -380,10 +380,43 @@ extension GalleryAPIClient {
         var commentsEnabled: Bool?
         var downloadsEnabled: Bool?
         var pinned: Bool?
+        /// Scheduled publish time as naive UTC ("2026-09-20T18:30:00"), or
+        /// `.some(nil)` to clear an existing schedule. Double optional is
+        /// deliberate and matches the server contract: the key being ABSENT
+        /// means "leave the schedule alone", while an explicit null clears it
+        /// -- so a plain `String?` could not express both.
+        var publishAt: String??
     }
 
     func updateControls(mediaId: Int, patch: ControlsBody) async throws -> MediaItem {
         let response: MediaResponse = try await requestJSON("/api/media/\(mediaId)/controls", method: "PATCH", body: patch)
+        return response.media
+    }
+
+    /// Full post edit -- title, description, tags, category, subcategories,
+    /// 18+ flag. `PATCH /api/media/:id` REPLACES the post record rather than
+    /// patching named fields, so omitting `visibility` resets it to public
+    /// and omitting `isAdult` silently un-marks an 18+ post. Every caller
+    /// must therefore echo the current control values back; see
+    /// MediaEditSheet, which does exactly that. `publishAt` is the one
+    /// explicitly-only field on the server, so leaving it out preserves any
+    /// existing schedule.
+    struct UpdateMediaBody: Encodable {
+        var title: String
+        var description: String
+        var tags: [String]
+        var categoryId: Int
+        var subcategoryIds: [Int]
+        var subcategoryNames: [String]
+        var isAdult: Bool
+        var visibility: String
+        var commentsEnabled: Bool
+        var downloadsEnabled: Bool
+        var pinned: Bool
+    }
+
+    func updateMedia(mediaId: Int, body: UpdateMediaBody) async throws -> MediaItem {
+        let response: MediaResponse = try await requestJSON("/api/media/\(mediaId)", method: "PATCH", body: body)
         return response.media
     }
 

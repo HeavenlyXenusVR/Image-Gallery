@@ -3530,11 +3530,49 @@ local function perform_update_media(media_id, owner_id, payload)
   if payload.downloads_enabled ~= nil then downloads_enabled = payload.downloads_enabled and true or false end
   local pinned = payload.pinned and "1" or "0"
 
+  -- Scheduled publishing. Every feed query already honours publish_at (it
+  -- hides a future-dated post from everyone but its owner) and the Studio
+  -- card already renders a "Scheduled for ..." pill -- but nothing in the
+  -- entire codebase ever WROTE the column, so the whole feature was
+  -- unreachable. This is the write half.
+  --
+  -- Deliberately only touched when the caller explicitly says so. Absent key
+  -- (nil) means "leave the schedule alone"; JSON null or an empty string
+  -- means "clear it". That distinction is load-bearing rather than
+  -- fastidious: M.bulk_edit_media rebuilds a full payload out of each post's
+  -- CURRENT values and hands it here, and its `merged` table has no
+  -- publish_at in it -- so an unconditional write would silently clear the
+  -- schedule of every post touched by an unrelated bulk visibility change.
+  --
+  -- Accepts "2026-09-05T18:00" and "2026-09-05 18:00" alike, with or without
+  -- seconds and offset. Postgres does the real parsing; this only rejects
+  -- shapes that clearly are not a datetime, so a typo comes back as a 400
+  -- rather than a database error. Stored as naive UTC to match created_at:
+  -- this deployment's session timezone is UTC, so `publish_at <= now()` in
+  -- the feed queries compares correctly.
+  local publish_clause, publish_param = "", nil
+  if payload.publish_at ~= nil then
+    local raw = payload.publish_at
+    if raw == cjson.null or trim(tostring(raw)) == "" then
+      publish_clause = ",\n        publish_at=NULL"
+    else
+      local when = trim(tostring(raw))
+      if not when:match("^%d%d%d%d%-%d%d%-%d%d[T ]%d%d:%d%d") then
+        return 400, "Schedule time must look like 2026-09-05T18:00."
+      end
+      publish_clause = ",\n        publish_at=(%s)::timestamptz AT TIME ZONE 'UTC'"
+      publish_param = when:sub(1, 40)
+    end
+  end
+
   local row = db.fetchone("SELECT user_id FROM media_items WHERE id=%s AND deleted_at IS NULL", tostring(media_id))
   if not row then return 404, "Media not found." end
   if tostring(row.user_id) ~= tostring(owner_id) then return 403, "Only the uploader can edit this post." end
 
-  db.execute([[
+  -- Built by concatenation rather than string.format: the template is itself
+  -- full of %s placeholders for db.execute to fill, so formatting it here
+  -- would consume them.
+  local sql = [[
     UPDATE media_items
     SET title=%s, description=%s, tags=%s, category_id=%s,
         visibility=%s, comments_enabled=%s, downloads_enabled=%s,
@@ -3542,12 +3580,23 @@ local function perform_update_media(media_id, owner_id, payload)
         is_adult=%s, adult_marked_by_user=%s,
         moderation_status=CASE WHEN %s THEN 'adult' ELSE moderation_status END,
         moderation_reason=CASE WHEN %s THEN 'Uploader marked this post as 18+.' ELSE moderation_reason END,
-        moderated_at=CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE moderated_at END
+        moderated_at=CASE WHEN %s THEN CURRENT_TIMESTAMP ELSE moderated_at END]]
+    .. publish_clause .. [[
+
     WHERE id=%s AND user_id=%s
-  ]],
+  ]]
+
+  local params = {
     title, description, cjson.encode(arr(clean_tags)), tostring(category_id),
     visibility, comments_enabled, downloads_enabled,
-    pinned, is_adult, is_adult, is_adult, is_adult, is_adult, tostring(media_id), owner_id)
+    pinned, is_adult, is_adult, is_adult, is_adult, is_adult,
+  }
+  -- Positional, so this has to land between the moderated_at CASE and the
+  -- WHERE clause -- exactly where publish_clause was spliced in above.
+  if publish_param then params[#params + 1] = publish_param end
+  params[#params + 1] = tostring(media_id)
+  params[#params + 1] = owner_id
+  db.execute(sql, unpack(params))
   write_media_subcategories(media_id, resolved_subcategory_ids)
 
   return nil, fetch_media_by_id(media_id, tostring(owner_id))
@@ -3590,6 +3639,21 @@ function M.set_media_controls(req)
   if payload.pinned ~= nil then
     updates[#updates + 1] = "pinned_at=CASE WHEN %s=1 THEN COALESCE(pinned_at, CURRENT_TIMESTAMP) ELSE NULL END"
     params[#params + 1] = payload.pinned and "1" or "0"
+  end
+  -- Same explicit-only contract as perform_update_media's publish_at (see
+  -- its comment): absent leaves the schedule alone, null/"" clears it. This
+  -- endpoint is already a sparse patch, so that falls out naturally here.
+  if payload.publish_at ~= nil then
+    if payload.publish_at == cjson.null or trim(tostring(payload.publish_at)) == "" then
+      updates[#updates + 1] = "publish_at=NULL"
+    else
+      local when = trim(tostring(payload.publish_at))
+      if not when:match("^%d%d%d%d%-%d%d%-%d%d[T ]%d%d:%d%d") then
+        return 400, { detail = "Schedule time must look like 2026-09-05T18:00." }
+      end
+      updates[#updates + 1] = "publish_at=(%s)::timestamptz AT TIME ZONE 'UTC'"
+      params[#params + 1] = when:sub(1, 40)
+    end
   end
 
   local row = db.fetchone("SELECT user_id FROM media_items WHERE id=%s AND deleted_at IS NULL", tostring(media_id))

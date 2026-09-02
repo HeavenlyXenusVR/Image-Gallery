@@ -5,6 +5,7 @@ struct MediaDetailView: View {
     @StateObject private var viewModel: MediaDetailViewModel
     @EnvironmentObject private var session: SessionStore
     @State private var showingReport = false
+    @State private var showingEdit = false
     @State private var showingAgeVerification = false
     @State private var showingFullScreen = false
     @State private var originalURL: URL?
@@ -78,6 +79,18 @@ struct MediaDetailView: View {
             setUpVideoControllerIfNeeded()
         }
         .sheet(isPresented: $showingReport) { ReportSheet(viewModel: viewModel) }
+        .sheet(isPresented: $showingEdit) { MediaEditSheet(viewModel: viewModel) }
+        // Owner-only, and driven off the loaded media rather than a passed-in
+        // flag so it stays correct when the view model reloads the post.
+        .toolbar {
+            if let media = viewModel.media,
+               let viewerId = session.currentUser?.id,
+               media.userId == viewerId {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showingEdit = true } label: { Label("Edit", systemImage: "pencil") }
+                }
+            }
+        }
         .sheet(isPresented: $showingAgeVerification, onDismiss: { Task { await viewModel.load() } }) { AgeVerificationView() }
         // isPresented + a separately-stored URL, not .sheet(item:) -- URL
         // doesn't conform to Identifiable, and this matches the same

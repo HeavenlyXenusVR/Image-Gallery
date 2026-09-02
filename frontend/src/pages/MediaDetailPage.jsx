@@ -4,7 +4,7 @@ import { Bookmark, ChevronLeft, ChevronRight, Copy, Download, Heart, Image as Im
 import { apiFetch } from "../api.js";
 import { useLiveRefresh } from "../hooks/useLiveRefresh.js";
 import { useMediaActions } from "../hooks/useMediaActions.js";
-import { MediaActionPanel, MediaControls } from "../components/media.jsx";
+import { MediaActionPanel, MediaControls, MediaEditor } from "../components/media.jsx";
 import { VideoPlayer } from "../components/VideoPlayer.jsx";
 import { Avatar, ChipRow, EmptyState, glassPointerMove, Notice, NotFound, Page, ResilientImage, SkeletonGrid, StatsRow, UserLine } from "../components/ui.jsx";
 import { imageQualityUrl, isGifMedia, thumbUrl, videoQualityUrl } from "../utils/media.js";
@@ -285,6 +285,7 @@ export function MediaDetailPage({ ctx }) {
             </div>
           ) : null}
           <MediaActionPanel ctx={ctx} media={media} actions={actions} />
+          {isOwner ? <MediaEditor ctx={ctx} media={media} onChanged={setMedia} /> : null}
           {isOwner ? <MediaControls ctx={ctx} media={media} onChanged={setMedia} /> : null}
           {ctx.user ? (
             <form className="side-box" onSubmit={reportMedia}>

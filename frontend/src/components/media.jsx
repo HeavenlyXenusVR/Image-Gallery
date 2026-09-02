@@ -251,12 +251,150 @@ export function CollectionSaveControl({ ctx, media, compact = false, openLabel =
   );
 }
 
+const SUBCATEGORY_SLOT_COUNT = 3;
+
+function slots(values) {
+  const out = Array.isArray(values) ? values.slice(0, SUBCATEGORY_SLOT_COUNT).map((v) => String(v ?? "")) : [];
+  while (out.length < SUBCATEGORY_SLOT_COUNT) out.push("");
+  return out;
+}
+
+function draftFromMedia(media) {
+  return {
+    title: media.title || "",
+    description: media.description || "",
+    tags: Array.isArray(media.tags) ? media.tags.join(", ") : "",
+    category_id: String(media.category_id || ""),
+    subcategory_ids: slots(media.subcategory_ids),
+    subcategory_names: slots([]),
+    is_adult: Boolean(media.is_adult),
+  };
+}
+
+// Full post editor.
+//
+// Until now the only thing a user could change about a post after uploading
+// it was the four switches in MediaControls below -- visibility, comments,
+// downloads, pinned. Title, description, tags and category were frozen at
+// upload time: PATCH /api/media/:id has supported editing all of them the
+// whole time, but nothing in the web app (or the iOS app) ever called it, so
+// a typo in a title was permanent short of deleting and re-uploading.
+//
+// The endpoint replaces the whole post record rather than patching named
+// fields -- omit visibility and it resets to public, omit is_adult and the
+// post is silently un-marked as 18+ -- so every control value is echoed back
+// unchanged alongside the fields actually being edited. publish_at is the one
+// exception: it is explicitly-only on the server, so leaving it out here
+// preserves whatever schedule MediaControls set.
+export function MediaEditor({ ctx, media, onChanged }) {
+  const [draft, setDraft] = useState(() => draftFromMedia(media));
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { setDraft(draftFromMedia(media)); }, [media]);
+
+  const categories = ctx.lookups?.categories || [];
+  const selectedCategory = categories.find((row) => String(row.id) === String(draft.category_id));
+  const subcategories = selectedCategory?.subcategories || selectedCategory?.children || [];
+
+  function set(key, value) { setDraft((current) => ({ ...current, [key]: value })); }
+
+  function setSlot(kind, index, value) {
+    setDraft((current) => {
+      const next = slots(current[kind]);
+      next[index] = value;
+      return { ...current, [kind]: next };
+    });
+  }
+
+  async function save() {
+    if (!draft.title.trim()) { ctx.showToast("Title is required.", "error"); return; }
+    if (!draft.category_id) { ctx.showToast("A category is required.", "error"); return; }
+    setBusy(true);
+    try {
+      const data = await apiFetch(`/api/media/${media.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          title: draft.title,
+          description: draft.description,
+          tags: draft.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+          category_id: Number(draft.category_id),
+          subcategory_ids: slots(draft.subcategory_ids).filter(Boolean).map(Number),
+          subcategory_names: slots(draft.subcategory_names).map((v) => v.trim()).filter(Boolean),
+          is_adult: draft.is_adult,
+          // Echoed, not edited -- see this component's header comment.
+          visibility: media.visibility || "public",
+          comments_enabled: media.comments_enabled !== false,
+          downloads_enabled: media.downloads_enabled !== false,
+          pinned: Boolean(media.pinned_at || media.pinned),
+        }),
+      });
+      clearApiCache();
+      onChanged(data.media);
+      ctx.showToast("Post updated.", "success");
+    } catch (error) {
+      ctx.showToast(error.message, "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="side-box">
+      <h3>Edit Post</h3>
+      <label className="field"><span>Title</span><input value={draft.title} onChange={(event) => set("title", event.target.value)} maxLength={160} /></label>
+      <label className="field"><span>Description</span><textarea value={draft.description} onChange={(event) => set("description", event.target.value)} rows={4} maxLength={2000} /></label>
+      <label className="field"><span>Tags</span><input value={draft.tags} onChange={(event) => set("tags", event.target.value)} placeholder="comma separated" /></label>
+      <label className="field"><span>Category</span>
+        <select value={draft.category_id} onChange={(event) => setDraft((current) => ({ ...current, category_id: event.target.value, subcategory_ids: slots([]) }))}>
+          <option value="">Select a category</option>
+          {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+        </select>
+      </label>
+      {slots(draft.subcategory_ids).map((value, index) => (
+        <div className="field" key={`subcat-${index}`}>
+          <span>{index === 0 ? "Subcategories" : ""}</span>
+          <select value={value} onChange={(event) => setSlot("subcategory_ids", index, event.target.value)} disabled={!subcategories.length}>
+            <option value="">None</option>
+            {subcategories.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
+          </select>
+          <input value={slots(draft.subcategory_names)[index]} onChange={(event) => setSlot("subcategory_names", index, event.target.value)} placeholder="or type a new one" />
+        </div>
+      ))}
+      <label className="check-row"><input checked={draft.is_adult} onChange={(event) => set("is_adult", event.target.checked)} type="checkbox" />Mark as 18+</label>
+      <div className="inline-controls">
+        <button type="button" onClick={save} disabled={busy}><Save size={16} />{busy ? "Saving..." : "Save Post"}</button>
+        <button type="button" onClick={() => setDraft(draftFromMedia(media))} disabled={busy}><RefreshCw size={16} />Reset</button>
+      </div>
+    </section>
+  );
+}
+
+// The server stores publish_at as naive UTC (same convention as created_at);
+// <input type="datetime-local"> speaks naive LOCAL. Converting through Date
+// in both directions keeps a schedule from drifting by the viewer's UTC
+// offset when it is saved and read back.
+function publishInputValue(value) {
+  if (!value) return "";
+  const parsed = new Date(String(value).replace(" ", "T") + (/[Z+]/.test(String(value)) ? "" : "Z"));
+  if (Number.isNaN(parsed.getTime())) return "";
+  const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function publishPayloadValue(inputValue) {
+  if (!inputValue) return null;
+  const parsed = new Date(inputValue);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 19);
+}
+
 export function MediaControls({ ctx, media, onChanged }) {
   const [draft, setDraft] = useState({
     visibility: media.visibility || "public",
     comments_enabled: media.comments_enabled !== false,
     downloads_enabled: media.downloads_enabled !== false,
     pinned: Boolean(media.pinned_at || media.pinned),
+    publish_at: publishInputValue(media.publish_at),
   });
 
   useEffect(() => {
@@ -265,6 +403,7 @@ export function MediaControls({ ctx, media, onChanged }) {
       comments_enabled: media.comments_enabled !== false,
       downloads_enabled: media.downloads_enabled !== false,
       pinned: Boolean(media.pinned_at || media.pinned),
+      publish_at: publishInputValue(media.publish_at),
     });
   }, [media]);
 
@@ -272,7 +411,7 @@ export function MediaControls({ ctx, media, onChanged }) {
     try {
       const data = await apiFetch(`/api/media/${media.id}/controls`, {
         method: "PATCH",
-        body: JSON.stringify(draft),
+        body: JSON.stringify({ ...draft, publish_at: publishPayloadValue(draft.publish_at) }),
       });
       clearApiCache();
       onChanged(data.media);
@@ -312,6 +451,10 @@ export function MediaControls({ ctx, media, onChanged }) {
       <label className="check-row"><input checked={draft.comments_enabled} onChange={(event) => setDraft((current) => ({ ...current, comments_enabled: event.target.checked }))} type="checkbox" />Comments</label>
       <label className="check-row"><input checked={draft.downloads_enabled} onChange={(event) => setDraft((current) => ({ ...current, downloads_enabled: event.target.checked }))} type="checkbox" />Downloads</label>
       <label className="check-row"><input checked={draft.pinned} onChange={(event) => setDraft((current) => ({ ...current, pinned: event.target.checked }))} type="checkbox" />Pinned</label>
+      <label className="field"><span>Publish at</span><input type="datetime-local" value={draft.publish_at} onChange={(event) => setDraft((current) => ({ ...current, publish_at: event.target.value }))} /></label>
+      {draft.publish_at && new Date(draft.publish_at) > new Date()
+        ? <p className="field-hint">Hidden from everyone but you until then.</p>
+        : <p className="field-hint">Leave empty to publish immediately.</p>}
       <div className="inline-controls">
         <button type="button" onClick={save}><Save size={16} />Save</button>
         {media.deleted_at ? <button type="button" onClick={restore}><RefreshCw size={16} />Restore</button> : <button type="button" className="danger" onClick={remove}><Trash2 size={16} />Delete</button>}

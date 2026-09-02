@@ -122,6 +122,43 @@ final class MediaDetailViewModel: ObservableObject {
         }
     }
 
+    /// Full post edit. Echoes the post's current control values back
+    /// unchanged alongside the edited fields -- `PATCH /api/media/:id`
+    /// replaces the record rather than patching named keys, so anything not
+    /// sent is reset to its default (visibility back to public, 18+ silently
+    /// cleared). See GalleryAPIClient.UpdateMediaBody.
+    func updatePost(
+        title: String,
+        description: String,
+        tags: [String],
+        categoryId: Int,
+        subcategoryIds: [Int],
+        subcategoryNames: [String],
+        isAdult: Bool
+    ) async -> Bool {
+        guard let media else { return false }
+        do {
+            let updated = try await api.updateMedia(mediaId: media.id, body: .init(
+                title: title,
+                description: description,
+                tags: tags,
+                categoryId: categoryId,
+                subcategoryIds: subcategoryIds,
+                subcategoryNames: subcategoryNames,
+                isAdult: isAdult,
+                visibility: media.visibility ?? "public",
+                commentsEnabled: media.commentsEnabled ?? true,
+                downloadsEnabled: media.downloadsEnabled ?? true,
+                pinned: media.pinnedAt != nil
+            ))
+            self.media = updated
+            return true
+        } catch {
+            if !error.isCancellation { errorMessage = error.localizedDescription }
+            return false
+        }
+    }
+
     /// Top-level comments with their replies nested, mirroring the web app's
     /// `MediaDetailPage.jsx` comment-threading logic.
     var topLevelComments: [Comment] {

@@ -41,6 +41,9 @@ struct MediaItem: Codable, Identifiable, Hashable {
     var categoryId: Int?
     var categoryName: String?
     var subcategoryNames: [String]?
+    /// Needed to pre-select the post's existing subcategories when editing;
+    /// `subcategoryNames` alone can't be mapped back to ids reliably.
+    var subcategoryIds: [Int]?
     var createdAt: String?
     var deletedAt: String?
     var yearsAgo: Int?
